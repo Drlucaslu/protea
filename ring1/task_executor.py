@@ -29,7 +29,11 @@ Keep responses under 3500 characters so they fit in a Telegram message.
 """
 
 
-def _build_task_context(state_snapshot: dict, ring2_source: str) -> str:
+def _build_task_context(
+    state_snapshot: dict,
+    ring2_source: str,
+    memories: list[dict] | None = None,
+) -> str:
     """Build context string from current Protea state for LLM task calls."""
     parts = ["## Protea State"]
     parts.append(f"Generation: {state_snapshot.get('generation', '?')}")
@@ -48,6 +52,14 @@ def _build_task_context(state_snapshot: dict, ring2_source: str) -> str:
         parts.append(truncated)
         parts.append("```")
 
+    if memories:
+        parts.append("")
+        parts.append("## Recent Learnings")
+        for mem in memories:
+            gen = mem.get("generation", "?")
+            content = mem.get("content", "")
+            parts.append(f"- [Gen {gen}] {content}")
+
     return "\n".join(parts)
 
 
@@ -60,6 +72,7 @@ class TaskExecutor:
         client: ClaudeClient,
         ring2_path: pathlib.Path,
         reply_fn,
+        memory_store=None,
     ) -> None:
         """
         Args:
@@ -67,11 +80,13 @@ class TaskExecutor:
             client: ClaudeClient instance for LLM calls.
             ring2_path: Path to ring2 directory (for reading source).
             reply_fn: Callable(text: str) -> None to send Telegram reply.
+            memory_store: Optional MemoryStore for experiential memories.
         """
         self.state = state
         self.client = client
         self.ring2_path = ring2_path
         self.reply_fn = reply_fn
+        self.memory_store = memory_store
         self._running = True
 
     def run(self) -> None:
@@ -100,7 +115,13 @@ class TaskExecutor:
             except FileNotFoundError:
                 pass
 
-            context = _build_task_context(snap, ring2_source)
+            memories = []
+            if self.memory_store:
+                try:
+                    memories = self.memory_store.get_recent(3)
+                except Exception:
+                    pass
+            context = _build_task_context(snap, ring2_source, memories=memories)
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
             # LLM call
@@ -127,7 +148,7 @@ class TaskExecutor:
         self._running = False
 
 
-def create_executor(config, state, ring2_path: pathlib.Path, reply_fn) -> TaskExecutor | None:
+def create_executor(config, state, ring2_path: pathlib.Path, reply_fn, memory_store=None) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     if not config.claude_api_key:
         log.warning("Task executor: no CLAUDE_API_KEY — disabled")
@@ -137,7 +158,7 @@ def create_executor(config, state, ring2_path: pathlib.Path, reply_fn) -> TaskEx
         model=config.claude_model,
         max_tokens=config.claude_max_tokens,
     )
-    return TaskExecutor(state, client, ring2_path, reply_fn)
+    return TaskExecutor(state, client, ring2_path, reply_fn, memory_store=memory_store)
 
 
 def start_executor_thread(executor: TaskExecutor) -> threading.Thread:

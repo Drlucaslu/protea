@@ -12,7 +12,7 @@ import pathlib
 from typing import NamedTuple
 
 from ring1.llm_client import ClaudeClient, LLMError
-from ring1.prompts import build_evolution_prompt, extract_python_code
+from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection
 
 log = logging.getLogger("protea.evolver")
 
@@ -53,14 +53,16 @@ def validate_ring2_code(source: str) -> tuple[bool, str]:
 class Evolver:
     """Orchestrates a single evolution step for Ring 2."""
 
-    def __init__(self, config, fitness_tracker) -> None:
+    def __init__(self, config, fitness_tracker, memory_store=None) -> None:
         """
         Args:
             config: Ring1Config with API credentials.
             fitness_tracker: FitnessTracker instance for history queries.
+            memory_store: Optional MemoryStore for experiential memories.
         """
         self.config = config
         self.fitness = fitness_tracker
+        self.memory_store = memory_store
         self._client: ClaudeClient | None = None
 
     def _get_client(self) -> ClaudeClient:
@@ -79,15 +81,17 @@ class Evolver:
         params: dict,
         survived: bool,
         directive: str = "",
+        memories: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
         1. Read current ring2/main.py
         2. Query fitness history
-        3. Build prompt
+        3. Build prompt (with memories)
         4. Call Claude API
-        5. Extract + validate code
-        6. Write new ring2/main.py
+        5. Extract reflection + store in memory
+        6. Extract + validate code
+        7. Write new ring2/main.py
 
         Returns EvolutionResult indicating success/failure.
         """
@@ -113,6 +117,7 @@ class Evolver:
             generation=generation,
             survived=survived,
             directive=directive,
+            memories=memories,
         )
 
         # 4. Call Claude API.
@@ -123,19 +128,28 @@ class Evolver:
             log.error("LLM call failed: %s", exc)
             return EvolutionResult(False, f"LLM error: {exc}", "")
 
-        # 5. Extract code.
+        # 5. Extract reflection and store in memory.
+        reflection = extract_reflection(response)
+        if reflection and self.memory_store:
+            try:
+                self.memory_store.add(generation, "reflection", reflection)
+                log.debug("Stored reflection for gen-%d", generation)
+            except Exception:
+                log.debug("Failed to store reflection", exc_info=True)
+
+        # 6. Extract code.
         new_source = extract_python_code(response)
         if new_source is None:
             log.error("No Python code block found in LLM response")
             return EvolutionResult(False, "No code block in response", "")
 
-        # 6. Validate.
+        # 7. Validate.
         valid, reason = validate_ring2_code(new_source)
         if not valid:
             log.error("Validation failed: %s", reason)
             return EvolutionResult(False, f"Validation: {reason}", "")
 
-        # 7. Write.
+        # 8. Write.
         main_py.write_text(new_source)
         log.info("Evolution gen-%d: new code written (%d bytes)", generation, len(new_source))
         return EvolutionResult(True, "OK", new_source)

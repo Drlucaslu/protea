@@ -84,6 +84,31 @@ class TestBuildTaskContext:
         ctx = _build_task_context(snap, "")
         assert "```python" not in ctx
 
+    def test_includes_memories(self):
+        snap = {"generation": 5, "alive": True, "paused": False,
+                "last_score": 1.0, "last_survived": True}
+        memories = [
+            {"generation": 3, "content": "CA patterns are stable"},
+            {"generation": 4, "content": "Threads cause heartbeat loss"},
+        ]
+        ctx = _build_task_context(snap, "", memories=memories)
+        assert "Recent Learnings" in ctx
+        assert "CA patterns are stable" in ctx
+        assert "Gen 3" in ctx
+        assert "Gen 4" in ctx
+
+    def test_no_memories_no_section(self):
+        snap = {"generation": 0, "alive": False, "paused": False,
+                "last_score": 0.0, "last_survived": False}
+        ctx = _build_task_context(snap, "", memories=None)
+        assert "Recent Learnings" not in ctx
+
+    def test_empty_memories_no_section(self):
+        snap = {"generation": 0, "alive": False, "paused": False,
+                "last_score": 0.0, "last_survived": False}
+        ctx = _build_task_context(snap, "", memories=[])
+        assert "Recent Learnings" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # TestTaskExecutor
@@ -248,6 +273,55 @@ class TestTaskExecutor:
 # ---------------------------------------------------------------------------
 # TestCreateExecutor
 # ---------------------------------------------------------------------------
+
+class TestTaskExecutorWithMemory:
+    """Test TaskExecutor memory_store integration."""
+
+    def test_memory_context_injected(self, tmp_path):
+        """When memory_store has entries, they appear in LLM context."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        ms.add(1, "reflection", "threads cause crashes")
+
+        captured_messages = []
+        def capture_send(system, user):
+            captured_messages.append(user)
+            return "answer"
+
+        client = MagicMock()
+        client.send_message.side_effect = capture_send
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(state, client, ring2, reply_fn, memory_store=ms)
+        task = Task(text="what have you learned?", chat_id="123")
+        executor._execute_task(task)
+
+        assert len(captured_messages) == 1
+        assert "threads cause crashes" in captured_messages[0]
+        assert "Recent Learnings" in captured_messages[0]
+
+    def test_no_memory_store_works(self, tmp_path):
+        """TaskExecutor without memory_store should work fine."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message.return_value = "answer"
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(state, client, ring2, reply_fn)
+        task = Task(text="hello", chat_id="123")
+        executor._execute_task(task)
+
+        reply_fn.assert_called_once_with("answer")
+
 
 class TestCreateExecutor:
     def test_no_api_key_returns_none(self):

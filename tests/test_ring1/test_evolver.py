@@ -248,3 +248,89 @@ class TestEvolver:
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("directive") == "" or \
                (len(call_kwargs[0]) >= 8 and call_kwargs[0][7] == "")
+
+    def test_memories_passed_to_prompt_builder(self, tmp_path):
+        """Memories should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        memories = [{"generation": 1, "entry_type": "observation", "content": "test"}]
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient, \
+             patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            MockClient.return_value.send_message.return_value = llm_response
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True,
+                           memories=memories)
+
+        mock_prompt.assert_called_once()
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("memories") == memories
+
+    def test_reflection_extracted_and_stored(self, tmp_path):
+        """Reflection should be extracted from LLM response and stored."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = (
+            "## Reflection\n"
+            "Single-thread heartbeat is most stable.\n\n"
+            f"```python\n{VALID_SOURCE}```"
+        )
+        config = _make_config()
+        fitness = _make_fitness()
+        memory_store = MagicMock()
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient:
+            MockClient.return_value.send_message.return_value = llm_response
+            evolver = Evolver(config, fitness, memory_store=memory_store)
+            result = evolver.evolve(ring2, generation=5, params={}, survived=True)
+
+        assert result.success is True
+        memory_store.add.assert_called_once_with(
+            5, "reflection", "Single-thread heartbeat is most stable."
+        )
+
+    def test_no_reflection_no_store(self, tmp_path):
+        """No memory.add call if LLM response has no reflection."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        memory_store = MagicMock()
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient:
+            MockClient.return_value.send_message.return_value = llm_response
+            evolver = Evolver(config, fitness, memory_store=memory_store)
+            evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        memory_store.add.assert_not_called()
+
+    def test_no_memory_store_no_error(self, tmp_path):
+        """Evolver should work fine without memory_store."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = (
+            "## Reflection\nSome reflection.\n\n"
+            f"```python\n{VALID_SOURCE}```"
+        )
+        config = _make_config()
+        fitness = _make_fitness()
+
+        with patch("ring1.evolver.ClaudeClient") as MockClient:
+            MockClient.return_value.send_message.return_value = llm_response
+            evolver = Evolver(config, fitness)  # no memory_store
+            result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True

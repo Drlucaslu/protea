@@ -19,6 +19,7 @@ import tomllib
 from ring0.fitness import FitnessTracker
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
+from ring0.memory import MemoryStore
 from ring0.parameter_seed import generate_params, params_to_dict
 from ring0.resource_monitor import check_resources
 
@@ -56,7 +57,7 @@ def _stop_ring2(proc: subprocess.Popen | None) -> None:
     log.info("Ring 2 stopped  pid=%d", proc.pid)
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive=""):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -67,13 +68,15 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             log.warning("CLAUDE_API_KEY not set — skipping evolution")
             return False
 
-        evolver = Evolver(r1_config, fitness)
+        memories = memory_store.get_recent(5) if memory_store else []
+        evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
             generation=generation,
             params=params_to_dict(params),
             survived=survived,
             directive=directive,
+            memories=memories,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -88,6 +91,15 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         if notifier:
             notifier.notify_error(generation, str(exc))
         return False
+
+
+def _create_memory_store(db_path):
+    """Best-effort MemoryStore creation.  Returns None on any error."""
+    try:
+        return MemoryStore(db_path)
+    except Exception as exc:
+        log.debug("MemoryStore not available: %s", exc)
+        return None
 
 
 def _create_notifier(project_root):
@@ -120,14 +132,14 @@ def _create_bot(project_root, state, fitness, ring2_path):
         return None
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None):
     """Best-effort task executor creation.  Returns None on any error."""
     try:
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
 
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store)
         if executor:
             start_executor_thread(executor)
             log.info("Task executor started")
@@ -154,17 +166,19 @@ def run(project_root: pathlib.Path) -> None:
     git = GitManager(ring2_path)
     git.init_repo()
     fitness = FitnessTracker(db_path)
+    memory_store = _create_memory_store(db_path)
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
 
     # Shared state for Telegram bot interaction.
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
+    state.memory_store = memory_store
     bot = _create_bot(project_root, state, fitness, ring2_path)
 
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
-    executor = _create_executor(project_root, state, ring2_path, reply_fn)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store)
 
     generation = 0
     last_good_hash: str | None = None
@@ -249,6 +263,14 @@ def run(project_root: pathlib.Path) -> None:
                 except subprocess.CalledProcessError:
                     pass
 
+                # Record observation in memory.
+                if memory_store:
+                    memory_store.add(
+                        generation, "observation",
+                        f"Gen {generation} survived {elapsed:.0f}s (max {params.max_runtime_sec}s). "
+                        f"Code: {len((ring2_path / 'main.py').read_text())} bytes.",
+                    )
+
                 # Evolve (best-effort) — skip if P0 task active.
                 if state.p0_active.is_set():
                     log.info("P0 task active — skipping evolution")
@@ -257,10 +279,13 @@ def run(project_root: pathlib.Path) -> None:
                     with state.lock:
                         directive = state.evolution_directive
                         state.evolution_directive = ""
+                    if directive and memory_store:
+                        memory_store.add(generation, "directive", directive)
                     evolved = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
                         directive=directive,
+                        memory_store=memory_store,
                     )
                 if evolved:
                     try:
@@ -310,6 +335,13 @@ def run(project_root: pathlib.Path) -> None:
                 log.info("Rolling back to %s", last_good_hash[:12])
                 git.rollback(last_good_hash)
 
+            # Record observation in memory.
+            if memory_store:
+                memory_store.add(
+                    generation, "observation",
+                    f"Gen {generation} died after {elapsed:.0f}s / {params.max_runtime_sec}s. Heartbeat lost.",
+                )
+
             # Evolve from the good base (best-effort) — skip if P0 active.
             if state.p0_active.is_set():
                 log.info("P0 task active — skipping evolution")
@@ -318,10 +350,13 @@ def run(project_root: pathlib.Path) -> None:
                 with state.lock:
                     directive = state.evolution_directive
                     state.evolution_directive = ""
+                if directive and memory_store:
+                    memory_store.add(generation, "directive", directive)
                 evolved = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
                     directive=directive,
+                    memory_store=memory_store,
                 )
             if evolved:
                 try:

@@ -38,7 +38,12 @@ Your code is scored on:
 - Behavioral diversity: Does it do something DIFFERENT from previous generations?
 
 ## Response Format
-Respond with ONLY a Python code block. No explanation needed.
+First, write a brief reflection (2-3 sentences) about what you've observed
+and your strategy. Then provide the code.
+
+## Reflection
+[Your observations about patterns, what works/fails, and your strategy]
+
 ```python
 # your mutated code here
 ```
@@ -53,6 +58,7 @@ def build_evolution_prompt(
     generation: int,
     survived: bool,
     directive: str = "",
+    memories: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -94,6 +100,16 @@ def build_evolution_prompt(
             )
         parts.append("")
 
+    # Learned patterns from memory
+    if memories:
+        parts.append("## Learned Patterns (from memory)")
+        for mem in memories:
+            gen = mem.get("generation", "?")
+            mtype = mem.get("entry_type", "?")
+            content = mem.get("content", "")
+            parts.append(f"- [Gen {gen}, {mtype}] {content}")
+        parts.append("")
+
     # Instructions based on outcome
     if survived:
         parts.append("## Instructions")
@@ -133,4 +149,19 @@ def extract_python_code(response: str) -> str | None:
         code = match.group(1).strip()
         if code:
             return code
+    return None
+
+
+def extract_reflection(response: str) -> str | None:
+    """Extract reflection text from an LLM response.
+
+    Looks for text between ``## Reflection`` and the first
+    ````` ```python ````` code fence.  Returns ``None`` if no reflection found.
+    """
+    pattern = r"## Reflection\s*\n(.*?)```python"
+    match = re.search(pattern, response, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
+        if text:
+            return text
     return None

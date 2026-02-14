@@ -1,6 +1,6 @@
 """Tests for ring1.prompts."""
 
-from ring1.prompts import build_evolution_prompt, extract_python_code
+from ring1.prompts import build_evolution_prompt, extract_python_code, extract_reflection
 
 
 class TestBuildEvolutionPrompt:
@@ -147,6 +147,73 @@ class TestBuildEvolutionPrompt:
         )
         assert "User Directive" not in user
 
+    def test_memories_included(self):
+        memories = [
+            {"generation": 5, "entry_type": "reflection", "content": "CA patterns survive best"},
+            {"generation": 3, "entry_type": "observation", "content": "Gen 3 survived 120s"},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=6,
+            survived=True,
+            memories=memories,
+        )
+        assert "Learned Patterns" in user
+        assert "CA patterns survive best" in user
+        assert "Gen 5, reflection" in user
+        assert "Gen 3, observation" in user
+
+    def test_no_memories_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            memories=None,
+        )
+        assert "Learned Patterns" not in user
+
+    def test_empty_memories_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            memories=[],
+        )
+        assert "Learned Patterns" not in user
+
+    def test_memories_default_none(self):
+        """Calling without memories arg should not include section."""
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+        )
+        assert "Learned Patterns" not in user
+
+    def test_system_prompt_has_reflection_format(self):
+        system, _ = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+        )
+        assert "## Reflection" in system
+        assert "reflection" in system.lower()
+
 
 class TestExtractPythonCode:
     def test_extracts_code_block(self):
@@ -188,3 +255,40 @@ class TestExtractPythonCode:
         code = extract_python_code(response)
         assert "    for i" in code
         assert "        print" in code
+
+
+class TestExtractReflection:
+    def test_extracts_reflection(self):
+        response = (
+            "## Reflection\n"
+            "Single-thread heartbeat is most stable.\n\n"
+            "```python\ndef main():\n    pass\n```"
+        )
+        reflection = extract_reflection(response)
+        assert reflection == "Single-thread heartbeat is most stable."
+
+    def test_multiline_reflection(self):
+        response = (
+            "## Reflection\n"
+            "Line one.\n"
+            "Line two.\n\n"
+            "```python\ncode\n```"
+        )
+        reflection = extract_reflection(response)
+        assert "Line one." in reflection
+        assert "Line two." in reflection
+
+    def test_no_reflection_section(self):
+        response = "```python\ndef main():\n    pass\n```"
+        reflection = extract_reflection(response)
+        assert reflection is None
+
+    def test_empty_reflection(self):
+        response = "## Reflection\n\n```python\ncode\n```"
+        reflection = extract_reflection(response)
+        assert reflection is None
+
+    def test_reflection_with_code_only(self):
+        response = "Just some text without reflection"
+        reflection = extract_reflection(response)
+        assert reflection is None

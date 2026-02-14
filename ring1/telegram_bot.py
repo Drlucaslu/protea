@@ -49,6 +49,7 @@ class SentinelState:
         self.p0_active = threading.Event()    # P0 task executing
         self.p0_event = threading.Event()     # pulse to wake sentinel
         self.evolution_directive: str = ""    # user directive (lock-protected)
+        self.memory_store = None              # set by Sentinel after creation
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -231,7 +232,9 @@ class TelegramBot:
             "/resume — resume evolution loop\n"
             "/kill — restart Ring 2 (no generation advance)\n"
             "/direct <text> — set evolution directive\n"
-            "/tasks — show task queue and directive\n\n"
+            "/tasks — show task queue and directive\n"
+            "/memory — view recent memories\n"
+            "/forget — clear all memories\n\n"
             "Or send any text to ask Protea a question (P0 task)."
         )
 
@@ -257,6 +260,29 @@ class TelegramBot:
         lines.append(f"Directive: {directive if directive else '(none)'}")
         return "\n".join(lines)
 
+    def _cmd_memory(self) -> str:
+        """Show recent memories."""
+        ms = self.state.memory_store
+        if not ms:
+            return "Memory not available."
+        entries = ms.get_recent(5)
+        if not entries:
+            return "No memories yet."
+        lines = [f"*Recent Memories ({ms.count()} total):*"]
+        for e in entries:
+            lines.append(
+                f"[Gen {e['generation']}, {e['entry_type']}] {e['content']}"
+            )
+        return "\n".join(lines)
+
+    def _cmd_forget(self) -> str:
+        """Clear all memories."""
+        ms = self.state.memory_store
+        if not ms:
+            return "Memory not available."
+        ms.clear()
+        return "All memories cleared."
+
     def _enqueue_task(self, text: str, chat_id: str) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
         task = Task(text=text, chat_id=chat_id)
@@ -277,6 +303,8 @@ class TelegramBot:
         "/help": "_cmd_help",
         "/start": "_cmd_help",
         "/tasks": "_cmd_tasks",
+        "/memory": "_cmd_memory",
+        "/forget": "_cmd_forget",
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:

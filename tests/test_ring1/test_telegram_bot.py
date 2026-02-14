@@ -614,6 +614,89 @@ class TestTasksCommand:
             server.shutdown()
 
 
+class TestMemoryCommand:
+    """Test /memory command shows recent memories."""
+
+    def test_memory_no_store(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            # memory_store is None by default
+            reply = bot._handle_command("/memory")
+            assert "not available" in reply.lower()
+        finally:
+            server.shutdown()
+
+    def test_memory_empty(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.memory import MemoryStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot.state.memory_store = MemoryStore(tmp_path / "mem.db")
+            reply = bot._handle_command("/memory")
+            assert "No memories" in reply
+        finally:
+            server.shutdown()
+
+    def test_memory_shows_entries(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.memory import MemoryStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ms = MemoryStore(tmp_path / "mem.db")
+            ms.add(1, "observation", "Gen 1 survived 60s")
+            ms.add(2, "reflection", "CA patterns are stable")
+            bot.state.memory_store = ms
+            reply = bot._handle_command("/memory")
+            assert "Gen 1" in reply
+            assert "observation" in reply
+            assert "CA patterns" in reply
+            assert "2 total" in reply
+        finally:
+            server.shutdown()
+
+
+class TestForgetCommand:
+    """Test /forget command clears memories."""
+
+    def test_forget_no_store(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            reply = bot._handle_command("/forget")
+            assert "not available" in reply.lower()
+        finally:
+            server.shutdown()
+
+    def test_forget_clears(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            from ring0.memory import MemoryStore
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            ms = MemoryStore(tmp_path / "mem.db")
+            ms.add(1, "observation", "test")
+            bot.state.memory_store = ms
+            reply = bot._handle_command("/forget")
+            assert "cleared" in reply.lower()
+            assert ms.count() == 0
+        finally:
+            server.shutdown()
+
+
+class TestHelpIncludesMemoryCommands:
+    """Test that /help includes /memory and /forget."""
+
+    def test_help_lists_memory(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            reply = bot._handle_command("/help")
+            assert "/memory" in reply
+            assert "/forget" in reply
+        finally:
+            server.shutdown()
+
+
 class TestTaskDataclass:
     """Test the Task dataclass."""
 
