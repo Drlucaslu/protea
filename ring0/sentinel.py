@@ -398,11 +398,14 @@ def run(project_root: pathlib.Path) -> None:
                     import hashlib
                     source_hash = hashlib.sha256(source.encode()).hexdigest()
                     if source_hash != last_crystallized_hash:
+                        log.info("Crystallizing gen-%d (hash=%s…)", generation, source_hash[:12])
                         _try_crystallize(
                             project_root, skill_store, source, output,
                             generation, skill_cap=skill_cap,
                         )
                         last_crystallized_hash = source_hash
+                    else:
+                        log.debug("Skipping crystallization — source unchanged (hash=%s…)", source_hash[:12])
 
                 # Evolve (best-effort) — skip if busy or cooling down.
                 if not _should_evolve(state, cooldown_sec):
