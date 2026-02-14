@@ -50,6 +50,11 @@ class SentinelState:
         self.p0_event = threading.Event()     # pulse to wake sentinel
         self.evolution_directive: str = ""    # user directive (lock-protected)
         self.memory_store = None              # set by Sentinel after creation
+        # Phase 5 fields
+        self.p1_active = threading.Event()    # P1 autonomous task executing
+        self.last_evolution_time: float = 0.0 # last successful evolution timestamp
+        self.skill_store = None               # set by Sentinel after creation
+        self.restart_event = threading.Event() # commit watcher triggers restart
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -64,6 +69,7 @@ class SentinelState:
                 "last_survived": self.last_survived,
                 "paused": self.pause_event.is_set(),
                 "p0_active": self.p0_active.is_set(),
+                "p1_active": self.p1_active.is_set(),
                 "evolution_directive": self.evolution_directive,
                 "task_queue_size": self.task_queue.qsize(),
             }
@@ -234,7 +240,9 @@ class TelegramBot:
             "/direct <text> — set evolution directive\n"
             "/tasks — show task queue and directive\n"
             "/memory — view recent memories\n"
-            "/forget — clear all memories\n\n"
+            "/forget — clear all memories\n"
+            "/skills — list saved skills\n"
+            "/skill <name> — view skill details\n\n"
             "Or send any text to ask Protea a question (P0 task)."
         )
 
@@ -283,6 +291,43 @@ class TelegramBot:
         ms.clear()
         return "All memories cleared."
 
+    def _cmd_skills(self) -> str:
+        """List saved skills."""
+        ss = self.state.skill_store
+        if not ss:
+            return "Skill store not available."
+        skills = ss.get_active(20)
+        if not skills:
+            return "No skills saved yet."
+        lines = [f"*Saved Skills ({ss.count()} total):*"]
+        for s in skills:
+            lines.append(f"- *{s['name']}*: {s['description']} (used {s['usage_count']}x)")
+        return "\n".join(lines)
+
+    def _cmd_skill(self, full_text: str) -> str:
+        """Show skill details: /skill <name>."""
+        ss = self.state.skill_store
+        if not ss:
+            return "Skill store not available."
+        parts = full_text.strip().split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            return "Usage: /skill <name>\nExample: /skill summarize"
+        name = parts[1].strip()
+        skill = ss.get_by_name(name)
+        if not skill:
+            return f"Skill '{name}' not found."
+        lines = [
+            f"*Skill: {skill['name']}*",
+            f"Description: {skill['description']}",
+            f"Source: {skill['source']}",
+            f"Used: {skill['usage_count']} times",
+            f"Active: {'Yes' if skill['active'] else 'No'}",
+            "",
+            "Prompt template:",
+            f"```\n{skill['prompt_template']}\n```",
+        ]
+        return "\n".join(lines)
+
     def _enqueue_task(self, text: str, chat_id: str) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
         task = Task(text=text, chat_id=chat_id)
@@ -305,6 +350,7 @@ class TelegramBot:
         "/tasks": "_cmd_tasks",
         "/memory": "_cmd_memory",
         "/forget": "_cmd_forget",
+        "/skills": "_cmd_skills",
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:
@@ -317,10 +363,12 @@ class TelegramBot:
         if not stripped.startswith("/"):
             return self._enqueue_task(stripped, chat_id)
 
-        # /direct needs special handling (passes full text)
+        # /direct and /skill need special handling (passes full text)
         first_word = stripped.split()[0].lower().split("@")[0]
         if first_word == "/direct":
             return self._cmd_direct(stripped)
+        if first_word == "/skill":
+            return self._cmd_skill(stripped)
 
         # Standard command dispatch
         method_name = self._COMMANDS.get(first_word)

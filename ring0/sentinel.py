@@ -16,6 +16,7 @@ import threading
 import time
 import tomllib
 
+from ring0.commit_watcher import CommitWatcher
 from ring0.fitness import FitnessTracker
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
@@ -57,7 +58,18 @@ def _stop_ring2(proc: subprocess.Popen | None) -> None:
     log.info("Ring 2 stopped  pid=%d", proc.pid)
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None):
+def _should_evolve(state, cooldown_sec: int) -> bool:
+    """Check whether evolution should proceed based on priority and cooldown."""
+    if state.p0_active.is_set():
+        return False
+    if state.p1_active.is_set():
+        return False
+    if time.time() - state.last_evolution_time < cooldown_sec:
+        return False
+    return True
+
+
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -69,6 +81,22 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             return False
 
         memories = memory_store.get_recent(5) if memory_store else []
+
+        # Gather task history and skills for directed evolution.
+        task_history = []
+        if memory_store:
+            try:
+                task_history = memory_store.get_by_type("task", limit=10)
+            except Exception:
+                pass
+
+        skills = []
+        if skill_store:
+            try:
+                skills = skill_store.get_active(20)
+            except Exception:
+                pass
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -77,6 +105,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             survived=survived,
             directive=directive,
             memories=memories,
+            task_history=task_history,
+            skills=skills,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -99,6 +129,16 @@ def _create_memory_store(db_path):
         return MemoryStore(db_path)
     except Exception as exc:
         log.debug("MemoryStore not available: %s", exc)
+        return None
+
+
+def _create_skill_store(db_path):
+    """Best-effort SkillStore creation.  Returns None on any error."""
+    try:
+        from ring0.skill_store import SkillStore
+        return SkillStore(db_path)
+    except Exception as exc:
+        log.debug("SkillStore not available: %s", exc)
         return None
 
 
@@ -132,14 +172,14 @@ def _create_bot(project_root, state, fitness, ring2_path):
         return None
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None):
     """Best-effort task executor creation.  Returns None on any error."""
     try:
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
 
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store)
         if executor:
             start_executor_thread(executor)
             log.info("Task executor started")
@@ -162,11 +202,13 @@ def run(project_root: pathlib.Path) -> None:
     interval = r0["heartbeat_interval_sec"]
     timeout = r0["heartbeat_timeout_sec"]
     seed = r0["evolution"]["seed"]
+    cooldown_sec = r0["evolution"].get("cooldown_sec", 1800)
 
     git = GitManager(ring2_path)
     git.init_repo()
     fitness = FitnessTracker(db_path)
     memory_store = _create_memory_store(db_path)
+    skill_store = _create_skill_store(db_path)
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
 
@@ -174,11 +216,16 @@ def run(project_root: pathlib.Path) -> None:
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
     state.memory_store = memory_store
+    state.skill_store = skill_store
     bot = _create_bot(project_root, state, fitness, ring2_path)
 
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store)
+
+    # Commit watcher — auto-restart on new commits.
+    commit_watcher = CommitWatcher(project_root, state.restart_event)
+    threading.Thread(target=commit_watcher.run, name="commit-watcher", daemon=True).start()
 
     generation = 0
     last_good_hash: str | None = None
@@ -190,7 +237,7 @@ def run(project_root: pathlib.Path) -> None:
     except subprocess.CalledProcessError:
         pass
 
-    log.info("Sentinel online — heartbeat every %ds, timeout %ds", interval, timeout)
+    log.info("Sentinel online — heartbeat every %ds, timeout %ds, cooldown %ds", interval, timeout, cooldown_sec)
 
     try:
         params = generate_params(generation, seed)
@@ -235,6 +282,11 @@ def run(project_root: pathlib.Path) -> None:
                 hb.wait_for_heartbeat(startup_timeout=timeout)
                 continue
 
+            # --- restart check (commit watcher sets this) ---
+            if state.restart_event.is_set():
+                log.info("New commit detected — restarting Protea")
+                break
+
             # --- success check: survived max_runtime_sec ---
             if elapsed >= params.max_runtime_sec and hb.is_alive():
                 log.info(
@@ -271,9 +323,9 @@ def run(project_root: pathlib.Path) -> None:
                         f"Code: {len((ring2_path / 'main.py').read_text())} bytes.",
                     )
 
-                # Evolve (best-effort) — skip if P0 task active.
-                if state.p0_active.is_set():
-                    log.info("P0 task active — skipping evolution")
+                # Evolve (best-effort) — skip if busy or cooling down.
+                if not _should_evolve(state, cooldown_sec):
+                    log.info("Skipping evolution (busy or cooldown)")
                     evolved = False
                 else:
                     with state.lock:
@@ -286,8 +338,10 @@ def run(project_root: pathlib.Path) -> None:
                         generation, params, True, notifier,
                         directive=directive,
                         memory_store=memory_store,
+                        skill_store=skill_store,
                     )
                 if evolved:
+                    state.last_evolution_time = time.time()
                     try:
                         git.snapshot(f"gen-{generation} evolved")
                     except subprocess.CalledProcessError:
@@ -342,9 +396,9 @@ def run(project_root: pathlib.Path) -> None:
                     f"Gen {generation} died after {elapsed:.0f}s / {params.max_runtime_sec}s. Heartbeat lost.",
                 )
 
-            # Evolve from the good base (best-effort) — skip if P0 active.
-            if state.p0_active.is_set():
-                log.info("P0 task active — skipping evolution")
+            # Evolve from the good base (best-effort) — skip if busy or cooling down.
+            if not _should_evolve(state, cooldown_sec):
+                log.info("Skipping evolution (busy or cooldown)")
                 evolved = False
             else:
                 with state.lock:
@@ -357,8 +411,10 @@ def run(project_root: pathlib.Path) -> None:
                     generation, params, False, notifier,
                     directive=directive,
                     memory_store=memory_store,
+                    skill_store=skill_store,
                 )
             if evolved:
+                state.last_evolution_time = time.time()
                 try:
                     git.snapshot(f"gen-{generation} evolved-from-rollback")
                 except subprocess.CalledProcessError:
@@ -381,12 +437,18 @@ def run(project_root: pathlib.Path) -> None:
     except KeyboardInterrupt:
         log.info("Sentinel shutting down (KeyboardInterrupt)")
     finally:
+        commit_watcher.stop()
         if executor:
             executor.stop()
         if bot:
             bot.stop()
         _stop_ring2(proc)
         log.info("Sentinel offline")
+
+    # Restart the entire process if triggered by CommitWatcher.
+    if state.restart_event.is_set():
+        log.info("Restarting via os.execv()")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def main() -> None:
