@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,7 @@ class SkillRunner:
             env=env,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
 
         self._proc = proc
@@ -90,11 +92,14 @@ class SkillRunner:
             self._cleanup()
             return False
 
-        proc.terminate()
+        # Kill the entire process group so child processes (e.g. HTTP
+        # servers spawned by the skill) are also terminated.
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            os.killpg(pgid, signal.SIGKILL)
             proc.wait()
         log.info("Skill '%s' stopped  pid=%d", self._skill_name, proc.pid)
         self._cleanup()
