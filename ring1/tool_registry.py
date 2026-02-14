@@ -62,7 +62,10 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return f"Unknown tool: {name}"
-        return tool.execute(tool_input)
+        log.info("Tool call: %s(%s)", name, str(tool_input)[:120])
+        result = tool.execute(tool_input)
+        log.info("Tool result: %s (%d chars)", name, len(result))
+        return result
 
     def clone_without(self, *names: str) -> ToolRegistry:
         """Return a new registry with the specified tools removed.

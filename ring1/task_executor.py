@@ -185,6 +185,7 @@ class TaskExecutor:
 
     def _execute_task(self, task) -> None:
         """Execute a single task: set p0_active -> LLM call -> reply -> clear."""
+        log.info("P0 task received: %s", task.text[:80])
         self.state.p0_active.set()
         start = time.time()
         response = ""
@@ -242,8 +243,9 @@ class TaskExecutor:
                 log.error("Failed to send task reply", exc_info=True)
         finally:
             self.state.p0_active.clear()
-            # Record task in memory
             duration = time.time() - start
+            log.info("P0 task done (%.1fs): %s", duration, response[:80])
+            # Record task in memory
             if self.memory_store:
                 try:
                     snap = self.state.snapshot()
