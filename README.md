@@ -10,17 +10,19 @@ Three-ring design running on a single Mac mini:
 - **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal. Calls Claude API for mutations, user tasks, and autonomous P1 work.
 - **Ring 2 (Evolvable Code)** — The living code that evolves. Managed in its own git repo by Ring 0.
 
+## Prerequisites
+
+- Python 3.11+
+- Git
+
 ## Quick Start
 
 ```bash
-# Configure
-cp config/config.toml.example config/config.toml
-# Edit config.toml with your API keys
+# One-command setup (creates venv, .env, ring2 git, runs tests)
+bash setup.sh
 
-# Run all tests
-python -m pytest tests/ -v
-
-# Start Sentinel (launches everything)
+# Activate and run
+source .venv/bin/activate
 python run.py
 ```
 
@@ -69,7 +71,7 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 732+ tests
+├── tests/                      # 797+ tests
 │   ├── test_ring0/             # Ring 0 unit tests
 │   └── test_ring1/             # Ring 1 unit tests
 └── run.py                      # Entry point
@@ -129,4 +131,8 @@ All settings live in `config/config.toml`:
 - [x] Skill Portal — web dashboard
 - [x] CommitWatcher — auto-restart on deploy
 - [x] Task persistence — survives restarts via SQLite
-- [x] 732+ tests passing
+- [x] 797+ tests passing
+
+## Registry
+
+Protea skills can be published to and installed from [protea-hub](https://github.com/lianglu/protea-hub), a skill registry deployed on Railway.
