@@ -38,3 +38,11 @@ port = 8888
 
 [ring1.telegram]
 enabled = true
+
+[registry]
+enabled = false
+url = "http://127.0.0.1:8761"
+node_id = "default"
+host = "127.0.0.1"
+port = 8761
+db_path = "data/registry.db"

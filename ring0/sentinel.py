@@ -162,7 +162,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         return False
 
 
-def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100):
+def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None):
     """Best-effort crystallization.  Returns action string or None."""
     try:
         from ring1.config import load_ring1_config
@@ -182,6 +182,24 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
         )
         log.info("Crystallization result: action=%s skill=%s reason=%s",
                  result.action, result.skill_name, result.reason)
+
+        # Auto-publish to registry on successful crystallization.
+        if result.action in ("create", "update") and result.skill_name and registry_client:
+            try:
+                skill_data = skill_store.get_by_name(result.skill_name)
+                if skill_data:
+                    registry_client.publish(
+                        name=skill_data["name"],
+                        description=skill_data.get("description", ""),
+                        prompt_template=skill_data.get("prompt_template", ""),
+                        parameters=skill_data.get("parameters"),
+                        tags=skill_data.get("tags"),
+                        source_code=skill_data.get("source_code", ""),
+                    )
+                    log.info("Published skill %r to registry", result.skill_name)
+            except Exception as pub_exc:
+                log.debug("Registry publish failed (non-fatal): %s", pub_exc)
+
         return result.action
     except Exception as exc:
         log.error("Crystallization error (non-fatal): %s", exc)
@@ -257,6 +275,23 @@ def _create_bot(project_root, state, fitness, ring2_path):
         return None
 
 
+def _create_registry_client(project_root, cfg):
+    """Best-effort RegistryClient creation.  Returns None on any error."""
+    try:
+        from ring1.registry_client import RegistryClient
+        reg_cfg = cfg.get("registry", {})
+        if not reg_cfg.get("enabled", False):
+            return None
+        url = reg_cfg.get("url", "http://127.0.0.1:8761")
+        node_id = reg_cfg.get("node_id", "default")
+        client = RegistryClient(url, node_id)
+        log.info("RegistryClient created (url=%s, node_id=%s)", url, node_id)
+        return client
+    except Exception as exc:
+        log.debug("RegistryClient not available: %s", exc)
+        return None
+
+
 def _create_portal(project_root, cfg, skill_store, skill_runner):
     """Best-effort Skill Portal creation.  Returns None on any error."""
     try:
@@ -329,6 +364,10 @@ def run(project_root: pathlib.Path) -> None:
     executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store)
     # Expose subagent_manager on state for /background command.
     state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
+
+    # Registry client — publish skills to remote registry.
+    registry_client = _create_registry_client(project_root, cfg)
+    state.registry_client = registry_client
 
     # Skill Portal — unified web dashboard.
     portal = _create_portal(project_root, cfg, skill_store, skill_runner)
@@ -447,6 +486,7 @@ def run(project_root: pathlib.Path) -> None:
                         _try_crystallize(
                             project_root, skill_store, source, output,
                             generation, skill_cap=skill_cap,
+                            registry_client=registry_client,
                         )
                         last_crystallized_hash = source_hash
                     else:
