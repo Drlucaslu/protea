@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+REPO_URL="https://github.com/Drlucaslu/protea.git"
 
 echo "=== Protea Setup ==="
 echo
+
+# 0. Clone repo if not already inside it
+if [ -f run.py ] && [ -d ring0 ]; then
+    : # already in protea root
+elif [ -f "$(dirname "$0")/run.py" ] 2>/dev/null; then
+    cd "$(dirname "$0")"
+else
+    echo "[..] Cloning protea..."
+    git clone "$REPO_URL"
+    cd protea
+    echo "[ok] Cloned into $(pwd)"
+fi
 
 # 1. Check Python >= 3.11
 if ! command -v python3 &>/dev/null; then
@@ -77,4 +89,4 @@ echo
 echo "Next steps:"
 echo "  1. Edit .env and set CLAUDE_API_KEY (required)"
 echo "  2. Optionally set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
-echo "  3. Run: source .venv/bin/activate && python run.py"
+echo "  3. Run: cd $(pwd) && source .venv/bin/activate && python run.py"
