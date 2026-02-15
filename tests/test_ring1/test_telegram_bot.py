@@ -850,7 +850,7 @@ class TestHelpIncludesMemoryCommands:
             assert "/status — 查看状态" in reply
             assert "/memory" in reply
             assert "/forget" in reply
-            assert "直接发送文字即可向 Protea 提问 (P0 任务)。" in reply
+            assert "直接发送文字即可向 Protea 提问 (P0 任务)" in reply
         finally:
             server.shutdown()
 
