@@ -982,3 +982,96 @@ class TestTaskRecovery:
         # Task should be completed in store
         rows = ts.get_recent(1)
         assert rows[0]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# TestChatHistory
+# ---------------------------------------------------------------------------
+
+class TestChatHistory:
+    """Conversation history should carry context across tasks."""
+
+    def test_record_and_get_history(self):
+        state = _make_state()
+        client = MagicMock()
+        reply_fn = MagicMock()
+        executor = TaskExecutor(state, client, pathlib.Path("/tmp"), reply_fn)
+
+        executor._record_history("find credentials.json", "Found 2 files: /a, /b")
+        executor._record_history("read /a", "Contents of /a: ...")
+
+        history = executor._get_recent_history()
+        assert len(history) == 2
+        assert history[0] == ("find credentials.json", "Found 2 files: /a, /b")
+        assert history[1] == ("read /a", "Contents of /a: ...")
+
+    def test_history_expires_after_ttl(self):
+        state = _make_state()
+        client = MagicMock()
+        reply_fn = MagicMock()
+        executor = TaskExecutor(state, client, pathlib.Path("/tmp"), reply_fn)
+
+        # Insert an entry with old timestamp
+        executor._chat_history.append((time.time() - 700, "old q", "old a"))
+        executor._record_history("new q", "new a")
+
+        history = executor._get_recent_history()
+        assert len(history) == 1
+        assert history[0][0] == "new q"
+
+    def test_history_max_entries(self):
+        state = _make_state()
+        client = MagicMock()
+        reply_fn = MagicMock()
+        executor = TaskExecutor(state, client, pathlib.Path("/tmp"), reply_fn)
+
+        for i in range(10):
+            executor._record_history(f"q{i}", f"a{i}")
+
+        history = executor._get_recent_history()
+        assert len(history) == 5  # _chat_history_max = 5
+        assert history[0] == ("q5", "a5")
+        assert history[-1] == ("q9", "a9")
+
+    def test_history_included_in_context(self):
+        executor_history = [("find file.txt", "Found at /tmp/file.txt")]
+        context = _build_task_context(
+            {"generation": 1, "alive": True, "paused": False},
+            "",
+            chat_history=executor_history,
+        )
+        assert "## Recent Conversation" in context
+        assert "find file.txt" in context
+        assert "/tmp/file.txt" in context
+
+    def test_empty_history_not_in_context(self):
+        context = _build_task_context(
+            {"generation": 1, "alive": True, "paused": False},
+            "",
+            chat_history=[],
+        )
+        assert "Recent Conversation" not in context
+
+    def test_history_recorded_after_task(self, tmp_path):
+        """_execute_task should record conversation history."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "Found 2 files"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn, registry=registry,
+        )
+
+        task = Task(text="find credentials.json", chat_id="chat1", task_id="t-1")
+        executor._execute_task(task)
+
+        history = executor._get_recent_history()
+        assert len(history) == 1
+        assert history[0][0] == "find credentials.json"
+        assert history[0][1] == "Found 2 files"

@@ -134,6 +134,7 @@ def _build_task_context(
     ring2_source: str,
     memories: list[dict] | None = None,
     skills: list[dict] | None = None,
+    chat_history: list[tuple[str, str]] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     parts = ["## Protea State"]
@@ -168,6 +169,17 @@ def _build_task_context(
             name = skill.get("name", "?")
             desc = skill.get("description", "")
             parts.append(f"- {name}: {desc}")
+
+    if chat_history:
+        parts.append("")
+        parts.append("## Recent Conversation")
+        for user_msg, assistant_msg in chat_history:
+            # Truncate long messages to keep context manageable.
+            u = user_msg[:500] + "..." if len(user_msg) > 500 else user_msg
+            a = assistant_msg[:1000] + "..." if len(assistant_msg) > 1000 else assistant_msg
+            parts.append(f"User: {u}")
+            parts.append(f"Assistant: {a}")
+            parts.append("")
 
     return "\n".join(parts)
 
@@ -220,6 +232,26 @@ class TaskExecutor:
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
+        # Conversation history: list of (timestamp, user_text, response_text)
+        self._chat_history: list[tuple[float, str, str]] = []
+        self._chat_history_max = 5
+        self._chat_history_ttl = 600  # 10 minutes
+
+    def _get_recent_history(self) -> list[tuple[str, str]]:
+        """Return recent conversation pairs, pruning expired entries."""
+        now = time.time()
+        self._chat_history = [
+            (ts, q, a) for ts, q, a in self._chat_history
+            if now - ts < self._chat_history_ttl
+        ]
+        return [(q, a) for _, q, a in self._chat_history[-self._chat_history_max:]]
+
+    def _record_history(self, user_text: str, response_text: str) -> None:
+        """Append a Q&A pair to the conversation history."""
+        self._chat_history.append((time.time(), user_text, response_text))
+        # Keep only the most recent entries.
+        if len(self._chat_history) > self._chat_history_max * 2:
+            self._chat_history = self._chat_history[-self._chat_history_max:]
 
     def run(self) -> None:
         """Main loop — blocks on queue, executes tasks serially."""
@@ -304,7 +336,8 @@ class TaskExecutor:
                 except Exception:
                     pass
 
-            context = _build_task_context(snap, ring2_source, memories=memories, skills=skills)
+            history = self._get_recent_history()
+            context = _build_task_context(snap, ring2_source, memories=memories, skills=skills, chat_history=history)
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
             # LLM call with tool registry
@@ -327,6 +360,9 @@ class TaskExecutor:
             # Truncate if needed
             if len(response) > _MAX_REPLY_LEN:
                 response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
+
+            # Record conversation history for context continuity.
+            self._record_history(task.text, response)
 
             # Reply
             try:

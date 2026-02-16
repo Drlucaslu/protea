@@ -75,7 +75,7 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 811+ tests
+├── tests/                      # 817+ tests
 │   ├── test_ring0/             # Ring 0 unit tests
 │   └── test_ring1/             # Ring 1 unit tests
 └── run.py                      # Entry point
@@ -135,7 +135,7 @@ All settings live in `config/config.toml`:
 - [x] Skill Portal — web dashboard
 - [x] CommitWatcher — auto-restart on deploy
 - [x] Task persistence — survives restarts via SQLite
-- [x] 811+ tests passing
+- [x] 817+ tests passing
 
 ## Registry
 
