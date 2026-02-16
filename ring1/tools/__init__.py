@@ -16,6 +16,7 @@ def create_default_registry(
     subagent_manager=None,
     skill_store=None,
     skill_runner=None,
+    registry_client=None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with all standard tools.
 
@@ -54,11 +55,11 @@ def create_default_registry(
 
     if skill_store is not None:
         from ring1.tools.skill import make_edit_skill_tool, make_view_skill_tool
-        registry.register(make_view_skill_tool(skill_store))
-        registry.register(make_edit_skill_tool(skill_store))
+        registry.register(make_view_skill_tool(skill_store, registry_client))
+        registry.register(make_edit_skill_tool(skill_store, registry_client))
 
         if skill_runner is not None:
             from ring1.tools.skill import make_run_skill_tool
-            registry.register(make_run_skill_tool(skill_store, skill_runner))
+            registry.register(make_run_skill_tool(skill_store, skill_runner, registry_client))
 
     return registry

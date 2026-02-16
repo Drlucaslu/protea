@@ -24,7 +24,7 @@ class RegistryClient:
 
     def __init__(
         self,
-        registry_url: str = "http://127.0.0.1:8761",
+        registry_url: str = "https://protea-hub-production.up.railway.app",
         node_id: str = "default",
         timeout: int = 10,
     ) -> None:

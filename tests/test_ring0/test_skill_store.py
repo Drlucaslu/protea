@@ -383,6 +383,143 @@ class TestSchemaMigration:
         assert store.get_by_name("new")["source_code"] == "code"
 
 
+class TestUpdateUsageLastUsedAt:
+    """update_usage() should also set last_used_at."""
+
+    def test_sets_last_used_at(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        assert store.get_by_name("s1").get("last_used_at") is None
+        store.update_usage("s1")
+        assert store.get_by_name("s1")["last_used_at"] is not None
+
+
+class TestInstallFromHub:
+    """install_from_hub() should insert or update a hub skill."""
+
+    def test_install_new_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        data = {
+            "name": "hub_skill",
+            "description": "From hub",
+            "prompt_template": "Do {{task}}",
+            "parameters": {"task": "string"},
+            "tags": ["hub"],
+            "source_code": "print('hub')",
+        }
+        rid = store.install_from_hub(data)
+        assert rid > 0
+        skill = store.get_by_name("hub_skill")
+        assert skill["source"] == "hub"
+        assert skill["description"] == "From hub"
+        assert skill["source_code"] == "print('hub')"
+
+    def test_update_existing_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "old desc", "old tmpl", source="user")
+        store.install_from_hub({
+            "name": "s1",
+            "description": "new desc",
+            "prompt_template": "new tmpl",
+            "source_code": "new code",
+        })
+        skill = store.get_by_name("s1")
+        assert skill["source"] == "hub"
+        assert skill["description"] == "new desc"
+        assert skill["source_code"] == "new code"
+
+    def test_reactivates_deactivated_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="hub")
+        store.deactivate("s1")
+        assert store.get_by_name("s1")["active"] is False
+        store.install_from_hub({"name": "s1", "description": "desc", "prompt_template": "tmpl"})
+        assert store.get_by_name("s1")["active"] is True
+
+
+class TestEvictStale:
+    """evict_stale() should remove old hub skills but keep local ones."""
+
+    def test_evicts_old_hub_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("old_hub", "desc", "tmpl", source="hub")
+        # Manually backdate created_at
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-60 days') WHERE name = 'old_hub'"
+            )
+        evicted = store.evict_stale(days=30)
+        assert evicted == 1
+        assert store.get_by_name("old_hub") is None
+
+    def test_keeps_recent_hub_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("new_hub", "desc", "tmpl", source="hub")
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+        assert store.get_by_name("new_hub") is not None
+
+    def test_never_evicts_local_skills(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("local", "desc", "tmpl", source="user")
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-60 days') WHERE name = 'local'"
+            )
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+        assert store.get_by_name("local") is not None
+
+    def test_keeps_recently_used_hub_skill(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("hub_used", "desc", "tmpl", source="hub")
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-60 days') WHERE name = 'hub_used'"
+            )
+        store.update_usage("hub_used")  # sets last_used_at to now
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+        assert store.get_by_name("hub_used") is not None
+
+    def test_empty_store_returns_zero(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        assert store.evict_stale() == 0
+
+
+class TestSchemaMigrationLastUsedAt:
+    """Opening an old database should add last_used_at column."""
+
+    def test_migrate_adds_last_used_at(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        con = sqlite3.connect(str(db_path))
+        con.execute(
+            "CREATE TABLE skills ("
+            "  id INTEGER PRIMARY KEY,"
+            "  name TEXT NOT NULL UNIQUE,"
+            "  description TEXT NOT NULL,"
+            "  prompt_template TEXT NOT NULL,"
+            "  parameters TEXT DEFAULT '{}',"
+            "  tags TEXT DEFAULT '[]',"
+            "  source TEXT NOT NULL DEFAULT 'user',"
+            "  source_code TEXT DEFAULT '',"
+            "  usage_count INTEGER DEFAULT 0,"
+            "  active BOOLEAN DEFAULT 1,"
+            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        con.execute("INSERT INTO skills (name, description, prompt_template) VALUES ('old', 'desc', 'tmpl')")
+        con.commit()
+        con.close()
+
+        store = SkillStore(db_path)
+        skill = store.get_by_name("old")
+        assert skill is not None
+        assert skill.get("last_used_at") is None
+        store.update_usage("old")
+        assert store.get_by_name("old")["last_used_at"] is not None
+
+
 class TestSharedDatabase:
     """SkillStore should coexist with other tables in same db."""
 

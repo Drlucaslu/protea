@@ -32,6 +32,35 @@ You are helpful and concise.  Answer the user's question or perform the requeste
 analysis.  You have context about your current state (generation, survival, code).
 Keep responses under 3500 characters so they fit in a Telegram message.
 
+⚠️ CRITICAL: PROGRESS REPORTING IS MANDATORY ⚠️
+
+The message tool is your PRIMARY way to communicate progress during work.
+You MUST follow these rules WITHOUT EXCEPTION:
+
+WHEN TO REPORT:
+✓ Send initial message IMMEDIATELY when starting any task expected to take >10 seconds
+✓ Report after EACH major step in multi-step operations (>3 steps)
+✓ Report every 100 iterations in loops, OR every 10 seconds (whichever comes first)
+✓ Always report BEFORE starting expensive operations (web scraping, file processing)
+✓ When using spawn, the subagent MUST report MORE frequently (user can't see logs)
+
+HOW TO REPORT:
+✓ Use clear emojis: 🔄 (working), ✅ (done), ❌ (error), 📊 (analyzing), 🔍 (searching)
+✓ Include progress metrics: percentages, counts, time estimates when possible
+✓ Show what's next: always preview the upcoming step
+✓ Keep messages concise but informative
+
+EXAMPLE - Research Task:
+User asks: "Research quantum computing trends"
+Your response should include:
+  1. message("🔄 Starting research on quantum computing...\n\n**Phase 1**: Web search\n**Phase 2**: Content extraction\n**Phase 3**: Analysis")
+  2. [perform web_search]
+  3. message("✅ **Phase 1 Complete**: Found 10 sources\n\n🔄 **Phase 2**: Extracting content...")
+  4. [web_fetch multiple sources]
+  5. message("✅ **Phase 2 Complete**: Extracted 15,000 words from 10 sources\n\n🔄 **Phase 3**: Analyzing...")
+  6. [analyze content]
+  7. [provide final response with completion summary]
+
 You have access to the following tools:
 
 Web tools:
@@ -52,14 +81,6 @@ Message tool:
 
 Background tool:
 - spawn: Start a long-running background task. Results are sent via Telegram when done.
-
-PROGRESS REPORTING RULES:
-- For tasks expected to take > 10 seconds, send an initial progress message.
-- For multi-step tasks (>3 steps), report after each major step.
-- For tasks with iterations/loops, report every N iterations (e.g., every 100).
-- Always report before starting expensive operations (web scraping, file processing).
-- Use emojis for clarity: 🔄 (working), ✅ (done), ❌ (error), 📊 (analyzing).
-- When using spawn, the subagent MUST use message frequently since the user cannot see real-time output.
 
 Skill tools:
 - run_skill: Start a stored skill by name. Returns status, output, HTTP port.
@@ -503,6 +524,7 @@ def create_executor(
     skill_store=None,
     skill_runner=None,
     task_store=None,
+    registry_client=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     if not config.claude_api_key:
@@ -531,6 +553,7 @@ def create_executor(
         reply_fn=reply_fn,
         skill_store=skill_store,
         skill_runner=skill_runner,
+        registry_client=registry_client,
     )
     subagent_mgr = SubagentManager(client, base_registry, reply_fn)
 
@@ -542,6 +565,7 @@ def create_executor(
         subagent_manager=subagent_mgr,
         skill_store=skill_store,
         skill_runner=skill_runner,
+        registry_client=registry_client,
     )
 
     executor = TaskExecutor(
