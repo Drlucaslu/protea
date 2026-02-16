@@ -36,7 +36,7 @@ def _load_config(project_root: pathlib.Path) -> dict:
 def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subprocess.Popen:
     """Launch the Ring 2 process and return its Popen handle."""
     log_file = ring2_path / ".output.log"
-    fh = open(log_file, "w")
+    fh = open(log_file, "a")
     env = {**os.environ, "PROTEA_HEARTBEAT": str(heartbeat_path)}
     proc = subprocess.Popen(
         [sys.executable, str(ring2_path / "main.py")],
@@ -551,7 +551,7 @@ def run(project_root: pathlib.Path) -> None:
             _stop_ring2(proc)
 
             failure_reason = _classify_failure(proc, output)
-            log.warning("Failure reason: %s", failure_reason.splitlines()[0])
+            log.warning("Failure reason: %s", failure_reason)
 
             score = min(elapsed / params.max_runtime_sec, 0.99) if params.max_runtime_sec > 0 else 0.0
             commit_hash = last_good_hash or "unknown"

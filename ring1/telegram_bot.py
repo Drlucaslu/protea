@@ -157,12 +157,23 @@ class TelegramBot:
         return updates
 
     def _send_reply(self, text: str) -> None:
-        """Send a text reply (fire-and-forget)."""
-        self._api_call("sendMessage", {
+        """Send a text reply (fire-and-forget).
+
+        Tries Markdown first; falls back to plain text if Telegram rejects it
+        (e.g. LLM responses often contain ``##`` headers that are invalid in
+        Telegram's legacy Markdown mode).
+        """
+        result = self._api_call("sendMessage", {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "Markdown",
         })
+        if result is None:
+            # Markdown was rejected — retry as plain text.
+            self._api_call("sendMessage", {
+                "chat_id": self.chat_id,
+                "text": text,
+            })
 
     def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> None:
         """Send a message with an inline keyboard (fire-and-forget).

@@ -2,7 +2,7 @@
 heartbeat_interval_sec = 2
 heartbeat_timeout_sec = 6
 max_cpu_percent = 80.0
-max_memory_percent = 80.0
+max_memory_percent = 92.0
 max_disk_percent = 90.0
 
 [ring0.git]
