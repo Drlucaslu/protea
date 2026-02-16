@@ -137,7 +137,7 @@ class TestSubagentManager:
 
         assert "echo" in captured_tools
         assert "spawn" not in captured_tools
-        assert "message" in captured_tools  # kept for progress reporting
+        assert "message" not in captured_tools  # excluded to prevent direct messaging
 
     def test_get_active_empty(self):
         client = MagicMock()
