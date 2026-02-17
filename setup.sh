@@ -175,8 +175,12 @@ echo "=== Running Tests ==="
 $PY -m pytest tests/ -v
 
 # 8. Done
+# 8. Ensure scripts are executable
+chmod +x run_with_nohup.sh 2>/dev/null || true
+
 echo
 echo "=== Setup Complete ==="
 echo
 echo "To start Protea:"
-echo "  cd $(pwd) && .venv/bin/python run.py"
+echo "  .venv/bin/python run.py            # foreground"
+echo "  ./run_with_nohup.sh                # background (nohup)"
