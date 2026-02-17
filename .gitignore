@@ -80,3 +80,5 @@ ring2/test*.log
 papers_export.txt
 self_evolving_agents_research_report.md
 ring2_enhanced_proposal.md
+
+protea.egg-info
