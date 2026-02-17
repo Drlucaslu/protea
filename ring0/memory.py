@@ -46,10 +46,69 @@ _IMPORTANCE_BASE: dict[str, float] = {
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 
+# Patterns for detecting low-value follow-up messages (operational commands).
+# Chinese + English operational verbs / short commands.
+_FOLLOWUP_PATTERNS: list[re.Pattern[str]] = [
+    # Chinese operational phrases
+    re.compile(r"^.{0,5}(发给我|发过来|给我看|看一下|看看|调一下|改一下|删一下|传给我)", re.IGNORECASE),
+    re.compile(r"^.{0,5}(前面一段|后面一段|上面的|下面的)", re.IGNORECASE),
+    re.compile(r"^.{0,5}(记到|记一下|也记|把.{0,10}记)", re.IGNORECASE),
+    # English operational phrases
+    re.compile(r"^.{0,10}(commit|push|pull|send|show me|let me see)", re.IGNORECASE),
+    re.compile(r"^(yes|no|ok|好的|是的|可以|对|不用|不要|算了)\s*$", re.IGNORECASE),
+]
+
+# Patterns for detecting high-value substantive requests.
+_SUBSTANTIVE_PATTERNS: list[re.Pattern[str]] = [
+    # Chinese substantive phrases
+    re.compile(r"(帮我|请|实现|分析|研究|设计|创建|开发|构建|优化|调查|对比|解释一下)", re.IGNORECASE),
+    re.compile(r"(为什么|怎么|如何|能不能|是不是|有没有).{5,}", re.IGNORECASE),
+    # English substantive phrases
+    re.compile(r"(implement|build|create|design|analyze|investigate|explain|compare|develop|add .+ feature)", re.IGNORECASE),
+    re.compile(r"(why|how|what if|can you|could you).{10,}", re.IGNORECASE),
+]
+
 
 def _compute_importance(entry_type: str, content: str) -> float:
-    """Compute importance score for a memory entry."""
+    """Compute importance score for a memory entry.
+
+    For 'task' entries, applies content-based analysis:
+    - Short operational follow-ups (e.g. "发给我", "commit this") → 0.3
+    - Yes/no confirmations → 0.2
+    - Substantive requests with detail → 0.7-0.8
+    """
     base = _IMPORTANCE_BASE.get(entry_type, 0.5)
+
+    if entry_type == "task":
+        text = content.strip()
+        text_len = len(text)
+
+        # Very short confirmations (< 10 chars): minimal value.
+        if text_len < 10:
+            return 0.2
+
+        # Check for follow-up / operational patterns.
+        for pat in _FOLLOWUP_PATTERNS:
+            if pat.search(text):
+                return 0.35 if text_len > 30 else 0.25
+
+        # Short messages (< 25 chars) without substantive keywords.
+        if text_len < 25:
+            is_substantive = any(p.search(text) for p in _SUBSTANTIVE_PATTERNS)
+            if not is_substantive:
+                return 0.4
+
+        # Substantive requests get a boost.
+        if any(p.search(text) for p in _SUBSTANTIVE_PATTERNS):
+            base = 0.75 if text_len > 100 else 0.7
+
+        # Long detailed messages get extra credit.
+        if text_len > 500:
+            base = min(base + 0.05, 1.0)
+
+        return round(base, 2)
+
+    # Non-task types: original logic.
     if len(content) > 500:
         base = min(base + 0.05, 1.0)
     return round(base, 2)
@@ -114,6 +173,36 @@ class MemoryStore:
                 d["metadata"] = {}
         return d
 
+    # Session gap threshold: 30 minutes of silence = new session.
+    _SESSION_GAP_SEC = 30 * 60
+
+    def _is_new_session(self, con: sqlite3.Connection) -> bool:
+        """Check if this task starts a new session (> 30 min since last task)."""
+        row = con.execute(
+            "SELECT timestamp FROM memory WHERE entry_type = 'task' "
+            "ORDER BY id DESC LIMIT 1",
+        ).fetchone()
+        if row is None:
+            return True
+        import datetime
+        try:
+            last_ts = datetime.datetime.fromisoformat(row["timestamp"])
+            now = datetime.datetime.now(datetime.timezone.utc)
+            # Handle naive timestamps (SQLite CURRENT_TIMESTAMP is UTC but naive).
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=datetime.timezone.utc)
+            return (now - last_ts).total_seconds() > self._SESSION_GAP_SEC
+        except (ValueError, TypeError):
+            return False
+
+    def _apply_session_boost(
+        self, con: sqlite3.Connection, entry_type: str, importance: float,
+    ) -> float:
+        """Boost importance for the first task in a new session."""
+        if entry_type == "task" and self._is_new_session(con):
+            importance = min(importance + 0.1, 1.0)
+        return round(importance, 2)
+
     def add(
         self,
         generation: int,
@@ -125,12 +214,14 @@ class MemoryStore:
         """Insert a memory entry and return its *rowid*.
 
         Automatically computes importance and extracts keywords if not provided.
+        For task entries: content-based scoring + session-start boost.
         """
         if importance is None:
             importance = _compute_importance(entry_type, content)
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
         with self._connect() as con:
+            importance = self._apply_session_boost(con, entry_type, importance)
             cur = con.execute(
                 "INSERT INTO memory "
                 "(generation, entry_type, content, metadata, importance, tier, keywords) "
@@ -155,6 +246,7 @@ class MemoryStore:
         meta_json = json.dumps(metadata or {})
         emb_json = json.dumps(embedding) if embedding else ""
         with self._connect() as con:
+            importance = self._apply_session_boost(con, entry_type, importance)
             cur = con.execute(
                 "INSERT INTO memory "
                 "(generation, entry_type, content, metadata, importance, tier, keywords, embedding) "

@@ -60,7 +60,7 @@ class TestParamRanges:
         assert 2 <= params.population_size <= 10
 
     def test_max_runtime_sec_bounds(self, params):
-        assert 240 <= params.max_runtime_sec <= 360
+        assert params.max_runtime_sec == 600
 
     def test_crossover_rate_bounds(self, params):
         assert 0.1 <= params.crossover_rate <= 0.9

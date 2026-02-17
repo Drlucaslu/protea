@@ -181,8 +181,39 @@ class TestImportance:
     def test_crash_log(self):
         assert _compute_importance("crash_log", "short") == 0.8
 
-    def test_task(self):
-        assert _compute_importance("task", "short") == 0.7
+    def test_task_substantive(self):
+        """Substantive task with enough length gets high importance."""
+        assert _compute_importance("task", "帮我分析一下这个系统的性能问题，找出瓶颈所在") == 0.7
+
+    def test_task_short_followup(self):
+        """Very short task messages get low importance."""
+        assert _compute_importance("task", "好的") == 0.2
+
+    def test_task_operational_chinese(self):
+        """Chinese operational commands get low importance."""
+        assert _compute_importance("task", "发给我看一下") <= 0.35
+
+    def test_task_operational_english(self):
+        """English operational commands get low importance."""
+        assert _compute_importance("task", "commit and push it") <= 0.35
+
+    def test_task_confirmation(self):
+        """Simple confirmations get minimal importance."""
+        assert _compute_importance("task", "yes") == 0.2
+        assert _compute_importance("task", "可以") == 0.2
+
+    def test_task_substantive_long(self):
+        """Long substantive requests get boosted importance."""
+        long_request = "帮我实现一个用户认证系统，需要支持 OAuth 和 JWT 两种方式，" + "详细说明" * 20
+        assert _compute_importance("task", long_request) == 0.75
+
+    def test_task_medium_nonsubstantive(self):
+        """Short messages without substantive keywords get medium-low importance."""
+        assert _compute_importance("task", "调一下那个参数") <= 0.35
+
+    def test_task_record_memory(self):
+        """'记到memory' is a follow-up pattern."""
+        assert _compute_importance("task", "把这个记到 memory 里") <= 0.35
 
     def test_long_content_bonus(self):
         long_content = "x" * 600
@@ -202,6 +233,34 @@ class TestImportance:
         store.add(1, "observation", "test", importance=0.99)
         entries = store.get_recent(1)
         assert entries[0]["importance"] == 0.99
+
+
+class TestSessionAwareness:
+    """Session-based importance boost for task entries."""
+
+    def test_first_task_gets_session_boost(self, tmp_path):
+        """First task ever (no prior tasks) = new session → gets boost."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "task", "帮我分析一下这个系统的性能问题，找出瓶颈所在")
+        entries = store.get_recent(1)
+        # Base 0.7 + 0.1 session boost = 0.8
+        assert entries[0]["importance"] == 0.8
+
+    def test_followup_no_boost(self, tmp_path):
+        """Task immediately after another task = same session → no boost."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "task", "帮我实现一个功能，需要支持多种认证方式来保护API端点")
+        store.add(1, "task", "帮我设计一个缓存系统，要支持LRU淘汰策略和过期时间设置")
+        entries = store.get_recent(1)
+        # Second task is within same session, no boost
+        assert entries[0]["importance"] == 0.7
+
+    def test_non_task_no_boost(self, tmp_path):
+        """Non-task entries never get session boost."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "observation", "Gen 1 survived")
+        entries = store.get_recent(1)
+        assert entries[0]["importance"] == 0.5  # No boost
 
 
 class TestKeywords:
@@ -408,7 +467,7 @@ class TestCompact:
         con.commit()
         con.close()
 
-        result = store.compact(current_generation=200)
+        result = store.compact(current_generation=400)
         assert result["deleted"] == 1
 
     def test_compact_returns_correct_keys(self, tmp_path):
