@@ -54,11 +54,18 @@ model = "text-embedding-3-small"
 dimensions = 256
 
 # [ring1.llm]
-# provider = "openai"         # anthropic | openai | deepseek
+# provider = "openai"         # anthropic | openai | deepseek | qwen
 # api_key_env = "OPENAI_API_KEY"
 # model = "gpt-4o"
 # max_tokens = 4096
 # api_url = ""                # custom URL override (optional)
+
+# --- Qwen 3.5 (千问 3.5) example ---
+# [ring1.llm]
+# provider = "qwen"
+# api_key_env = "DASHSCOPE_API_KEY"
+# model = "qwen3.5-plus"
+# max_tokens = 8192
 
 [ring1.telegram]
 enabled = true

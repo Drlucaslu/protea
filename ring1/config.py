@@ -24,7 +24,7 @@ class Ring1Config(NamedTuple):
     workspace_path: str = "."
     shell_timeout: int = 30
     max_tool_rounds: int = 25
-    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek" (empty = anthropic)
+    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen" (empty = anthropic)
     llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
     llm_model: str = ""          # model name (empty = claude_model)
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens
