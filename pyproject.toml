@@ -3,6 +3,13 @@ name = "protea"
 version = "0.1.0"
 description = "Self-evolving artificial life system"
 requires-python = ">=3.11"
+dependencies = [
+    "markdown2",
+    "reportlab",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

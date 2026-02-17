@@ -124,7 +124,13 @@ echo "[ok] Virtual environment ready"
 # Use venv python directly (no need to source activate)
 PY=.venv/bin/python
 
-# 4. Configure .env interactively
+# 4. Install dependencies
+echo "[..] Installing dependencies..."
+$PY -m pip install --quiet --upgrade pip
+$PY -m pip install --quiet -e ".[dev]"
+echo "[ok] Dependencies installed"
+
+# 5. Configure .env interactively
 if [ ! -f .env ]; then
     echo
     echo "=== Configuration ==="
@@ -154,7 +160,7 @@ else
     echo "[ok] .env already exists"
 fi
 
-# 5. Initialize Ring 2 git repo if needed
+# 6. Initialize Ring 2 git repo if needed
 if [ ! -d ring2/.git ]; then
     echo "[..] Initializing Ring 2 git repo..."
     git init ring2
@@ -165,16 +171,16 @@ else
     echo "[ok] Ring 2 git repo already exists"
 fi
 
-# 6. Create data/ and output/ directories
+# 7. Create data/ and output/ directories
 mkdir -p data output
 echo "[ok] data/ and output/ directories ready"
 
-# 7. Run tests
+# 8. Run tests
 echo
 echo "=== Running Tests ==="
 $PY -m pytest tests/ -v
 
-# 8. Done
+# 9. Done
 echo
 echo "=== Setup Complete ==="
 echo
