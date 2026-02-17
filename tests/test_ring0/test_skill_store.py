@@ -539,3 +539,128 @@ class TestSharedDatabase:
         assert len(fitness.get_history()) == 1
         assert memory.count() == 1
         assert skills.count() == 1
+
+
+class TestPublished:
+    """published column and related methods."""
+
+    def test_default_not_published(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="crystallized")
+        skill = store.get_by_name("s1")
+        assert skill["published"] == 0
+
+    def test_mark_published(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="crystallized")
+        store.mark_published("s1")
+        skill = store.get_by_name("s1")
+        assert skill["published"] == 1
+
+    def test_get_unpublished_filters_correctly(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        # Crystallized, high usage, not published → should appear
+        store.add("good", "desc", "tmpl", source="crystallized")
+        store.update_usage("good")
+        store.update_usage("good")
+
+        # Hub source → should NOT appear
+        store.add("from_hub", "desc", "tmpl", source="hub")
+        store.update_usage("from_hub")
+        store.update_usage("from_hub")
+
+        # Low usage → should NOT appear (below min_usage=2)
+        store.add("low_use", "desc", "tmpl", source="user")
+
+        # Already published → should NOT appear
+        store.add("published", "desc", "tmpl", source="user")
+        store.update_usage("published")
+        store.update_usage("published")
+        store.mark_published("published")
+
+        result = store.get_unpublished(min_usage=2)
+        names = [s["name"] for s in result]
+        assert "good" in names
+        assert "from_hub" not in names
+        assert "low_use" not in names
+        assert "published" not in names
+
+    def test_get_local_names(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("a", "desc", "tmpl")
+        store.add("b", "desc", "tmpl")
+        store.add("c", "desc", "tmpl")
+        store.deactivate("c")
+
+        names = store.get_local_names()
+        assert "a" in names
+        assert "b" in names
+        assert "c" not in names  # deactivated
+
+
+class TestEvictStaleEnhanced:
+    """Enhanced eviction: never-used hub skills expire after 7 days."""
+
+    def test_never_used_hub_skill_evicted_after_7_days(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("unused_hub", "desc", "tmpl", source="hub")
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-10 days') "
+                "WHERE name = 'unused_hub'"
+            )
+        evicted = store.evict_stale(days=30)
+        assert evicted == 1
+
+    def test_never_used_hub_skill_kept_within_7_days(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("fresh_hub", "desc", "tmpl", source="hub")
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+
+    def test_used_hub_skill_uses_normal_expiry(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("used_hub", "desc", "tmpl", source="hub")
+        store.update_usage("used_hub")
+        with store._connect() as con:
+            con.execute(
+                "UPDATE skills SET created_at = datetime('now', '-10 days'), "
+                "last_used_at = datetime('now', '-10 days') WHERE name = 'used_hub'"
+            )
+        # 10 days old, used — should NOT be evicted with 30-day threshold
+        evicted = store.evict_stale(days=30)
+        assert evicted == 0
+
+
+class TestSchemaMigrationPublished:
+    """Opening an old database should add published column."""
+
+    def test_migrate_adds_published(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        con = sqlite3.connect(str(db_path))
+        con.execute(
+            "CREATE TABLE skills ("
+            "  id INTEGER PRIMARY KEY,"
+            "  name TEXT NOT NULL UNIQUE,"
+            "  description TEXT NOT NULL,"
+            "  prompt_template TEXT NOT NULL,"
+            "  parameters TEXT DEFAULT '{}',"
+            "  tags TEXT DEFAULT '[]',"
+            "  source TEXT NOT NULL DEFAULT 'user',"
+            "  source_code TEXT DEFAULT '',"
+            "  usage_count INTEGER DEFAULT 0,"
+            "  active BOOLEAN DEFAULT 1,"
+            "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+            "  last_used_at TEXT DEFAULT NULL"
+            ")"
+        )
+        con.execute("INSERT INTO skills (name, description, prompt_template) VALUES ('old', 'desc', 'tmpl')")
+        con.commit()
+        con.close()
+
+        store = SkillStore(db_path)
+        skill = store.get_by_name("old")
+        assert skill is not None
+        assert skill["published"] == 0
+        store.mark_published("old")
+        assert store.get_by_name("old")["published"] == 1

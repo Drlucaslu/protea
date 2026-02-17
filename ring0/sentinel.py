@@ -334,7 +334,7 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
             try:
                 skill_data = skill_store.get_by_name(result.skill_name)
                 if skill_data:
-                    registry_client.publish(
+                    resp = registry_client.publish(
                         name=skill_data["name"],
                         description=skill_data.get("description", ""),
                         prompt_template=skill_data.get("prompt_template", ""),
@@ -342,6 +342,8 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
                         tags=skill_data.get("tags"),
                         source_code=skill_data.get("source_code", ""),
                     )
+                    if resp is not None:
+                        skill_store.mark_published(result.skill_name)
                     log.info("Published skill %r to registry", result.skill_name)
             except Exception as pub_exc:
                 log.debug("Registry publish failed (non-fatal): %s", pub_exc)
@@ -448,6 +450,29 @@ def _create_registry_client(project_root, cfg):
         return client
     except Exception as exc:
         log.debug("RegistryClient not available: %s", exc)
+        return None
+
+
+def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg):
+    """Best-effort SkillSyncer creation.  Returns None on any error."""
+    if not skill_store or not registry_client:
+        return None
+    try:
+        from ring1.skill_sync import SkillSyncer
+        sync_cfg = cfg.get("ring1", {}).get("skill_sync", {})
+        if not sync_cfg.get("enabled", True):
+            return None
+        max_discover = sync_cfg.get("max_discover_per_sync", 5)
+        syncer = SkillSyncer(
+            skill_store=skill_store,
+            registry_client=registry_client,
+            user_profiler=user_profiler,
+            max_discover=max_discover,
+        )
+        log.info("SkillSyncer created (max_discover=%d)", max_discover)
+        return syncer
+    except Exception as exc:
+        log.debug("SkillSyncer not available: %s", exc)
         return None
 
 
@@ -618,6 +643,10 @@ def run(project_root: pathlib.Path) -> None:
         if evicted:
             log.info("Evicted %d stale hub skills", evicted)
 
+    # Skill syncer — periodic publish + discover.
+    skill_syncer = _create_skill_syncer(skill_store, registry_client, user_profiler, cfg)
+    sync_interval = cfg.get("ring1", {}).get("skill_sync", {}).get("interval_sec", 7200)
+
     # Backfill gene pool from existing skills (one-time).
     if gene_pool and skill_store:
         try:
@@ -671,6 +700,7 @@ def run(project_root: pathlib.Path) -> None:
 
     last_good_hash: str | None = None
     last_crystallized_hash: str | None = None
+    last_skill_sync_time: float = 0.0  # epoch — triggers sync on first eligible moment
     skill_cap = r0["evolution"].get("skill_max_count", 100)
     proc: subprocess.Popen | None = None
 
@@ -878,6 +908,16 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Profile decay: removed %d stale topics", removed)
                         except Exception:
                             log.debug("Profile decay failed (non-fatal)", exc_info=True)
+
+                # Periodic skill sync (every sync_interval seconds, default 2 hours).
+                if skill_syncer and (time.time() - last_skill_sync_time) >= sync_interval:
+                    try:
+                        sync_result = skill_syncer.sync()
+                        log.info("Skill sync: %s", sync_result)
+                        last_skill_sync_time = time.time()
+                    except Exception:
+                        log.debug("Skill sync failed (non-fatal)", exc_info=True)
+                        last_skill_sync_time = time.time()  # avoid retry storm
 
                 params = generate_params(generation, seed)
                 log.info("Starting generation %d (params: %s)", generation, params)

@@ -67,6 +67,11 @@ dimensions = 256
 # model = "qwen3.5-plus"
 # max_tokens = 8192
 
+[ring1.skill_sync]
+enabled = true
+interval_sec = 7200          # 2 hours between sync cycles
+max_discover_per_sync = 5    # max skills to download per cycle
+
 [ring1.telegram]
 enabled = true
 
