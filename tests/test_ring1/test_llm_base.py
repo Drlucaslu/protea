@@ -48,7 +48,7 @@ class TestCreateLLMClient:
             provider="qwen", api_key="sk-test", model="qwen3.5-plus",
         )
         assert isinstance(client, OpenAIClient)
-        assert client.api_url == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        assert client.api_url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
     def test_custom_api_url(self):
         client = create_llm_client(

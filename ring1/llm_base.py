@@ -37,7 +37,7 @@ class LLMClient(abc.ABC):
 _DEFAULT_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
 }
 
 
