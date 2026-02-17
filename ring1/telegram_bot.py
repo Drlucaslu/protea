@@ -805,10 +805,13 @@ class TelegramBot:
         "/memory": "_cmd_memory",
         "/forget": "_cmd_forget",
         "/skills": "_cmd_skills",
+        "/skill": "_cmd_skill",  # Added missing command
+        "/run": "_cmd_run",      # Added missing command
         "/stop": "_cmd_stop_skill",
         "/running": "_cmd_running",
         "/background": "_cmd_background",
         "/files": "_cmd_files",
+        "/find": "_cmd_find",    # Added missing command
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:
