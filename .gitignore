@@ -82,3 +82,21 @@ self_evolving_agents_research_report.md
 ring2_enhanced_proposal.md
 
 protea.egg-info
+
+# Runtime artifacts
+.protea.pid
+protea.log
+ring_2.log
+ring2.py
+
+# Ring 2 runtime data directories
+ring2/ai_reports/
+ring2/backtest_results/
+ring2/climate_cache/
+ring2/market_data_cache/
+ring2/synthesized_skills/
+ring2/trade_history/
+ring2/trading_signals/
+
+# Ring 1 generated tools
+ring1/tools/
