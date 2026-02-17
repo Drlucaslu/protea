@@ -471,7 +471,14 @@ def run(project_root: pathlib.Path) -> None:
     commit_watcher = CommitWatcher(project_root, state.restart_event)
     threading.Thread(target=commit_watcher.run, name="commit-watcher", daemon=True).start()
 
-    generation = 0
+    # Restore generation counter from fitness database.
+    restored_gen = fitness.get_max_generation()
+    if restored_gen >= 0:
+        generation = restored_gen + 1
+        log.info("Resumed from generation %d (last recorded: %d)", generation, restored_gen)
+    else:
+        generation = 0
+
     last_good_hash: str | None = None
     last_crystallized_hash: str | None = None
     skill_cap = r0["evolution"].get("skill_max_count", 100)

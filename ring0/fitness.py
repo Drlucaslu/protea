@@ -255,6 +255,15 @@ class FitnessTracker:
                 return None
             return self._row_to_dict(row)
 
+    def get_max_generation(self) -> int:
+        """Return the highest recorded generation number, or -1 if empty."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT MAX(generation) AS max_gen FROM fitness_log"
+            ).fetchone()
+            val = row["max_gen"] if row else None
+            return val if val is not None else -1
+
     def get_history(self, limit: int = 50) -> list[dict]:
         """Return the most recent entries ordered by *id* descending."""
         with self._connect() as con:
