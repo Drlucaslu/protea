@@ -131,7 +131,7 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
     return True, plateaued
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -167,6 +167,14 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         except Exception:
             pass
 
+        # Get top genes for inheritance.
+        genes = []
+        if gene_pool:
+            try:
+                genes = gene_pool.get_top(3)
+            except Exception:
+                pass
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -180,6 +188,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             crash_logs=crash_logs,
             persistent_errors=persistent_errors,
             is_plateaued=is_plateaued,
+            gene_pool=genes,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -256,6 +265,16 @@ def _create_skill_store(db_path):
         return SkillStore(db_path)
     except Exception as exc:
         log.debug("SkillStore not available: %s", exc)
+        return None
+
+
+def _create_gene_pool(db_path):
+    """Best-effort GenePool creation.  Returns None on any error."""
+    try:
+        from ring0.gene_pool import GenePool
+        return GenePool(db_path)
+    except Exception as exc:
+        log.debug("GenePool not available: %s", exc)
         return None
 
 
@@ -384,6 +403,7 @@ def run(project_root: pathlib.Path) -> None:
     fitness = FitnessTracker(db_path)
     memory_store = _create_memory_store(db_path)
     skill_store = _create_skill_store(db_path)
+    gene_pool = _create_gene_pool(db_path)
     task_store = _create_task_store(db_path)
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
@@ -408,6 +428,15 @@ def run(project_root: pathlib.Path) -> None:
         evicted = skill_store.evict_stale()
         if evicted:
             log.info("Evicted %d stale hub skills", evicted)
+
+    # Backfill gene pool from existing skills (one-time).
+    if gene_pool and skill_store:
+        try:
+            backfilled = gene_pool.backfill(skill_store)
+            if backfilled:
+                log.info("Gene pool backfilled %d genes from skills", backfilled)
+        except Exception as exc:
+            log.debug("Gene pool backfill failed (non-fatal): %s", exc)
 
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else (lambda text: None)
@@ -536,6 +565,13 @@ def run(project_root: pathlib.Path) -> None:
                         f"Output (last 50 lines):\n{output[-1000:] if output else '(no output)'}",
                     )
 
+                # Store gene in pool (best-effort).
+                if gene_pool:
+                    try:
+                        gene_pool.add(generation, score, source)
+                    except Exception as exc:
+                        log.debug("Gene pool add failed (non-fatal): %s", exc)
+
                 # Crystallize skill (best-effort) — skip if source unchanged.
                 if skill_store:
                     import hashlib
@@ -584,6 +620,7 @@ def run(project_root: pathlib.Path) -> None:
                         skill_store=skill_store,
                         crash_logs=crash_logs,
                         is_plateaued=plateaued,
+                        gene_pool=gene_pool,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -686,6 +723,7 @@ def run(project_root: pathlib.Path) -> None:
                     skill_store=skill_store,
                     crash_logs=crash_logs,
                     is_plateaued=False,  # failure path — focus on fixing, not novelty
+                    gene_pool=gene_pool,
                 )
             if evolved:
                 state.last_evolution_time = time.time()

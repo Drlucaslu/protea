@@ -80,6 +80,7 @@ def build_evolution_prompt(
     crash_logs: list[dict] | None = None,
     persistent_errors: list[str] | None = None,
     is_plateaued: bool = False,
+    gene_pool: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -180,6 +181,19 @@ def build_evolution_prompt(
         if unused_skills:
             parts.append(f"### Never used: {', '.join(unused_skills)}")
             parts.append("Consider exploring DIFFERENT directions from these unused skills.")
+        parts.append("")
+
+    # Inherited gene patterns from best past generations.
+    if gene_pool:
+        parts.append("## Inherited Patterns (from best past generations)")
+        parts.append("Reuse or build upon these proven code patterns:")
+        for gene in gene_pool[:3]:
+            gen = gene.get("generation", "?")
+            score = gene.get("score", 0)
+            summary = gene.get("gene_summary", "")
+            if len(summary) > 300:
+                summary = summary[:297] + "..."
+            parts.append(f"- [Gen {gen}, score={score:.2f}] {summary}")
         parts.append("")
 
     # Recent crash logs (compact)

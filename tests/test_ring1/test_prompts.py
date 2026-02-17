@@ -407,6 +407,67 @@ class TestBuildEvolutionPrompt:
         assert "PLATEAUED" in user
         assert "fundamentally different" in user.lower()
 
+    def test_gene_pool_included(self):
+        gene_pool = [
+            {"generation": 42, "score": 0.92, "gene_summary": "class StreamAnalyzer:\n    \"\"\"Real-time anomaly detection\"\"\""},
+            {"generation": 38, "score": 0.89, "gene_summary": "class PackageScanner:\n    \"\"\"PyPI dependency graph\"\"\""},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=50,
+            survived=True,
+            gene_pool=gene_pool,
+        )
+        assert "Inherited Patterns" in user
+        assert "StreamAnalyzer" in user
+        assert "PackageScanner" in user
+        assert "Gen 42" in user
+        assert "0.92" in user
+
+    def test_no_gene_pool_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            gene_pool=None,
+        )
+        assert "Inherited Patterns" not in user
+
+    def test_empty_gene_pool_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            gene_pool=[],
+        )
+        assert "Inherited Patterns" not in user
+
+    def test_gene_pool_before_instructions(self):
+        gene_pool = [
+            {"generation": 1, "score": 0.80, "gene_summary": "class Foo:\n    pass"},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=2,
+            survived=True,
+            gene_pool=gene_pool,
+        )
+        gene_pos = user.index("Inherited Patterns")
+        instructions_pos = user.index("## Instructions")
+        assert gene_pos < instructions_pos
+
 
 class TestExtractPythonCode:
     def test_extracts_code_block(self):

@@ -83,6 +83,7 @@ class Evolver:
         crash_logs: list[dict] | None = None,
         persistent_errors: list[str] | None = None,
         is_plateaued: bool = False,
+        gene_pool: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -124,6 +125,7 @@ class Evolver:
             crash_logs=crash_logs,
             persistent_errors=persistent_errors,
             is_plateaued=is_plateaued,
+            gene_pool=gene_pool,
         )
 
         # 4. Call Claude API.

@@ -429,3 +429,47 @@ class TestEvolver:
         mock_prompt.assert_called_once()
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("crash_logs") is None
+
+    def test_gene_pool_passed_to_prompt_builder(self, tmp_path):
+        """gene_pool should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        gene_pool = [
+            {"generation": 5, "score": 0.90, "gene_summary": "class Foo: pass"},
+        ]
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True,
+                           gene_pool=gene_pool)
+
+        mock_prompt.assert_called_once()
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("gene_pool") == gene_pool
+
+    def test_gene_pool_default_none(self, tmp_path):
+        """Calling evolve without gene_pool should pass None."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        mock_prompt.assert_called_once()
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("gene_pool") is None
