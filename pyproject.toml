@@ -11,5 +11,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[tool.setuptools.packages.find]
+include = ["ring0*", "ring1*", "config*", "reports*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
