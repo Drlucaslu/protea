@@ -13,7 +13,7 @@ db_path = "data/protea.db"
 
 [ring0.evolution]
 seed = 42
-cooldown_sec = 900
+cooldown_sec = 1800
 skill_max_count = 100
 # Adaptive evolution: skip LLM calls when scores plateau to save tokens.
 # plateau_window = how many recent scores to check for stagnation.
@@ -29,8 +29,8 @@ max_prompt_history = 10
 
 [ring1.autonomy]
 enabled = true
-idle_threshold_sec = 120
-check_interval_sec = 60
+idle_threshold_sec = 600
+check_interval_sec = 300
 
 [ring1.tools]
 workspace_path = "."

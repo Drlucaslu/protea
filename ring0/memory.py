@@ -471,7 +471,7 @@ class MemoryStore:
 
     def _cleanup_cold(self, current_generation: int) -> int:
         """Delete old, low-importance cold entries (selective forgetting)."""
-        threshold_gen = current_generation - 100
+        threshold_gen = current_generation - 200
         with self._connect() as con:
             cur = con.execute(
                 "DELETE FROM memory WHERE tier = 'cold' "
