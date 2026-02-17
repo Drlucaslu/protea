@@ -1,6 +1,7 @@
 """Resource monitor — CPU, memory, disk usage (pure stdlib)."""
 
 import os
+import platform
 import shutil
 import subprocess
 
@@ -16,7 +17,33 @@ def get_cpu_percent() -> float:
 
 
 def get_memory_percent() -> float:
-    """Return physical memory usage percentage (macOS via vm_stat)."""
+    """Return physical memory usage percentage (supports macOS and Linux)."""
+    if platform.system() == "Darwin":
+        return _get_memory_percent_darwin()
+    return _get_memory_percent_linux()
+
+
+def _get_memory_percent_linux() -> float:
+    """Return memory usage percentage via /proc/meminfo."""
+    info: dict[str, int] = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            parts = line.split(":")
+            if len(parts) == 2:
+                key = parts[0].strip()
+                val = parts[1].strip().split()[0]  # value in kB
+                if val.isdigit():
+                    info[key] = int(val)
+    total = info.get("MemTotal", 0)
+    available = info.get("MemAvailable", 0)
+    if total == 0:
+        return 0.0
+    used = total - available
+    return round(used / total * 100, 2)
+
+
+def _get_memory_percent_darwin() -> float:
+    """Return memory usage percentage via vm_stat (macOS)."""
     out = subprocess.check_output(["vm_stat"], text=True)
     info: dict[str, int] = {}
     for line in out.splitlines():
