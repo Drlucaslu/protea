@@ -53,11 +53,35 @@ def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subp
     return proc
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its descendants (children, grandchildren, etc.)."""
+    try:
+        parent = os.waitpid(pid, os.WNOHANG)  # noqa: F841 — just reap if zombie
+    except ChildProcessError:
+        pass
+    # Walk /proc-style via sysctl on macOS or /proc on Linux.
+    # Fallback: use ``pkill -P`` which is available on both.
+    try:
+        subprocess.run(
+            ["pkill", "-TERM", "-P", str(pid)],
+            timeout=3, capture_output=True,
+        )
+        time.sleep(0.5)
+        subprocess.run(
+            ["pkill", "-KILL", "-P", str(pid)],
+            timeout=3, capture_output=True,
+        )
+    except Exception:
+        pass
+
+
 def _stop_ring2(proc: subprocess.Popen | None) -> None:
-    """Terminate the Ring 2 process if it is still running."""
+    """Terminate the Ring 2 process **and its entire child tree**."""
     if proc is None:
         return
     if proc.poll() is None:
+        # First, kill children so they don't become orphans.
+        _kill_process_tree(proc.pid)
         proc.terminate()
         try:
             proc.wait(timeout=5)
