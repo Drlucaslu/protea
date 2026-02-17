@@ -116,7 +116,7 @@ Fitness is scored 0.0–1.0 with six components:
 
 Evolved code patterns are preserved across generations via a **gene pool**. When Ring 2 survives, its source code is analysed (AST with regex fallback) to extract a compact gene summary (~200–500 tokens) containing class/function signatures and docstrings, with heartbeat boilerplate filtered out.
 
-The top 10 genes (by fitness score) are stored in SQLite. During evolution, the best 2–3 gene summaries are injected into the LLM prompt as **Inherited Patterns**, so the evolver can build upon proven code instead of starting from scratch. On first startup, existing crystallized skills are backfilled into the gene pool.
+The top 100 genes (by fitness score) are stored in SQLite. During evolution, the best 2–3 gene summaries are injected into the LLM prompt as **Inherited Patterns**, so the evolver can build upon proven code instead of starting from scratch. On first startup, existing crystallized skills are backfilled into the gene pool.
 
 ## Multi-LLM Provider Support
 

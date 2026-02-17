@@ -38,7 +38,7 @@ _SKIP_NAMES = frozenset({
 class GenePool:
     """Top-N gene storage for evolutionary inheritance."""
 
-    def __init__(self, db_path: pathlib.Path, max_size: int = 10) -> None:
+    def __init__(self, db_path: pathlib.Path, max_size: int = 100) -> None:
         self.db_path = db_path
         self.max_size = max_size
         with self._connect() as con:
