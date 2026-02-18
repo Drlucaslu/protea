@@ -53,6 +53,40 @@ class TestDenyPatterns:
         """rm -rf on a specific dir (not /) should be allowed."""
         assert _is_denied("rm -rf /tmp/mydir") is None
 
+    def test_git_pull_denied(self):
+        assert _is_denied("git pull") is not None
+        assert _is_denied("cd /root/protea && git pull") is not None
+
+    def test_git_push_denied(self):
+        assert _is_denied("git push origin main") is not None
+
+    def test_git_reset_denied(self):
+        assert _is_denied("git reset --hard HEAD~1") is not None
+
+    def test_git_readonly_allowed(self):
+        """Read-only git commands should be allowed."""
+        assert _is_denied("git status") is None
+        assert _is_denied("git log --oneline -5") is None
+        assert _is_denied("git diff") is None
+        assert _is_denied("git branch") is None
+
+    def test_kill_denied(self):
+        assert _is_denied("kill 12345") is not None
+        assert _is_denied("kill -9 12345") is not None
+
+    def test_pkill_denied(self):
+        assert _is_denied("pkill -f python") is not None
+
+    def test_killall_denied(self):
+        assert _is_denied("killall python") is not None
+
+    def test_nohup_denied(self):
+        assert _is_denied("nohup python3 run.py &") is not None
+
+    def test_run_py_denied(self):
+        assert _is_denied("python3 run.py") is not None
+        assert _is_denied("python run.py") is not None
+
 
 class TestShellTool:
     @pytest.fixture

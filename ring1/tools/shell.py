@@ -31,6 +31,13 @@ _DENY_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bchown\s+.*\s+/\s*$"),
     re.compile(r">\s*/dev/[sh]da"),
     re.compile(r"\bsystemctl\s+(?:stop|disable|mask)\b"),
+    # Process lifecycle — Sentinel/CommitWatcher manage these automatically.
+    re.compile(r"\bgit\s+(?:pull|push|reset|rebase|merge)\b"),
+    re.compile(r"\bkill\b"),
+    re.compile(r"\bpkill\b"),
+    re.compile(r"\bkillall\b"),
+    re.compile(r"\bnohup\b"),
+    re.compile(r"\bpython[23]?\s+.*\brun\.py\b"),
 ]
 
 
@@ -90,7 +97,10 @@ def make_shell_tool(workspace_path: str, timeout: int = 30) -> Tool:
             "Execute a shell command and return its output. The command runs "
             "in the workspace directory. Generated output files should be saved "
             "to the output/ subdirectory. Dangerous commands (rm -rf /, dd, "
-            "mkfs, shutdown, etc.) are blocked."
+            "mkfs, shutdown, etc.) are blocked. Code updates are handled "
+            "automatically by CommitWatcher — do NOT run git pull/push/reset "
+            "or kill/restart processes. Use git log/status/diff for read-only "
+            "git operations."
         ),
         input_schema={
             "type": "object",
