@@ -5,6 +5,7 @@ description = "Self-evolving artificial life system"
 requires-python = ">=3.11"
 dependencies = [
     "markdown2",
+    "psutil",
     "reportlab",
 ]
 
