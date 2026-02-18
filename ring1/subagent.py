@@ -88,7 +88,7 @@ class SubagentManager:
         client: LLMClient,
         registry: ToolRegistry,
         reply_fn,
-        max_concurrent: int = 3,
+        max_concurrent: int = 1,
     ) -> None:
         """
         Args:

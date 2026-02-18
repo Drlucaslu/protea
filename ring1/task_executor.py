@@ -200,7 +200,7 @@ class TaskExecutor:
         p1_enabled: bool = False,
         p1_idle_threshold_sec: int = 600,
         p1_check_interval_sec: int = 60,
-        max_tool_rounds: int = 25,
+        max_tool_rounds: int = 10,
         user_profiler=None,
         embedding_provider=None,
     ) -> None:
