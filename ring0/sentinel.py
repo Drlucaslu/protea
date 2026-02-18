@@ -23,6 +23,7 @@ from ring0.fitness import FitnessTracker, evaluate_output
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
 from ring0.memory import MemoryStore
+from ring0.output_filter import filter_ring2_output
 from ring0.parameter_seed import generate_params, params_to_dict
 from ring0.resource_monitor import check_resources
 
@@ -968,10 +969,12 @@ def run(project_root: pathlib.Path) -> None:
 
             # Record crash log and observation in memory (with deduplication).
             if memory_store:
+                # Filter output to remove system noise before storing
+                filtered_output = filter_ring2_output(output, max_lines=50) if output else "(no output)"
                 crash_content = (
                     f"Gen {generation} died after {elapsed:.0f}s.\n"
                     f"Reason: {failure_reason}\n\n"
-                    f"--- Last output ---\n{output[-2000:] if output else '(no output)'}"
+                    f"--- Last output ---\n{filtered_output}"
                 )
                 
                 # Check for duplicate crashes using fuzzy matching on failure reason
