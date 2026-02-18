@@ -179,15 +179,16 @@ def build_evolution_prompt(
             parts.append(f"- [Gen {gen}] {content}")
         parts.append("")
 
-    # Recent user tasks — guide evolution direction
+    # Recent user tasks — PRIMARY evolution signal
     if task_history:
-        parts.append("## Recent User Tasks (guide your evolution!)")
-        for task in task_history[:5]:
+        parts.append("## Recent User Tasks (HIGHEST PRIORITY — shape your evolution!)")
+        parts.append("These are REAL user requests. Your evolution MUST prioritize "
+                      "building capabilities that serve these needs:")
+        for task in task_history[:8]:
             content = task.get("content", "")
-            if len(content) > 150:
-                content = content[:150] + "..."
+            if len(content) > 200:
+                content = content[:200] + "..."
             parts.append(f"- {content}")
-        parts.append("Evolve capabilities directly useful for these tasks.")
         parts.append("")
 
     # User profile — aggregated interests and directions

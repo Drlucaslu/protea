@@ -267,24 +267,24 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             log.warning("LLM API key not configured — skipping evolution")
             return False
 
-        # Compact context to save tokens: only high-value memories.
-        # Exclude observations — they're noisy per-generation logs that
-        # crowd out useful reflections, directives, and task history.
+        # Compact context: directives and 1 reflection only.
+        # Reflections/crash_logs are machine-generated with low priority;
+        # user tasks are the primary evolution signal.
         memories = []
         if memory_store:
             try:
-                for t in ("reflection", "directive", "crash_log"):
-                    memories.extend(memory_store.get_by_type(t, limit=2))
+                for t in ("directive", "reflection"):
+                    memories.extend(memory_store.get_by_type(t, limit=1))
                 memories.sort(key=lambda m: m.get("id", 0), reverse=True)
-                memories = memories[:3]
+                memories = memories[:2]
             except Exception:
                 memories = []
 
-        # Gather task history and skills for directed evolution.
+        # User task history — primary evolution signal, higher limit.
         task_history = []
         if memory_store:
             try:
-                task_history = memory_store.get_by_type("task", limit=5)
+                task_history = memory_store.get_by_type("task", limit=8)
             except Exception:
                 pass
 

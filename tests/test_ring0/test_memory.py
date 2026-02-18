@@ -179,7 +179,7 @@ class TestImportance:
         assert _compute_importance("directive", "short") == 0.9
 
     def test_crash_log(self):
-        assert _compute_importance("crash_log", "short") == 0.65
+        assert _compute_importance("crash_log", "short") == 0.4
 
     def test_task_substantive(self):
         """Substantive task with enough length gets high importance."""
@@ -217,7 +217,7 @@ class TestImportance:
 
     def test_long_content_bonus(self):
         long_content = "x" * 600
-        assert _compute_importance("observation", long_content) == 0.55
+        assert _compute_importance("observation", long_content) == 0.35
 
     def test_unknown_type_defaults(self):
         assert _compute_importance("custom", "short") == 0.5
@@ -260,7 +260,7 @@ class TestSessionAwareness:
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "Gen 1 survived")
         entries = store.get_recent(1)
-        assert entries[0]["importance"] == 0.5  # No boost
+        assert entries[0]["importance"] == 0.3  # observation base, no boost
 
 
 class TestKeywords:

@@ -37,12 +37,12 @@ _MIGRATIONS = [
 # Importance base scores by entry type.
 _IMPORTANCE_BASE: dict[str, float] = {
     "directive": 0.9,
-    "crash_log": 0.65,  # Lowered from 0.8 to allow cleanup of repetitive crashes
-    "task": 0.7,
-    "reflection": 0.6,
+    "task": 0.7,          # User input — primary evolution signal
     "p1_task": 0.5,
-    "observation": 0.5,
-    "evolution_intent": 0.35,  # Lowered from 0.4 for more aggressive cleanup
+    "crash_log": 0.4,     # Machine-generated — only useful for immediate next evolution
+    "reflection": 0.4,    # Machine-generated — repetitive, compacts aggressively
+    "observation": 0.3,
+    "evolution_intent": 0.3,
 }
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -174,12 +174,15 @@ def _compute_importance(entry_type: str, content: str) -> float:
         
         # Generic/repetitive failures → lower importance
         if "clean exit but heartbeat lost" in content_lower:
-            return 0.50  # Very common, less actionable
-        
+            return 0.30  # Very common, not actionable
+
+        if "killed by signal sigterm" in content_lower:
+            return 0.30  # Normal shutdown
+
         if "timeout" in content_lower or "timed out" in content_lower:
-            return 0.55
-        
-        # Novel crashes → higher importance
+            return 0.35
+
+        # Novel crashes with tracebacks → slightly higher
         novel_indicators = [
             "traceback",
             "exception:",
@@ -187,9 +190,9 @@ def _compute_importance(entry_type: str, content: str) -> float:
             "memory error",
             "assertion failed",
         ]
-        
+
         if any(indicator in content_lower for indicator in novel_indicators):
-            base = min(base + 0.10, 0.75)
+            base = min(base + 0.10, 0.55)
         
         return round(base, 2)
 
@@ -346,6 +349,10 @@ class MemoryStore(SQLiteStore):
             importance = min(importance + 0.1, 1.0)
         return round(importance, 2)
 
+    # Machine-generated types use a lower similarity threshold because they
+    # repeat the same patterns with minor generation-number variations.
+    _MACHINE_TYPES = frozenset({"reflection", "crash_log", "evolution_intent", "p1_task"})
+
     def _is_recent_duplicate(
         self,
         entry_type: str,
@@ -357,10 +364,13 @@ class MemoryStore(SQLiteStore):
 
         For ``task`` entries only exact (case-insensitive) matching is used,
         because users may phrase legitimately different requests in similar
-        ways.  For all other types fuzzy matching via SequenceMatcher catches
-        near-duplicates such as repetitive reflections or crash logs.
+        ways.  Machine-generated types (reflection, crash_log, etc.) use a
+        lower fuzzy threshold (0.70) to aggressively suppress repetition.
         """
         from difflib import SequenceMatcher
+
+        # Machine-generated content is highly repetitive — lower threshold.
+        threshold = 0.70 if entry_type in self._MACHINE_TYPES else similarity_threshold
 
         recent = self.get_by_type(entry_type, limit=lookback)
         content_clean = content.strip().lower()
@@ -379,7 +389,7 @@ class MemoryStore(SQLiteStore):
                 similarity = SequenceMatcher(
                     None, content_clean, entry_content,
                 ).ratio()
-                if similarity >= similarity_threshold:
+                if similarity >= threshold:
                     return True
 
         return False
