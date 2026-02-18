@@ -180,6 +180,13 @@ Skill tools:
 - edit_skill: Edit a skill's source code using search-and-replace (old_string must be unique).
   After editing, use run_skill to restart the skill with the updated code.
 
+Schedule tool:
+- manage_schedule: Create, list, remove, enable, or disable scheduled/recurring tasks.
+  Use when the user wants timers, reminders, cron jobs, or repeating tasks.
+  Actions: create (needs name, cron_expr, task_text), list, remove, enable, disable.
+  For cron: use 5-field cron expressions (e.g. "*/5 * * * *" = every 5 minutes).
+  For one-shot: set schedule_type="once" and cron_expr to an ISO datetime.
+
 Use web tools when the user's request requires current information from the web.
 Use file/shell tools when the user asks to read, modify, or explore files and code.
 Use the message tool to keep the user informed during long operations.
@@ -782,6 +789,7 @@ def create_executor(
     registry_client=None,
     user_profiler=None,
     embedding_provider=None,
+    scheduled_store=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -808,6 +816,7 @@ def create_executor(
         skill_store=skill_store,
         skill_runner=skill_runner,
         registry_client=registry_client,
+        scheduled_store=scheduled_store,
     )
     subagent_mgr = SubagentManager(client, base_registry, reply_fn)
 
@@ -820,6 +829,7 @@ def create_executor(
         skill_store=skill_store,
         skill_runner=skill_runner,
         registry_client=registry_client,
+        scheduled_store=scheduled_store,
     )
 
     prefer_local_skills = getattr(config, "prefer_local_skills", True)
