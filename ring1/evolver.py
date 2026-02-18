@@ -23,6 +23,7 @@ class EvolutionResult(NamedTuple):
     success: bool
     reason: str
     new_source: str  # empty string on failure
+    metadata: dict = {}  # {"intent": ..., "signals": [...], "blast_radius": {...}}
 
 
 def validate_ring2_code(source: str) -> tuple[bool, str]:
@@ -84,6 +85,8 @@ class Evolver:
         persistent_errors: list[str] | None = None,
         is_plateaued: bool = False,
         gene_pool: list[dict] | None = None,
+        evolution_intent: dict | None = None,
+        user_profile_summary: str = "",
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -126,6 +129,8 @@ class Evolver:
             persistent_errors=persistent_errors,
             is_plateaued=is_plateaued,
             gene_pool=gene_pool,
+            evolution_intent=evolution_intent,
+            user_profile_summary=user_profile_summary,
         )
 
         # 4. Call Claude API.
@@ -160,4 +165,27 @@ class Evolver:
         # 8. Write.
         main_py.write_text(new_source)
         log.info("Evolution gen-%d: new code written (%d bytes)", generation, len(new_source))
-        return EvolutionResult(True, "OK", new_source)
+
+        # 9. Compute blast radius and build metadata.
+        from ring0.evolution_intent import compute_blast_radius
+
+        blast_radius = compute_blast_radius(current_source, new_source)
+        metadata = (
+            {**evolution_intent, "blast_radius": blast_radius}
+            if evolution_intent
+            else {"blast_radius": blast_radius}
+        )
+
+        # Store evolution intent in memory.
+        if self.memory_store and evolution_intent:
+            try:
+                self.memory_store.add(
+                    generation,
+                    "evolution_intent",
+                    f"{evolution_intent['intent']}: {', '.join(evolution_intent['signals'])}",
+                    metadata=metadata,
+                )
+            except Exception:
+                log.debug("Failed to store evolution intent", exc_info=True)
+
+        return EvolutionResult(True, "OK", new_source, metadata)

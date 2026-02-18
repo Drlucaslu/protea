@@ -201,6 +201,8 @@ class TaskExecutor:
         p1_idle_threshold_sec: int = 600,
         p1_check_interval_sec: int = 60,
         max_tool_rounds: int = 25,
+        user_profiler=None,
+        embedding_provider=None,
     ) -> None:
         """
         Args:
@@ -216,6 +218,8 @@ class TaskExecutor:
             p1_idle_threshold_sec: Seconds of idle before triggering P1.
             p1_check_interval_sec: Minimum seconds between P1 checks.
             max_tool_rounds: Maximum LLM tool-call round-trips.
+            user_profiler: Optional UserProfiler for interest tracking.
+            embedding_provider: Optional EmbeddingProvider for semantic vectors.
         """
         self.state = state
         self.client = client
@@ -229,6 +233,8 @@ class TaskExecutor:
         self.p1_idle_threshold_sec = p1_idle_threshold_sec
         self.p1_check_interval_sec = p1_check_interval_sec
         self.max_tool_rounds = max_tool_rounds
+        self.user_profiler = user_profiler
+        self.embedding_provider = embedding_provider
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
@@ -384,21 +390,46 @@ class TaskExecutor:
                 except Exception:
                     log.debug("Failed to mark task completed", exc_info=True)
             log.info("P0 task done (%.1fs): %s", duration, response[:80])
-            # Record task in memory
+            # Record task in memory (with optional embedding).
             if self.memory_store:
                 try:
                     snap = self.state.snapshot()
-                    self.memory_store.add(
-                        generation=snap.get("generation", 0),
-                        entry_type="task",
-                        content=task.text,
-                        metadata={
-                            "response_summary": response[:200],
-                            "duration_sec": round(duration, 2),
-                        },
-                    )
+                    embedding = None
+                    if self.embedding_provider:
+                        try:
+                            vecs = self.embedding_provider.embed([task.text])
+                            embedding = vecs[0] if vecs else None
+                        except Exception:
+                            log.debug("Embedding generation failed", exc_info=True)
+                    if embedding is not None:
+                        self.memory_store.add_with_embedding(
+                            generation=snap.get("generation", 0),
+                            entry_type="task",
+                            content=task.text,
+                            metadata={
+                                "response_summary": response[:200],
+                                "duration_sec": round(duration, 2),
+                            },
+                            embedding=embedding,
+                        )
+                    else:
+                        self.memory_store.add(
+                            generation=snap.get("generation", 0),
+                            entry_type="task",
+                            content=task.text,
+                            metadata={
+                                "response_summary": response[:200],
+                                "duration_sec": round(duration, 2),
+                            },
+                        )
                 except Exception:
                     log.debug("Failed to record task in memory", exc_info=True)
+            # Update user profile.
+            if self.user_profiler:
+                try:
+                    self.user_profiler.update_from_task(task.text, response[:200])
+                except Exception:
+                    log.debug("Failed to update user profile", exc_info=True)
 
     def _check_p1_opportunity(self) -> None:
         """Check if we should trigger a P1 autonomous task."""
@@ -561,6 +592,8 @@ def create_executor(
     skill_runner=None,
     task_store=None,
     registry_client=None,
+    user_profiler=None,
+    embedding_provider=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -611,6 +644,8 @@ def create_executor(
         p1_idle_threshold_sec=config.p1_idle_threshold_sec,
         p1_check_interval_sec=config.p1_check_interval_sec,
         max_tool_rounds=max_tool_rounds,
+        user_profiler=user_profiler,
+        embedding_provider=embedding_provider,
     )
     executor.subagent_manager = subagent_mgr
     return executor

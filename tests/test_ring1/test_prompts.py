@@ -3,9 +3,11 @@
 from ring1.prompts import (
     build_crystallize_prompt,
     build_evolution_prompt,
+    build_memory_curation_prompt,
     extract_python_code,
     extract_reflection,
     parse_crystallize_response,
+    MEMORY_CURATION_SYSTEM_PROMPT,
 )
 
 
@@ -469,6 +471,108 @@ class TestBuildEvolutionPrompt:
         assert gene_pos < instructions_pos
 
 
+class TestEvolutionIntentInPrompt:
+    """Verify ## Evolution Intent section when evolution_intent is provided."""
+
+    def test_repair_intent_section(self):
+        intent = {"intent": "repair", "signals": ["TypeError", "KeyError"]}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=5,
+            survived=False,
+            evolution_intent=intent,
+        )
+        assert "## Evolution Intent: REPAIR" in user
+        assert "FIX" in user
+        assert "- TypeError" in user
+        assert "- KeyError" in user
+        # Legacy ## Instructions should NOT appear.
+        assert "## Instructions" not in user
+
+    def test_explore_intent_section(self):
+        intent = {"intent": "explore", "signals": ["plateau"]}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            is_plateaued=True,
+            evolution_intent=intent,
+        )
+        assert "## Evolution Intent: EXPLORE" in user
+        assert "PLATEAUED" in user
+        assert "## Instructions" not in user
+
+    def test_adapt_intent_section(self):
+        intent = {"intent": "adapt", "signals": ["directive: make a game"]}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=3,
+            survived=True,
+            directive="make a game",
+            evolution_intent=intent,
+        )
+        assert "## Evolution Intent: ADAPT" in user
+        assert "directive" in user.lower()
+        assert "## Instructions" not in user
+        # User Directive section should still appear.
+        assert "## User Directive" in user
+        assert "make a game" in user
+
+    def test_optimize_intent_section(self):
+        intent = {"intent": "optimize", "signals": ["survived"]}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=7,
+            survived=True,
+            evolution_intent=intent,
+        )
+        assert "## Evolution Intent: OPTIMIZE" in user
+        assert "survived" in user.lower()
+        assert "## Instructions" not in user
+
+    def test_no_intent_falls_back_to_instructions(self):
+        """Without evolution_intent, legacy ## Instructions section is used."""
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=1,
+            survived=True,
+        )
+        assert "## Instructions" in user
+        assert "## Evolution Intent" not in user
+
+    def test_intent_before_user_directive(self):
+        """Evolution Intent section should appear before User Directive."""
+        intent = {"intent": "adapt", "signals": ["directive: test"]}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=1,
+            survived=True,
+            directive="test",
+            evolution_intent=intent,
+        )
+        intent_pos = user.index("## Evolution Intent")
+        directive_pos = user.index("## User Directive")
+        assert intent_pos < directive_pos
+
+
 class TestExtractPythonCode:
     def test_extracts_code_block(self):
         response = 'Some text\n```python\nprint("hello")\n```\nMore text'
@@ -665,3 +769,100 @@ class TestParseCrystallizeResponse:
 
     def test_missing_action_returns_none(self):
         assert parse_crystallize_response('{"name": "x"}') is None
+
+
+class TestUserProfileInEvolution:
+    """Verify user_profile_summary parameter in build_evolution_prompt."""
+
+    def test_profile_included(self):
+        summary = "User interests: coding (45%), data (25%)\nTop topics: python, pandas"
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            user_profile_summary=summary,
+        )
+        assert "## User Profile" in user
+        assert "coding (45%)" in user
+        assert "Align evolution" in user
+
+    def test_empty_profile_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            user_profile_summary="",
+        )
+        assert "## User Profile" not in user
+
+    def test_default_profile_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+        )
+        assert "## User Profile" not in user
+
+    def test_profile_after_tasks_before_skills(self):
+        task_history = [{"content": "test task"}]
+        skills = [{"name": "s", "description": "d", "usage_count": 0}]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            task_history=task_history,
+            skills=skills,
+            user_profile_summary="User interests: coding (100%)",
+        )
+        task_pos = user.index("Recent User Tasks")
+        profile_pos = user.index("User Profile")
+        skills_pos = user.index("Existing Skills")
+        assert task_pos < profile_pos < skills_pos
+
+
+class TestMemoryCurationPrompt:
+    """Verify build_memory_curation_prompt."""
+
+    def test_returns_tuple(self):
+        candidates = [
+            {"id": 1, "entry_type": "task", "content": "test", "importance": 0.7},
+        ]
+        system, user = build_memory_curation_prompt(candidates)
+        assert isinstance(system, str)
+        assert isinstance(user, str)
+
+    def test_system_has_criteria(self):
+        assert "keep" in MEMORY_CURATION_SYSTEM_PROMPT
+        assert "discard" in MEMORY_CURATION_SYSTEM_PROMPT
+        assert "summarize" in MEMORY_CURATION_SYSTEM_PROMPT
+
+    def test_user_contains_entries(self):
+        candidates = [
+            {"id": 1, "entry_type": "task", "content": "debug python", "importance": 0.7},
+            {"id": 2, "entry_type": "observation", "content": "survived 120s", "importance": 0.5},
+        ]
+        _, user = build_memory_curation_prompt(candidates)
+        assert "ID 1" in user
+        assert "ID 2" in user
+        assert "debug python" in user
+        assert "Total: 2" in user
+
+    def test_truncates_long_content(self):
+        candidates = [
+            {"id": 1, "entry_type": "task", "content": "x" * 500, "importance": 0.5},
+        ]
+        _, user = build_memory_curation_prompt(candidates)
+        assert "..." in user
+        assert len(user) < 500

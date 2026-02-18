@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS skills (
             con.execute("ALTER TABLE skills ADD COLUMN source_code TEXT DEFAULT ''")
         if "last_used_at" not in cols:
             con.execute("ALTER TABLE skills ADD COLUMN last_used_at TEXT DEFAULT NULL")
+        if "published" not in cols:
+            con.execute("ALTER TABLE skills ADD COLUMN published BOOLEAN DEFAULT 0")
 
     @staticmethod
     def _row_to_dict(row) -> dict:
@@ -193,18 +195,62 @@ CREATE TABLE IF NOT EXISTS skills (
             source_code=skill_data.get("source_code", ""),
         )
 
+    def get_unpublished(self, min_usage: int = 2) -> list[dict]:
+        """Return active, locally-created skills not yet published to the Hub.
+
+        Only returns skills with usage_count >= *min_usage* to ensure quality.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM skills WHERE active = 1 "
+                "AND source IN ('crystallized', 'user') "
+                "AND published = 0 "
+                "AND usage_count >= ? "
+                "ORDER BY usage_count DESC",
+                (min_usage,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def mark_published(self, name: str) -> None:
+        """Mark a skill as published to the Hub."""
+        with self._connect() as con:
+            con.execute(
+                "UPDATE skills SET published = 1 WHERE name = ?", (name,),
+            )
+
+    def get_local_names(self) -> set[str]:
+        """Return names of all active skills (for dedup during discovery)."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT name FROM skills WHERE active = 1",
+            ).fetchall()
+            return {r["name"] for r in rows}
+
     def evict_stale(self, days: int = 30) -> int:
         """Remove hub-sourced skills unused for more than *days* days.
 
+        Hub skills that have *never* been used (usage_count == 0) are evicted
+        after 7 days instead of *days* to save space.
         Locally crystallized skills (source != 'hub') are never evicted.
         Returns the number of skills removed.
         """
         with self._connect() as con:
-            cur = con.execute(
-                "DELETE FROM skills WHERE source = 'hub' AND ("
+            # Never-used hub skills: 7-day expiry.
+            cur1 = con.execute(
+                "DELETE FROM skills WHERE source = 'hub' "
+                "AND usage_count = 0 AND ("
+                "  last_used_at IS NULL AND created_at < datetime('now', '-7 days')"
+                "  OR last_used_at < datetime('now', '-7 days')"
+                ")",
+            )
+            count = cur1.rowcount
+            # Used hub skills: normal expiry.
+            cur2 = con.execute(
+                "DELETE FROM skills WHERE source = 'hub' "
+                "AND usage_count > 0 AND ("
                 "  last_used_at IS NULL AND created_at < datetime('now', ?)"
                 "  OR last_used_at < datetime('now', ?)"
                 ")",
                 (f"-{days} days", f"-{days} days"),
             )
-            return cur.rowcount
+            return count + cur2.rowcount

@@ -24,7 +24,7 @@ class Ring1Config(NamedTuple):
     workspace_path: str = "."
     shell_timeout: int = 30
     max_tool_rounds: int = 25
-    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek" (empty = anthropic)
+    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen" (empty = anthropic)
     llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
     llm_model: str = ""          # model name (empty = claude_model)
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens
@@ -125,9 +125,12 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         workspace_path=tools.get("workspace_path", "."),
         shell_timeout=tools.get("shell_timeout", 30),
         max_tool_rounds=tools.get("max_tool_rounds", 25),
-        llm_provider=llm.get("provider", ""),
-        llm_api_key_env=llm.get("api_key_env", ""),
-        llm_model=llm.get("model", ""),
-        llm_max_tokens=llm.get("max_tokens", 0),
-        llm_api_url=llm.get("api_url", ""),
+        # LLM provider config: env vars (LLM_*) override config.toml [ring1.llm].
+        # This allows per-machine provider selection via .env while sharing
+        # the same config.toml across nodes.
+        llm_provider=os.environ.get("LLM_PROVIDER", "") or llm.get("provider", ""),
+        llm_api_key_env=os.environ.get("LLM_API_KEY_ENV", "") or llm.get("api_key_env", ""),
+        llm_model=os.environ.get("LLM_MODEL", "") or llm.get("model", ""),
+        llm_max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0") or 0) or llm.get("max_tokens", 0),
+        llm_api_url=os.environ.get("LLM_API_URL", "") or llm.get("api_url", ""),
     )

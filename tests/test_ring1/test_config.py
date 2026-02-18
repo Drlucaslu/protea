@@ -230,3 +230,98 @@ class TestLoadRing1Config:
         assert cfg.p1_enabled is False
         assert cfg.p1_idle_threshold_sec == 300
         assert cfg.p1_check_interval_sec == 30
+
+
+class TestLlmEnvOverride:
+    """LLM_* env vars should override [ring1.llm] from config.toml."""
+
+    _LLM_ENV_KEYS = ("LLM_PROVIDER", "LLM_API_KEY_ENV", "LLM_MODEL",
+                      "LLM_MAX_TOKENS", "LLM_API_URL")
+
+    def _make_project(self, tmp_path, toml_extra="", env_lines=""):
+        cfg_dir = tmp_path / "config"
+        cfg_dir.mkdir()
+        toml_content = (
+            "[ring0]\nheartbeat_interval_sec = 2\nheartbeat_timeout_sec = 6\n"
+            "max_cpu_percent = 80.0\nmax_memory_percent = 80.0\nmax_disk_percent = 90.0\n"
+            '[ring0.git]\nring2_path = "ring2"\n'
+            '[ring0.fitness]\ndb_path = "data/protea.db"\n'
+            "[ring0.evolution]\nseed = 42\n"
+        )
+        toml_content += toml_extra
+        (cfg_dir / "config.toml").write_text(toml_content)
+        if env_lines:
+            (tmp_path / ".env").write_text(env_lines)
+        return tmp_path
+
+    def _cleanup(self):
+        for key in self._LLM_ENV_KEYS:
+            os.environ.pop(key, None)
+        for key in ("CLAUDE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+            os.environ.pop(key, None)
+
+    def test_env_overrides_toml(self, tmp_path):
+        """LLM_PROVIDER env var takes precedence over config.toml."""
+        extra = '\n[ring1.llm]\nprovider = "qwen"\napi_key_env = "QWEN_KEY"\nmodel = "qwen3.5-plus"\n'
+        root = self._make_project(tmp_path, toml_extra=extra)
+        self._cleanup()
+        os.environ["LLM_PROVIDER"] = "deepseek"
+        os.environ["LLM_API_KEY_ENV"] = "DS_KEY"
+        os.environ["LLM_MODEL"] = "deepseek-chat"
+        try:
+            cfg = load_ring1_config(root)
+            assert cfg.llm_provider == "deepseek"
+            assert cfg.llm_api_key_env == "DS_KEY"
+            assert cfg.llm_model == "deepseek-chat"
+        finally:
+            self._cleanup()
+
+    def test_toml_used_when_no_env(self, tmp_path):
+        """Without LLM_* env vars, config.toml values are used."""
+        extra = '\n[ring1.llm]\nprovider = "qwen"\napi_key_env = "QWEN_KEY"\nmodel = "qwen3.5-plus"\n'
+        root = self._make_project(tmp_path, toml_extra=extra)
+        self._cleanup()
+        try:
+            cfg = load_ring1_config(root)
+            assert cfg.llm_provider == "qwen"
+            assert cfg.llm_api_key_env == "QWEN_KEY"
+            assert cfg.llm_model == "qwen3.5-plus"
+        finally:
+            self._cleanup()
+
+    def test_env_empty_falls_through_to_toml(self, tmp_path):
+        """Empty LLM_* env vars don't override toml values."""
+        extra = '\n[ring1.llm]\nprovider = "qwen"\n'
+        root = self._make_project(tmp_path, toml_extra=extra)
+        self._cleanup()
+        os.environ["LLM_PROVIDER"] = ""
+        try:
+            cfg = load_ring1_config(root)
+            assert cfg.llm_provider == "qwen"
+        finally:
+            self._cleanup()
+
+    def test_max_tokens_env_override(self, tmp_path):
+        """LLM_MAX_TOKENS env var overrides toml value."""
+        extra = '\n[ring1.llm]\nprovider = "qwen"\nmax_tokens = 4096\n'
+        root = self._make_project(tmp_path, toml_extra=extra)
+        self._cleanup()
+        os.environ["LLM_MAX_TOKENS"] = "16384"
+        try:
+            cfg = load_ring1_config(root)
+            assert cfg.llm_max_tokens == 16384
+        finally:
+            self._cleanup()
+
+    def test_no_toml_no_env_defaults_empty(self, tmp_path):
+        """Without [ring1.llm] and no LLM_* env vars, fields are empty/zero."""
+        root = self._make_project(tmp_path)
+        self._cleanup()
+        try:
+            cfg = load_ring1_config(root)
+            assert cfg.llm_provider == ""
+            assert cfg.llm_api_key_env == ""
+            assert cfg.llm_model == ""
+            assert cfg.llm_max_tokens == 0
+        finally:
+            self._cleanup()

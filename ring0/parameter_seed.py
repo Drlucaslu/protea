@@ -13,7 +13,7 @@ class EvolutionParams(NamedTuple):
     seed: int
     mutation_rate: float       # 0.01 .. 0.50
     population_size: int       # 2 .. 10
-    max_runtime_sec: int       # 240 .. 360
+    max_runtime_sec: int       # 600 (fixed)
     crossover_rate: float      # 0.1 .. 0.9
 
 
@@ -25,7 +25,7 @@ def generate_params(generation: int, seed: int) -> EvolutionParams:
         seed=seed,
         mutation_rate=round(rng.uniform(0.01, 0.50), 4),
         population_size=rng.randint(2, 10),
-        max_runtime_sec=rng.randint(240, 360),
+        max_runtime_sec=600,
         crossover_rate=round(rng.uniform(0.1, 0.9), 4),
     )
 

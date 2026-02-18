@@ -7,7 +7,7 @@ Self-evolving artificial life system. The program is a living organism — it ca
 Three-ring design running on a single Mac mini:
 
 - **Ring 0 (Sentinel)** — Immutable physics layer. Supervises Ring 2, performs heartbeat monitoring, git snapshots, rollback on failure, fitness tracking, and persistent storage (SQLite). Pure Python stdlib.
-- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal. Supports multiple LLM providers (Anthropic, OpenAI, DeepSeek) for mutations, user tasks, and autonomous P1 work.
+- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal, dashboard. Supports multiple LLM providers (Anthropic, OpenAI, DeepSeek, Qwen) for mutations, user tasks, and autonomous P1 work.
 - **Ring 2 (Evolvable Code)** — The living code that evolves. Managed in its own git repo by Ring 0.
 
 ## Prerequisites
@@ -39,10 +39,11 @@ protea/
 │   ├── heartbeat.py            # Ring 2 heartbeat monitoring
 │   ├── git_manager.py          # Git snapshot + rollback
 │   ├── fitness.py              # Fitness scoring + novelty + plateau detection
-│   ├── memory.py               # Experiential memory store (SQLite)
+│   ├── memory.py               # Tiered memory store (hot/warm/cold) + vector search
 │   ├── skill_store.py          # Crystallized skill store (SQLite)
 │   ├── gene_pool.py            # Gene pool — top-N evolutionary inheritance (SQLite)
 │   ├── task_store.py           # Task persistence store (SQLite)
+│   ├── user_profile.py         # User profiling — topic extraction + interest decay
 │   ├── parameter_seed.py       # Deterministic parameter generation
 │   ├── resource_monitor.py     # CPU/memory/disk monitoring
 │   └── commit_watcher.py       # Auto-restart on new commits
@@ -53,8 +54,11 @@ protea/
 │   ├── crystallizer.py         # Skill crystallization from surviving code
 │   ├── llm_base.py             # LLM client ABC + factory
 │   ├── llm_client.py           # Anthropic Claude client
-│   ├── llm_openai.py           # OpenAI / DeepSeek client
+│   ├── llm_openai.py           # OpenAI / DeepSeek / Qwen client
 │   ├── task_executor.py        # P0 user tasks + P1 autonomous tasks
+│   ├── dashboard.py            # System dashboard (memory, skills, profile, intent)
+│   ├── memory_curator.py       # LLM-assisted memory curation (warm→cold)
+│   ├── embeddings.py           # Embedding provider (OpenAI / NoOp)
 │   ├── telegram_bot.py         # Telegram bot (commands + free-text)
 │   ├── telegram.py             # Telegram notifier (one-way)
 │   ├── skill_portal.py         # Web dashboard for skills
@@ -79,7 +83,7 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 918 tests
+├── tests/                      # 1098 tests
 │   ├── test_ring0/             # Ring 0 unit tests
 │   └── test_ring1/             # Ring 1 unit tests
 ├── .github/workflows/ci.yml   # CI (Python 3.11 + 3.13)
@@ -127,15 +131,57 @@ Protea supports multiple LLM providers via a unified client interface:
 | Anthropic (default) | `CLAUDE_API_KEY` env var | claude-sonnet-4-5 |
 | OpenAI | `[ring1.llm]` section | gpt-4o |
 | DeepSeek | `[ring1.llm]` section | deepseek-chat |
+| Qwen (千问) | `[ring1.llm]` section | qwen3.5-plus |
 
 To use a non-Anthropic provider, add to `config/config.toml`:
 
 ```toml
+# DeepSeek
 [ring1.llm]
 provider = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
 model = "deepseek-chat"
+
+# Qwen 3.5 (千问 3.5)
+[ring1.llm]
+provider = "qwen"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-plus"
+max_tokens = 8192
 ```
+
+## Long-Term Memory
+
+Three-tier memory system with importance scoring and selective forgetting:
+
+| Tier | Retention | Description |
+|------|-----------|-------------|
+| Hot | Recent 10 generations | Active memories, full fidelity |
+| Warm | 10–30 generations | Compacted by type, top-3 per group kept |
+| Cold | 30–100 generations | LLM-curated (keep / summarize / discard) |
+| Forgotten | >100 generations | Deleted if importance < 0.3 |
+
+Importance is scored automatically by entry type (directive=0.9, crash_log=0.8, task=0.7, etc.). Compaction runs every 10 generations. The warm→cold transition uses **LLM-assisted curation** — a structured prompt asks the model which memories to keep, summarize, or discard, with rule-based fallback on failure.
+
+**Semantic search** (optional): when an OpenAI embedding provider is configured, memories are stored with 256-dim vectors. Retrieval uses hybrid scoring (0.4 keyword + 0.6 cosine similarity).
+
+## User Profiling
+
+Keyword-based topic extraction from task history across 9 categories (coding, math, data, web, ai, system, creative, finance, research). Topic weights decay over time (`0.95^cycle`), so the profile reflects recent interests. The profile summary is injected into evolution prompts to guide mutations toward the user's active domains.
+
+## Dashboard
+
+Local web UI at `http://localhost:8899` with 5 pages:
+
+| Page | Content |
+|------|---------|
+| Overview | Stat cards (memory/skills/intent/profile) + SVG fitness chart |
+| Memory | Browsable table with tier/type filters |
+| Skills | Card grid with usage counts and tags |
+| Intent | Vertical timeline of evolution intents |
+| Profile | Category bar chart + interaction stats |
+
+All pages have JSON API counterparts (`/api/memory`, `/api/skills`, etc.). Auto-refreshes every 10 seconds.
 
 ## Telegram Commands
 
@@ -172,20 +218,26 @@ All settings live in `config/config.toml`:
 - **ring0**: heartbeat intervals, resource limits, evolution seed/cooldown, plateau detection, skill cap
 - **ring1** (via env): `CLAUDE_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - **ring1.llm**: optional multi-provider LLM config (provider, model, api_key_env, api_url)
+- **ring1.dashboard**: local dashboard (enabled, host, port)
+- **ring1.embeddings**: optional vector search (provider, model, dimensions)
 - P1 autonomous tasks: idle threshold, check interval, enable/disable
 
 ## Status
 
 - [x] Ring 0 Sentinel — heartbeat, git, fitness (novelty + functional scoring), memory, skills, task persistence
 - [x] Ring 1 Evolution — LLM mutations, adaptive evolution, crystallization, P0/P1 tasks
-- [x] Multi-LLM — Anthropic, OpenAI, DeepSeek via unified client
+- [x] Multi-LLM — Anthropic, OpenAI, DeepSeek, Qwen via unified client
 - [x] Telegram Bot — bidirectional commands + free-text tasks
 - [x] Skill Portal — web dashboard
+- [x] Dashboard — system state visualization (memory, skills, profile, intent)
+- [x] Long-term memory — tiered storage, importance scoring, LLM-curated compaction
+- [x] User profiling — interest extraction, weight decay, evolution guidance
+- [x] Semantic search — optional vector embeddings + hybrid retrieval
 - [x] CommitWatcher — auto-restart on deploy
 - [x] Gene Pool — AST-based code inheritance across generations
 - [x] Task persistence — survives restarts via SQLite
 - [x] CI — GitHub Actions (Python 3.11 + 3.13)
-- [x] 918 tests passing
+- [x] 1098 tests passing
 
 ## Registry
 

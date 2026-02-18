@@ -13,6 +13,7 @@ import hashlib
 import logging
 import pathlib
 import re
+import subprocess
 
 from ring0.sqlite_store import SQLiteStore
 
@@ -22,6 +23,13 @@ log = logging.getLogger("protea.gene_pool")
 _SKIP_NAMES = frozenset({
     "heartbeat_loop", "write_heartbeat", "main", "_heartbeat_loop",
     "heartbeat_thread", "start_heartbeat", "_write_heartbeat",
+})
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or",
+    "is", "it", "by", "as", "be", "do", "if", "no", "so", "up", "from",
+    "with", "that", "this", "not", "but", "are", "was", "has", "its",
+    "self", "def", "class", "return", "none", "true", "false", "import",
 })
 
 
@@ -36,6 +44,7 @@ CREATE TABLE IF NOT EXISTS gene_pool (
     score       REAL    NOT NULL,
     source_hash TEXT    NOT NULL UNIQUE,
     gene_summary TEXT   NOT NULL,
+    tags        TEXT,
     created_at  TEXT    DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -43,6 +52,30 @@ CREATE TABLE IF NOT EXISTS gene_pool (
     def __init__(self, db_path: pathlib.Path, max_size: int = 100) -> None:
         super().__init__(db_path)
         self.max_size = max_size
+        self._backfill_tags()
+
+    def _migrate(self, con) -> None:
+        """Add tags column to existing databases if missing."""
+        try:
+            con.execute("ALTER TABLE gene_pool ADD COLUMN tags TEXT")
+        except Exception:
+            pass  # column already exists
+
+    def _backfill_tags(self) -> None:
+        """Compute and store tags for existing genes that lack them."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, gene_summary FROM gene_pool "
+                "WHERE tags IS NULL AND gene_summary != ''"
+            ).fetchall()
+            for row in rows:
+                tags = self.extract_tags(row["gene_summary"])
+                con.execute(
+                    "UPDATE gene_pool SET tags = ? WHERE id = ?",
+                    (" ".join(tags), row["id"]),
+                )
+            if rows:
+                log.info("Gene pool: backfilled tags for %d genes", len(rows))
 
     def add(self, generation: int, score: float, source_code: str, detail: str | None = None) -> bool:
         """Extract gene summary from source_code and store if score qualifies.
@@ -53,6 +86,8 @@ CREATE TABLE IF NOT EXISTS gene_pool (
         gene_summary = self.extract_summary(source_code)
         if not gene_summary.strip():
             return False
+
+        tags_str = " ".join(self.extract_tags(gene_summary))
 
         with self._connect() as con:
             # Check for duplicate source.
@@ -67,9 +102,9 @@ CREATE TABLE IF NOT EXISTS gene_pool (
 
             if count < self.max_size:
                 con.execute(
-                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary) "
-                    "VALUES (?, ?, ?, ?)",
-                    (generation, score, source_hash, gene_summary),
+                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (generation, score, source_hash, gene_summary, tags_str),
                 )
                 log.info("Gene pool: added gen-%d (score=%.2f, pool=%d/%d)",
                          generation, score, count + 1, self.max_size)
@@ -82,9 +117,9 @@ CREATE TABLE IF NOT EXISTS gene_pool (
             if min_row and score > min_row["score"]:
                 con.execute("DELETE FROM gene_pool WHERE id = ?", (min_row["id"],))
                 con.execute(
-                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary) "
-                    "VALUES (?, ?, ?, ?)",
-                    (generation, score, source_hash, gene_summary),
+                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (generation, score, source_hash, gene_summary, tags_str),
                 )
                 log.info("Gene pool: replaced lowest (%.2f) with gen-%d (score=%.2f)",
                          min_row["score"], generation, score)
@@ -96,11 +131,49 @@ CREATE TABLE IF NOT EXISTS gene_pool (
         """Return top N genes by score, each with gene_summary field."""
         with self._connect() as con:
             rows = con.execute(
-                "SELECT generation, score, gene_summary FROM gene_pool "
+                "SELECT generation, score, gene_summary, tags FROM gene_pool "
                 "ORDER BY score DESC LIMIT ?",
                 (n,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+
+    def get_relevant(self, context: str, n: int = 3) -> list[dict]:
+        """Return top N genes matched to context, falling back to score.
+
+        Extracts tags from the context string and scores each gene by
+        tag overlap (weighted) plus fitness score as tiebreaker.
+        Falls back to get_top(n) if no gene shares any tags.
+        """
+        context_tags = set(self.extract_tags(context))
+        if not context_tags:
+            return self.get_top(n)
+
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT generation, score, gene_summary, tags FROM gene_pool"
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        scored: list[tuple[float, dict]] = []
+        any_overlap = False
+        for row in rows:
+            gene = dict(row)
+            gene_tags = set((gene.get("tags") or "").split())
+            overlap = len(context_tags & gene_tags)
+            if overlap > 0:
+                any_overlap = True
+            relevance = overlap * 2 + gene["score"]
+            scored.append((relevance, gene))
+
+        if not any_overlap:
+            return self.get_top(n)
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [gene for _, gene in scored[:n]]
+
 
     def backfill(self, skill_store) -> int:
         """One-time backfill from existing crystallized skills.
@@ -132,6 +205,103 @@ CREATE TABLE IF NOT EXISTS gene_pool (
         if added:
             log.info("Gene pool: backfilled %d genes from skill store", added)
         return added
+
+    def backfill_from_git(self, ring2_path: pathlib.Path, fitness_tracker) -> int:
+        """Backfill genes from git history using fitness_log records.
+
+        Queries fitness_log for survived generations with high scores,
+        recovers the Ring 2 source from git commits, and adds them to
+        the pool.  Dedup via source_hash handles repeats.
+        Returns the number of genes added.
+        """
+        slots = self.max_size - self.count()
+        if slots <= 0:
+            return 0
+
+        git_dir = ring2_path / ".git"
+        if not git_dir.is_dir():
+            log.debug("backfill_from_git: no .git in %s", ring2_path)
+            return 0
+
+        # Query fitness_log for survived entries with commit hashes.
+        min_score = 0.75
+        with fitness_tracker._connect() as con:
+            rows = con.execute(
+                "SELECT generation, score, commit_hash FROM fitness_log "
+                "WHERE survived = 1 AND commit_hash IS NOT NULL AND score > ? "
+                "ORDER BY score DESC LIMIT ?",
+                (min_score, slots),
+            ).fetchall()
+
+        if not rows:
+            log.debug("backfill_from_git: no qualifying fitness_log entries")
+            return 0
+
+        added = 0
+        for row in rows:
+            generation = row["generation"]
+            score = row["score"]
+            commit_hash = row["commit_hash"]
+
+            try:
+                result = subprocess.run(
+                    ["git", "show", f"{commit_hash}:main.py"],
+                    cwd=str(ring2_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    continue
+                source = result.stdout
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+            if not source or len(source) < 50:
+                continue
+
+            if self.add(generation, score, source):
+                added += 1
+                log.debug("backfill_from_git: added gen-%d (score=%.2f)", generation, score)
+
+        if added:
+            log.info("Gene pool: backfilled %d genes from git history", added)
+        return added
+
+    @staticmethod
+    def extract_tags(text: str) -> list[str]:
+        """Extract searchable tags from a gene summary or context string.
+
+        - Splits PascalCase names: StreamAnalyzer → ["stream", "analyzer"]
+        - Splits snake_case names: compute_fibonacci → ["compute", "fibonacci"]
+        - Extracts words from docstrings/prose
+        - Filters stopwords and short tokens (< 3 chars)
+        - Returns deduplicated lowercase list
+        """
+        tokens: set[str] = set()
+
+        # Split PascalCase identifiers.
+        for match in re.finditer(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', text):
+            parts = re.findall(r'[A-Z][a-z]+', match.group(1))
+            for p in parts:
+                tokens.add(p.lower())
+
+        # Split snake_case identifiers and extract all words.
+        for word in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', text):
+            for part in word.split("_"):
+                low = part.lower()
+                if low:
+                    tokens.add(low)
+
+        # Extract hyphenated words (e.g. "real-time").
+        for match in re.finditer(r'\b([a-z]+-[a-z]+)\b', text, re.IGNORECASE):
+            for part in match.group(1).split("-"):
+                low = part.lower()
+                if low:
+                    tokens.add(low)
+
+        # Filter stopwords and short tokens.
+        return sorted(t for t in tokens if len(t) >= 3 and t not in _STOPWORDS)
 
     @staticmethod
     def extract_summary(source_code: str) -> str:

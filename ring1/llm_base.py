@@ -108,6 +108,7 @@ class LLMClient(abc.ABC):
 _DEFAULT_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
+    "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
 }
 
 
@@ -121,7 +122,7 @@ def create_llm_client(
     """Create an LLM client for the given provider.
 
     Args:
-        provider: One of "anthropic", "openai", "deepseek".
+        provider: One of "anthropic", "openai", "deepseek", "qwen".
         api_key: API key for the provider.
         model: Model name (e.g. "gpt-4o", "deepseek-chat").
         max_tokens: Maximum tokens for responses.
@@ -138,7 +139,7 @@ def create_llm_client(
 
         return ClaudeClient(api_key=api_key, model=model, max_tokens=max_tokens)
 
-    if provider in ("openai", "deepseek"):
+    if provider in ("openai", "deepseek", "qwen"):
         from ring1.llm_openai import OpenAIClient
 
         url = api_url or _DEFAULT_URLS[provider]

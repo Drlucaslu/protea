@@ -41,6 +41,15 @@ class TestCreateLLMClient:
         assert isinstance(client, OpenAIClient)
         assert client.api_url == "https://api.deepseek.com/v1/chat/completions"
 
+    def test_qwen_returns_openai_client(self):
+        from ring1.llm_openai import OpenAIClient
+
+        client = create_llm_client(
+            provider="qwen", api_key="sk-test", model="qwen3.5-plus",
+        )
+        assert isinstance(client, OpenAIClient)
+        assert client.api_url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+
     def test_custom_api_url(self):
         client = create_llm_client(
             provider="openai",
