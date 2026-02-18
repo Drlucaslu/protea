@@ -30,6 +30,10 @@ class Ring1Config(NamedTuple):
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens
     llm_api_url: str = ""        # custom API URL override
     prefer_local_skills: bool = True  # match tasks to skills and recommend them
+    matrix_enabled: bool = False
+    matrix_homeserver: str = ""
+    matrix_room_id: str = ""
+    matrix_access_token: str = ""
 
     def has_llm_config(self) -> bool:
         """Check whether any LLM provider is configured with an API key."""
@@ -108,6 +112,7 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
 
     r1 = toml.get("ring1", {})
     tg = r1.get("telegram", {})
+    mx = r1.get("matrix", {})
     autonomy = r1.get("autonomy", {})
     tools = r1.get("tools", {})
     task_exec = r1.get("task_executor", {})
@@ -136,4 +141,8 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         llm_max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0") or 0) or llm.get("max_tokens", 0),
         llm_api_url=os.environ.get("LLM_API_URL", "") or llm.get("api_url", ""),
         prefer_local_skills=task_exec.get("prefer_local_skills", True),
+        matrix_enabled=mx.get("enabled", False),
+        matrix_homeserver=mx.get("homeserver", ""),
+        matrix_room_id=mx.get("room_id", ""),
+        matrix_access_token=os.environ.get("MATRIX_ACCESS_TOKEN", ""),
     )

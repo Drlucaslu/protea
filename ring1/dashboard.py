@@ -105,6 +105,7 @@ _NAV_HTML = """\
 <a href="/skills">Skills</a>
 <a href="/intent">Intent</a>
 <a href="/profile">Profile</a>
+<a href="/schedule">Schedule</a>
 </nav>
 """
 
@@ -237,7 +238,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     Class attributes injected before starting:
         memory_store, skill_store, fitness_tracker, user_profiler,
-        gene_pool, task_store, state
+        gene_pool, task_store, scheduled_store, state
     """
 
     memory_store = None
@@ -246,6 +247,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     user_profiler = None
     gene_pool = None
     task_store = None
+    scheduled_store = None
     state = None
 
     def log_message(self, format, *args):  # noqa: A002
@@ -269,6 +271,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_intent()
         elif path == "/profile":
             self._serve_profile()
+        elif path == "/schedule":
+            self._serve_schedule()
         # API routes
         elif path == "/api/memory":
             self._api_memory(query)
@@ -284,6 +288,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_fitness()
         elif path == "/api/status":
             self._api_status()
+        elif path == "/api/schedules":
+            self._api_schedules()
         else:
             self._send_error(404, "Not Found")
 
@@ -577,6 +583,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
         self._send_html(_page("Profile", body))
 
+    def _serve_schedule(self) -> None:
+        """Scheduled tasks page with table."""
+        tasks: list[dict] = []
+        if self.scheduled_store:
+            try:
+                tasks = self.scheduled_store.get_all()
+            except Exception:
+                pass
+
+        try:
+            from ring0.cron import describe as _cron_desc
+        except ImportError:
+            _cron_desc = None
+
+        rows_html = []
+        for t in tasks:
+            enabled = t.get("enabled", 0)
+            enabled_html = '<span style="color:#4ecdc4">enabled</span>' if enabled else '<span style="color:#777">disabled</span>'
+            name = _esc(t.get("name", ""))
+            stype = _esc(t.get("schedule_type", "cron"))
+            cron_raw = _esc(t.get("cron_expr", ""))
+
+            # Human-readable schedule description
+            if t.get("schedule_type") == "cron" and _cron_desc:
+                schedule_desc = _esc(_cron_desc(t["cron_expr"]))
+            else:
+                schedule_desc = cron_raw
+
+            last_run = ""
+            if t.get("last_run_at"):
+                from datetime import datetime
+                last_run = datetime.fromtimestamp(t["last_run_at"]).strftime("%Y-%m-%d %H:%M")
+            next_run = ""
+            if t.get("next_run_at"):
+                from datetime import datetime
+                next_run = datetime.fromtimestamp(t["next_run_at"]).strftime("%Y-%m-%d %H:%M")
+
+            run_count = t.get("run_count", 0)
+            task_text = _esc((t.get("task_text", ""))[:60])
+
+            rows_html.append(
+                f'<tr>'
+                f'<td><strong>{name}</strong></td>'
+                f'<td>{schedule_desc}<br><span style="color:#555;font-size:0.75rem">{cron_raw}</span></td>'
+                f'<td>{stype}</td>'
+                f'<td>{enabled_html}</td>'
+                f'<td>{task_text}</td>'
+                f'<td>{last_run or "—"}</td>'
+                f'<td>{next_run or "—"}</td>'
+                f'<td>{run_count}</td>'
+                f'</tr>'
+            )
+
+        table_html = (
+            "<table><thead><tr>"
+            "<th>Name</th><th>Schedule</th><th>Type</th><th>Enabled</th>"
+            "<th>Task</th><th>Last Run</th><th>Next Run</th><th>Runs</th>"
+            "</tr></thead><tbody>"
+            + "".join(rows_html)
+            + "</tbody></table>"
+        )
+
+        count = len(tasks)
+        body = f"<h2>Scheduled Tasks ({count})</h2>{table_html}"
+        self._send_html(_page("Schedule", body))
+
     # ------------------------------------------------------------------
     # API handlers
     # ------------------------------------------------------------------
@@ -634,6 +706,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._send_json(data)
+
+    def _api_schedules(self) -> None:
+        tasks = []
+        if self.scheduled_store:
+            try:
+                tasks = self.scheduled_store.get_all()
+            except Exception:
+                pass
+        self._send_json(tasks)
 
     def _api_fitness(self) -> None:
         history = []

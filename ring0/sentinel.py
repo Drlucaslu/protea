@@ -564,6 +564,29 @@ def _create_portal(project_root, cfg, skill_store, skill_runner):
     return _best_effort("Skill Portal", _factory)
 
 
+def _create_matrix_bot(project_root, state):
+    """Best-effort Matrix bot creation."""
+    def _factory():
+        from ring1.config import load_ring1_config
+        from ring1.matrix_bot import MatrixBot
+        r1_config = load_ring1_config(project_root)
+        if not r1_config.matrix_enabled or not r1_config.matrix_homeserver:
+            return None
+        if not r1_config.matrix_access_token:
+            log.warning("Matrix bot: enabled but MATRIX_ACCESS_TOKEN missing — disabled")
+            return None
+        bot = MatrixBot(
+            homeserver=r1_config.matrix_homeserver,
+            access_token=r1_config.matrix_access_token,
+            room_id=r1_config.matrix_room_id,
+            state=state,
+        )
+        threading.Thread(target=bot.run, name="matrix-bot", daemon=True).start()
+        log.info("Matrix bot started")
+        return bot
+    return _best_effort("Matrix bot", _factory)
+
+
 def _create_embedding_provider(cfg):
     """Best-effort EmbeddingProvider creation."""
     def _factory():
@@ -648,6 +671,7 @@ def run(project_root: pathlib.Path) -> None:
     skill_store = _best_effort("SkillStore", lambda: __import__("ring0.skill_store", fromlist=["SkillStore"]).SkillStore(db_path))
     gene_pool = _best_effort("GenePool", lambda: __import__("ring0.gene_pool", fromlist=["GenePool"]).GenePool(db_path))
     task_store = _best_effort("TaskStore", lambda: __import__("ring0.task_store", fromlist=["TaskStore"]).TaskStore(db_path))
+    scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
     embedding_provider = _create_embedding_provider(cfg)
     memory_curator = _create_memory_curator(project_root)
@@ -682,7 +706,9 @@ def run(project_root: pathlib.Path) -> None:
     state.skill_store = skill_store
     state.skill_runner = skill_runner
     state.task_store = task_store
+    state.scheduled_store = scheduled_store
     bot = _create_bot(project_root, state, fitness, ring2_path)
+    matrix_bot = _create_matrix_bot(project_root, state)
 
     # Registry client — publish skills to remote registry + hub fallback.
     registry_client = _create_registry_client(project_root, cfg)
@@ -734,6 +760,7 @@ def run(project_root: pathlib.Path) -> None:
         user_profiler=user_profiler,
         gene_pool=gene_pool,
         task_store=task_store,
+        scheduled_store=scheduled_store,
         state=state,
     )
 
@@ -816,6 +843,27 @@ def run(project_root: pathlib.Path) -> None:
                         time.sleep(2)
                 log.info("New commit detected — restarting Protea")
                 break
+
+            # --- scheduled task check ---
+            if scheduled_store:
+                try:
+                    due = scheduled_store.get_due(time.time())
+                    for sched in due:
+                        from ring1.telegram_bot import Task
+                        task = Task(text=sched["task_text"], chat_id=sched["chat_id"])
+                        state.task_queue.put(task)
+                        state.p0_event.set()
+                        if sched["schedule_type"] == "cron":
+                            from ring0.cron import next_run as _cron_next
+                            from datetime import datetime
+                            nxt = _cron_next(sched["cron_expr"], datetime.now())
+                            scheduled_store.update_after_run(sched["schedule_id"], nxt.timestamp())
+                        else:
+                            scheduled_store.disable(sched["schedule_id"])
+                            scheduled_store.update_after_run(sched["schedule_id"], None)
+                        log.info("Scheduled task fired: %s (%s)", sched["name"], sched["schedule_id"])
+                except Exception:
+                    log.debug("Scheduled task check failed", exc_info=True)
 
             # --- success check: survived max_runtime_sec ---
             if elapsed >= params.max_runtime_sec and hb.is_alive():
@@ -1130,6 +1178,8 @@ def run(project_root: pathlib.Path) -> None:
             executor.stop()
         if bot:
             bot.stop()
+        if matrix_bot:
+            matrix_bot.stop()
 
         # Wait for executor thread to finish in-flight work.
         if state.executor_thread and state.executor_thread.is_alive():

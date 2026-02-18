@@ -85,6 +85,11 @@ max_discover_per_sync = 5    # max skills to download per cycle
 [ring1.telegram]
 enabled = true
 
+[ring1.matrix]
+enabled = false
+homeserver = ""     # e.g. "https://matrix.org"
+room_id = ""        # e.g. "!abc:matrix.org"
+
 [registry]
 enabled = true
 url = "https://protea-hub-production.up.railway.app"

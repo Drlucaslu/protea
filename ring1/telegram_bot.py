@@ -43,7 +43,7 @@ class SentinelState:
         "task_queue", "evolution_directive", "last_evolution_time",
         "last_task_completion", "executor_thread",
         # Store references
-        "memory_store", "skill_store", "task_store",
+        "memory_store", "skill_store", "task_store", "scheduled_store",
         # Service references
         "notifier", "skill_runner", "registry_client", "subagent_manager",
     )
@@ -74,6 +74,7 @@ class SentinelState:
         self.memory_store = None
         self.skill_store = None
         self.task_store = None
+        self.scheduled_store = None
         # Service references (set by Sentinel after creation)
         self.notifier = None
         self.skill_runner = None
@@ -501,7 +502,9 @@ class TelegramBot:
             "/running — 查看技能运行状态\n"
             "/background — 查看后台任务\n"
             "/files — 列出已上传的文件\n"
-            "/find <前缀> — 查找文件\n\n"
+            "/find <前缀> — 查找文件\n"
+            "/schedule — 管理定时任务\n"
+            "/calendar — 查看定时任务日历\n\n"
             "💬 直接发送文字即可向 Protea 提问 (P0 任务)\n\n"
             "📎 *支持的文件类型:*\n"
             "📄 文档 (Document) - Excel, PDF, Word 等\n"
@@ -751,6 +754,189 @@ class TelegramBot:
         
         return "\n".join(lines)
 
+    def _cmd_schedule(self, full_text: str, chat_id: str = "") -> str:
+        """Handle /schedule subcommands: list|add|once|remove|enable|disable."""
+        ss = self.state.scheduled_store
+        if not ss:
+            return "定时任务模块不可用。"
+        parts = full_text.strip().split(None, 1)
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        if not args or args == "list":
+            return self._cmd_calendar()
+
+        tokens = args.split(None, 2)
+        subcmd = tokens[0].lower()
+
+        if subcmd == "add":
+            # /schedule add <name> <cron> <task>
+            # Parse: name is first token, cron is next 5 tokens, rest is task
+            rest = tokens[1] if len(tokens) > 1 else ""
+            if not rest:
+                return (
+                    "用法: /schedule add <名称> <cron> <任务>\n"
+                    '示例: /schedule add 每日新闻 "30 9 * * *" 获取今日新闻摘要'
+                )
+            # Support quoted cron: /schedule add name "30 9 * * *" task text
+            rest_parts = rest.strip()
+            if len(tokens) > 2:
+                rest_parts = tokens[1] + " " + tokens[2]
+            else:
+                rest_parts = tokens[1] if len(tokens) > 1 else ""
+            return self._schedule_add(rest_parts, chat_id)
+
+        if subcmd == "once":
+            # /schedule once <name> <datetime> <task>
+            rest = args[len("once"):].strip()
+            if not rest:
+                return (
+                    "用法: /schedule once <名称> <日期时间> <任务>\n"
+                    "示例: /schedule once 提醒 2026-02-20T14:00 开会提醒"
+                )
+            return self._schedule_once(rest, chat_id)
+
+        if subcmd == "remove":
+            name = tokens[1] if len(tokens) > 1 else ""
+            if not name:
+                return "用法: /schedule remove <名称>"
+            task = ss.get_by_name(name)
+            if not task:
+                return f"定时任务 '{name}' 未找到。"
+            ss.remove(task["schedule_id"])
+            return f"已删除定时任务: {name}"
+
+        if subcmd == "enable":
+            name = tokens[1] if len(tokens) > 1 else ""
+            if not name:
+                return "用法: /schedule enable <名称>"
+            task = ss.get_by_name(name)
+            if not task:
+                return f"定时任务 '{name}' 未找到。"
+            ss.enable(task["schedule_id"])
+            return f"已启用定时任务: {name}"
+
+        if subcmd == "disable":
+            name = tokens[1] if len(tokens) > 1 else ""
+            if not name:
+                return "用法: /schedule disable <名称>"
+            task = ss.get_by_name(name)
+            if not task:
+                return f"定时任务 '{name}' 未找到。"
+            ss.disable(task["schedule_id"])
+            return f"已禁用定时任务: {name}"
+
+        return (
+            "用法:\n"
+            "/schedule list — 列出所有定时任务\n"
+            "/schedule add <名称> <cron> <任务> — 添加 cron 任务\n"
+            "/schedule once <名称> <日期时间> <任务> — 添加一次性任务\n"
+            "/schedule remove <名称> — 删除\n"
+            "/schedule enable <名称> — 启用\n"
+            "/schedule disable <名称> — 禁用"
+        )
+
+    def _schedule_add(self, text: str, chat_id: str) -> str:
+        """Parse and add a cron scheduled task.
+
+        Expected formats:
+          name "cron_expr" task text
+          name cron_expr task text  (when cron is 5 space-separated fields)
+        """
+        ss = self.state.scheduled_store
+
+        # Try quoted cron first: name "30 9 * * *" task text
+        import re
+        m = re.match(r'(\S+)\s+"([^"]+)"\s+(.*)', text, re.DOTALL)
+        if m:
+            name, cron_expr, task_text = m.group(1), m.group(2), m.group(3)
+        else:
+            # Unquoted: name field1 field2 field3 field4 field5 task text
+            parts = text.split()
+            if len(parts) < 7:
+                return (
+                    "用法: /schedule add <名称> <cron 5字段> <任务>\n"
+                    '示例: /schedule add 每日新闻 "30 9 * * *" 获取今日新闻摘要\n'
+                    "或: /schedule add 每日新闻 30 9 * * * 获取今日新闻摘要"
+                )
+            name = parts[0]
+            cron_expr = " ".join(parts[1:6])
+            task_text = " ".join(parts[6:])
+
+        # Validate cron
+        try:
+            from ring0.cron import next_run as _cron_next, describe as _cron_desc
+            from datetime import datetime
+            _cron_next(cron_expr, datetime.now())
+        except Exception as e:
+            return f"无效的 cron 表达式: {cron_expr}\n错误: {e}"
+
+        # Check duplicate name
+        if ss.get_by_name(name):
+            return f"已存在同名定时任务: {name}"
+
+        sid = ss.add(name, task_text, cron_expr, schedule_type="cron", chat_id=chat_id)
+        desc = _cron_desc(cron_expr)
+        return f"已添加定时任务: {name}\n计划: {desc} ({cron_expr})\n任务: {task_text}"
+
+    def _schedule_once(self, text: str, chat_id: str) -> str:
+        """Parse and add a one-shot scheduled task."""
+        ss = self.state.scheduled_store
+        parts = text.split(None, 2)
+        if len(parts) < 3:
+            return (
+                "用法: /schedule once <名称> <日期时间> <任务>\n"
+                "示例: /schedule once 提醒 2026-02-20T14:00 开会提醒"
+            )
+        name, dt_str, task_text = parts[0], parts[1], parts[2]
+
+        # Validate datetime
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(dt_str)
+        except ValueError:
+            return f"无效的日期时间: {dt_str}\n格式: YYYY-MM-DDTHH:MM"
+
+        if dt.timestamp() < time.time():
+            return "指定的时间已过去。"
+
+        if ss.get_by_name(name):
+            return f"已存在同名定时任务: {name}"
+
+        sid = ss.add(name, task_text, dt_str, schedule_type="once", chat_id=chat_id)
+        return f"已添加一次性任务: {name}\n时间: {dt_str}\n任务: {task_text}"
+
+    def _cmd_calendar(self) -> str:
+        """List all scheduled tasks, ordered by next_run_at."""
+        ss = self.state.scheduled_store
+        if not ss:
+            return "定时任务模块不可用。"
+        tasks = ss.get_all()
+        if not tasks:
+            return "暂无定时任务。"
+
+        from datetime import datetime
+        try:
+            from ring0.cron import describe as _cron_desc
+        except ImportError:
+            _cron_desc = lambda x: x
+
+        lines = ["*日历 (Calendar):*"]
+        for t in tasks:
+            icon = "🟢" if t["enabled"] else "⚪"
+            name = t["name"]
+            if t["schedule_type"] == "cron":
+                schedule_desc = _cron_desc(t["cron_expr"])
+            else:
+                schedule_desc = f"一次性 {t['cron_expr']}"
+            disabled_tag = " (已禁用)" if not t["enabled"] else ""
+            next_at = ""
+            if t["next_run_at"]:
+                next_dt = datetime.fromtimestamp(t["next_run_at"])
+                next_at = f" — 下次: {next_dt.strftime('%Y-%m-%d %H:%M')}"
+            runs = f" [{t['run_count']}次]" if t["run_count"] > 0 else ""
+            lines.append(f"{icon} {name} — {schedule_desc}{next_at}{runs}{disabled_tag}")
+        return "\n".join(lines)
+
     def _enqueue_task(self, text: str, chat_id: str) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
         task = Task(text=text, chat_id=chat_id)
@@ -831,6 +1017,7 @@ class TelegramBot:
         "/background": "_cmd_background",
         "/files": "_cmd_files",
         "/find": "_cmd_find",    # Added missing command
+        "/calendar": "_cmd_calendar",
     }
 
     def _handle_command(self, text: str, chat_id: str = "") -> str:
@@ -853,6 +1040,8 @@ class TelegramBot:
             return self._cmd_run(stripped)
         if first_word == "/find":
             return self._cmd_find(stripped)
+        if first_word == "/schedule":
+            return self._cmd_schedule(stripped, chat_id=chat_id)
 
         # Standard command dispatch
         method_name = self._COMMANDS.get(first_word)
