@@ -1139,16 +1139,10 @@ def run(project_root: pathlib.Path) -> None:
         log.info("Sentinel offline")
 
     # Restart the entire process if triggered by CommitWatcher.
+    # Python 3 sets O_CLOEXEC on open() fds by default, so os.execv()
+    # automatically closes them — no manual fd cleanup needed.
     if state.restart_event.is_set():
         log.info("Restarting via os.execv()")
-        # Close all non-standard fds to prevent leaking to new process.
-        import resource
-        max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-        for fd in range(3, min(max_fd, 1024)):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
