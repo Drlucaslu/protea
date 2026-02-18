@@ -30,6 +30,48 @@ _TG_MSG_LIMIT = 4000  # Telegram hard limit ~4096, leave margin
 
 _RECALL_KEYWORD_RE = __import__("re").compile(r"[a-zA-Z0-9_\u4e00-\u9fff]+")
 
+_SKILL_TOKEN_RE = __import__("re").compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")
+
+
+def _tokenize_for_matching(text: str) -> set[str]:
+    """Extract match tokens from text. Handles both English and Chinese.
+
+    English: words of 3+ chars.  Chinese: bigrams (two-char segments),
+    since Chinese words are typically 2 characters (e.g. 文件, 分析, 目录).
+    """
+    raw_tokens = _SKILL_TOKEN_RE.findall(text.lower())
+    tokens: set[str] = set()
+    for t in raw_tokens:
+        if t[0] >= "\u4e00":  # CJK character
+            # Generate bigrams for Chinese text.
+            for i in range(len(t) - 1):
+                tokens.add(t[i : i + 2])
+        elif len(t) >= 3:
+            tokens.add(t)
+    return tokens
+
+
+def _match_skills(task_text: str, skills: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split skills into (recommended, other) based on keyword overlap with task.
+
+    Returns recommended skills sorted by match score (descending).
+    """
+    tokens = _tokenize_for_matching(task_text)
+
+    scored: list[tuple[int, dict]] = []
+    for skill in skills:
+        haystack = " ".join([
+            skill.get("name", "").replace("_", " "),
+            skill.get("description", ""),
+            " ".join(skill.get("tags", [])),
+        ]).lower()
+        score = sum(1 for t in tokens if t in haystack)
+        scored.append((score, skill))
+
+    recommended = [s for score, s in sorted(scored, key=lambda x: -x[0]) if score > 0]
+    other = [s for score, s in scored if score == 0]
+    return recommended, other
+
 
 def _send_segmented(reply_fn, text: str, limit: int = _TG_MSG_LIMIT) -> None:
     """Send *text* via *reply_fn*, splitting into segments if too long.
@@ -144,6 +186,11 @@ Use the message tool to keep the user informed during long operations.
 Use spawn for tasks that may take a long time (complex analysis, multi-file operations).
 Do NOT use tools for questions you can answer from your training data alone.
 
+SKILL PREFERENCE: When "Recommended Skills" are listed in the context, ALWAYS prefer
+using run_skill to execute them instead of reimplementing the same functionality yourself.
+Skills are pre-built, tested, and optimized. Only fall back to direct implementation
+if no recommended skill matches or if the skill fails.
+
 IMPORTANT skill workflow: When working with a skill that exposes an HTTP API, ALWAYS
 call view_skill FIRST to read its source code and understand the correct API endpoints,
 request methods, and parameters. Do NOT guess endpoint paths — check the code.
@@ -186,6 +233,8 @@ def _build_task_context(
     skills: list[dict] | None = None,
     chat_history: list[tuple[str, str]] | None = None,
     recalled: list[dict] | None = None,
+    recommended_skills: list[dict] | None = None,
+    other_skills: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     parts = ["## Protea State"]
@@ -213,7 +262,31 @@ def _build_task_context(
             content = mem.get("content", "")
             parts.append(f"- [Gen {gen}] {content}")
 
-    if skills:
+    # Skill sections: recommended first (if skill matching is active), then other.
+    if recommended_skills:
+        parts.append("")
+        parts.append("## ⚡ Recommended Skills (match your task — use these first)")
+        for skill in recommended_skills:
+            name = skill.get("name", "?")
+            desc = skill.get("description", "")
+            parts.append(f"- **{name}**: {desc}")
+        if other_skills:
+            parts.append("")
+            parts.append("## Other Available Skills")
+            for skill in other_skills:
+                name = skill.get("name", "?")
+                desc = skill.get("description", "")
+                parts.append(f"- {name}: {desc}")
+    elif other_skills:
+        # No recommended — show all as a flat list (fallback / prefer_local_skills off).
+        parts.append("")
+        parts.append("## Available Skills")
+        for skill in other_skills:
+            name = skill.get("name", "?")
+            desc = skill.get("description", "")
+            parts.append(f"- {name}: {desc}")
+    elif skills:
+        # Legacy path: plain skills list (no matching).
         parts.append("")
         parts.append("## Available Skills")
         for skill in skills:
@@ -262,6 +335,7 @@ class TaskExecutor:
         max_tool_rounds: int = 25,
         user_profiler=None,
         embedding_provider=None,
+        prefer_local_skills: bool = True,
     ) -> None:
         """
         Args:
@@ -279,6 +353,7 @@ class TaskExecutor:
             max_tool_rounds: Maximum LLM tool-call round-trips.
             user_profiler: Optional UserProfiler for interest tracking.
             embedding_provider: Optional EmbeddingProvider for semantic vectors.
+            prefer_local_skills: Match tasks to skills and recommend them.
         """
         self.state = state
         self.client = client
@@ -294,6 +369,7 @@ class TaskExecutor:
         self.max_tool_rounds = max_tool_rounds
         self.user_profiler = user_profiler
         self.embedding_provider = embedding_provider
+        self.prefer_local_skills = prefer_local_skills
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
@@ -410,14 +486,25 @@ class TaskExecutor:
                     pass
 
             skills = []
+            recommended_skills: list[dict] = []
+            other_skills: list[dict] = []
             if self.skill_store:
                 try:
-                    skills = self.skill_store.get_active(10)
+                    skills = self.skill_store.get_active()
                 except Exception:
                     pass
+                if skills and self.prefer_local_skills:
+                    recommended_skills, other_skills = _match_skills(task.text, skills)
+                else:
+                    other_skills = skills
 
             history = self._get_recent_history()
-            context = _build_task_context(snap, ring2_source, memories=memories, skills=skills, chat_history=history, recalled=recalled)
+            context = _build_task_context(
+                snap, ring2_source, memories=memories,
+                chat_history=history, recalled=recalled,
+                recommended_skills=recommended_skills,
+                other_skills=other_skills,
+            )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
             # LLM call with tool registry
@@ -611,13 +698,23 @@ class TaskExecutor:
                     pass
 
             skills = []
+            recommended_skills_p1: list[dict] = []
+            other_skills_p1: list[dict] = []
             if self.skill_store:
                 try:
-                    skills = self.skill_store.get_active(10)
+                    skills = self.skill_store.get_active()
                 except Exception:
                     pass
+                if skills and self.prefer_local_skills:
+                    recommended_skills_p1, other_skills_p1 = _match_skills(task_desc, skills)
+                else:
+                    other_skills_p1 = skills
 
-            context = _build_task_context(snap, ring2_source, memories=memories, skills=skills, recalled=recalled)
+            context = _build_task_context(
+                snap, ring2_source, memories=memories, recalled=recalled,
+                recommended_skills=recommended_skills_p1,
+                other_skills=other_skills_p1,
+            )
             user_message = f"{context}\n\n## Autonomous Task\n{task_desc}"
 
             try:
@@ -723,6 +820,7 @@ def create_executor(
         registry_client=registry_client,
     )
 
+    prefer_local_skills = getattr(config, "prefer_local_skills", True)
     executor = TaskExecutor(
         state, client, ring2_path, reply_fn,
         registry=registry,
@@ -735,6 +833,7 @@ def create_executor(
         max_tool_rounds=max_tool_rounds,
         user_profiler=user_profiler,
         embedding_provider=embedding_provider,
+        prefer_local_skills=prefer_local_skills,
     )
     executor.subagent_manager = subagent_mgr
     return executor

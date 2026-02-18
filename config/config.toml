@@ -37,6 +37,9 @@ workspace_path = "."
 shell_timeout = 120
 max_tool_rounds = 50
 
+[ring1.task_executor]
+prefer_local_skills = true   # match tasks to skills and recommend them to the LLM
+
 [ring1.portal]
 enabled = false
 host = "127.0.0.1"

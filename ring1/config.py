@@ -29,6 +29,7 @@ class Ring1Config(NamedTuple):
     llm_model: str = ""          # model name (empty = claude_model)
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens
     llm_api_url: str = ""        # custom API URL override
+    prefer_local_skills: bool = True  # match tasks to skills and recommend them
 
     def has_llm_config(self) -> bool:
         """Check whether any LLM provider is configured with an API key."""
@@ -109,6 +110,7 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
     tg = r1.get("telegram", {})
     autonomy = r1.get("autonomy", {})
     tools = r1.get("tools", {})
+    task_exec = r1.get("task_executor", {})
     llm = r1.get("llm", {})
 
     return Ring1Config(
@@ -133,4 +135,5 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         llm_model=os.environ.get("LLM_MODEL", "") or llm.get("model", ""),
         llm_max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0") or 0) or llm.get("max_tokens", 0),
         llm_api_url=os.environ.get("LLM_API_URL", "") or llm.get("api_url", ""),
+        prefer_local_skills=task_exec.get("prefer_local_skills", True),
     )
