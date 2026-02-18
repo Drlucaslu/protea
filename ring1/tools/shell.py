@@ -38,6 +38,9 @@ _DENY_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bkillall\b"),
     re.compile(r"\bnohup\b"),
     re.compile(r"\bpython[23]?\s+.*\brun\.py\b"),
+    re.compile(r"\bstop_run\b"),        # stop script
+    re.compile(r"\bsignal\.SIGTERM\b"),
+    re.compile(r"\bos\.kill\b"),
 ]
 
 

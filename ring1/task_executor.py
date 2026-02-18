@@ -215,6 +215,8 @@ Rules:
 - Do NOT suggest work if the history is empty or too sparse to infer needs.
 - Do NOT repeat tasks that have already been completed recently.
 - Keep the task description concise and actionable.
+- NEVER restart, stop, or kill Protea processes. Process lifecycle is managed by the Sentinel automatically.
+- NEVER modify .env, config.toml, run.py, or stop_run.sh.
 
 Respond in EXACTLY this format:
 ## Decision
