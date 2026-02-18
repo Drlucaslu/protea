@@ -26,8 +26,44 @@ from ring0.memory import MemoryStore
 from ring0.output_filter import filter_ring2_output
 from ring0.parameter_seed import generate_params, params_to_dict
 from ring0.resource_monitor import check_resources
+from typing import NamedTuple
 
 log = logging.getLogger("protea.sentinel")
+
+
+class Ring0Config(NamedTuple):
+    """Typed configuration extracted from config.toml [ring0] section."""
+    ring2_path: str
+    db_path: str
+    heartbeat_interval_sec: int
+    heartbeat_timeout_sec: int
+    seed: int
+    cooldown_sec: int
+    plateau_window: int
+    plateau_epsilon: float
+    skill_max_count: int
+    max_cpu_percent: float
+    max_memory_percent: float
+    max_disk_percent: float
+
+    @classmethod
+    def from_dict(cls, r0: dict) -> "Ring0Config":
+        """Parse from the raw [ring0] config dict."""
+        evo = r0.get("evolution", {})
+        return cls(
+            ring2_path=r0["git"]["ring2_path"],
+            db_path=r0["fitness"]["db_path"],
+            heartbeat_interval_sec=r0["heartbeat_interval_sec"],
+            heartbeat_timeout_sec=r0["heartbeat_timeout_sec"],
+            seed=evo["seed"],
+            cooldown_sec=evo.get("cooldown_sec", 900),
+            plateau_window=evo.get("plateau_window", 5),
+            plateau_epsilon=evo.get("plateau_epsilon", 0.03),
+            skill_max_count=evo.get("skill_max_count", 100),
+            max_cpu_percent=r0["max_cpu_percent"],
+            max_memory_percent=r0["max_memory_percent"],
+            max_disk_percent=r0["max_disk_percent"],
+        )
 
 
 def _load_config(project_root: pathlib.Path) -> dict:
@@ -583,19 +619,19 @@ def run(project_root: pathlib.Path) -> None:
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
     cfg = _load_config(project_root)
-    r0 = cfg["ring0"]
+    r0 = Ring0Config.from_dict(cfg["ring0"])
 
-    ring2_path = project_root / r0["git"]["ring2_path"]
+    ring2_path = project_root / r0.ring2_path
     heartbeat_path = ring2_path / ".heartbeat"
-    db_path = project_root / r0["fitness"]["db_path"]
+    db_path = project_root / r0.db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    interval = r0["heartbeat_interval_sec"]
-    timeout = r0["heartbeat_timeout_sec"]
-    seed = r0["evolution"]["seed"]
-    cooldown_sec = r0["evolution"].get("cooldown_sec", 900)
-    plateau_window = r0["evolution"].get("plateau_window", 5)
-    plateau_epsilon = r0["evolution"].get("plateau_epsilon", 0.03)
+    interval = r0.heartbeat_interval_sec
+    timeout = r0.heartbeat_timeout_sec
+    seed = r0.seed
+    cooldown_sec = r0.cooldown_sec
+    plateau_window = r0.plateau_window
+    plateau_epsilon = r0.plateau_epsilon
 
     git = GitManager(ring2_path)
     git.init_repo()
@@ -708,7 +744,7 @@ def run(project_root: pathlib.Path) -> None:
     last_good_hash: str | None = None
     last_crystallized_hash: str | None = None
     last_skill_sync_time: float = 0.0  # epoch — triggers sync on first eligible moment
-    skill_cap = r0["evolution"].get("skill_max_count", 100)
+    skill_cap = r0.skill_max_count
     proc: subprocess.Popen | None = None
 
     # Initial snapshot of seed code.
@@ -731,9 +767,9 @@ def run(project_root: pathlib.Path) -> None:
 
             # --- resource check ---
             ok, msg = check_resources(
-                r0["max_cpu_percent"],
-                r0["max_memory_percent"],
-                r0["max_disk_percent"],
+                r0.max_cpu_percent,
+                r0.max_memory_percent,
+                r0.max_disk_percent,
             )
             if not ok:
                 log.warning("Resource alert: %s", msg)
