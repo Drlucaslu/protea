@@ -246,6 +246,50 @@ class TestClassifyFailure:
         assert "SIGKILL" in result
 
 
+class TestLogRotation:
+    """Verify Ring 2 .output.log is truncated when too large."""
+
+    def test_large_log_truncated(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        _write_ring2_script(ring2, _BAD_RING2)
+        hb_path = ring2 / ".heartbeat"
+
+        # Pre-populate log with 600 lines.
+        log_file = ring2 / ".output.log"
+        log_file.write_text("\n".join(f"old line {i}" for i in range(600)) + "\n")
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=5)
+        _stop_ring2(proc)
+
+        content = log_file.read_text()
+        lines = content.strip().splitlines()
+        # Should have been truncated to ~200 old lines + any new output.
+        # The old lines should only contain the tail (line 400+).
+        assert "old line 0" not in content
+        assert "old line 599" in content
+
+    def test_small_log_not_truncated(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        _write_ring2_script(ring2, _BAD_RING2)
+        hb_path = ring2 / ".heartbeat"
+
+        # Pre-populate log with only 100 lines (under 500 threshold).
+        log_file = ring2 / ".output.log"
+        log_file.write_text("\n".join(f"old line {i}" for i in range(100)) + "\n")
+
+        proc = _start_ring2(ring2, hb_path)
+        proc.wait(timeout=5)
+        _stop_ring2(proc)
+
+        content = log_file.read_text()
+        # All old lines should still be present.
+        assert "old line 0" in content
+        assert "old line 99" in content
+
+
 class TestConfigLoading:
     """Verify the default config.toml is parseable."""
 

@@ -75,6 +75,14 @@ def _load_config(project_root: pathlib.Path) -> dict:
 def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subprocess.Popen:
     """Launch the Ring 2 process and return its Popen handle."""
     log_file = ring2_path / ".output.log"
+    # Truncate log to last 200 lines before new generation.
+    if log_file.exists():
+        try:
+            lines = log_file.read_text(errors="replace").splitlines()
+            if len(lines) > 500:
+                log_file.write_text("\n".join(lines[-200:]) + "\n")
+        except Exception:
+            pass
     fh = open(log_file, "a")
     env = {**os.environ, "PROTEA_HEARTBEAT": str(heartbeat_path)}
     proc = subprocess.Popen(
@@ -800,6 +808,12 @@ def run(project_root: pathlib.Path) -> None:
 
             # --- restart check (commit watcher sets this) ---
             if state.restart_event.is_set():
+                if state.p0_active.is_set():
+                    log.info("New commit detected — waiting for active task (max 30s)")
+                    for _ in range(15):  # 15 * 2s = 30s
+                        if not state.p0_active.is_set():
+                            break
+                        time.sleep(2)
                 log.info("New commit detected — restarting Protea")
                 break
 
@@ -1102,6 +1116,9 @@ def run(project_root: pathlib.Path) -> None:
     except KeyboardInterrupt:
         log.info("Sentinel shutting down (KeyboardInterrupt)")
     finally:
+        # Disable SIGTERM during cleanup to prevent interrupt-chaining.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
         commit_watcher.stop()
         if dashboard:
             dashboard.stop()
@@ -1113,12 +1130,25 @@ def run(project_root: pathlib.Path) -> None:
             executor.stop()
         if bot:
             bot.stop()
+
+        # Wait for executor thread to finish in-flight work.
+        if state.executor_thread and state.executor_thread.is_alive():
+            state.executor_thread.join(timeout=5)
+
         _stop_ring2(proc)
         log.info("Sentinel offline")
 
     # Restart the entire process if triggered by CommitWatcher.
     if state.restart_event.is_set():
         log.info("Restarting via os.execv()")
+        # Close all non-standard fds to prevent leaking to new process.
+        import resource
+        max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        for fd in range(3, min(max_fd, 1024)):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
