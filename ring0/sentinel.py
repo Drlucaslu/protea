@@ -115,7 +115,7 @@ def _kill_process_tree(pid: int) -> None:
             ["pkill", "-KILL", "-P", str(pid)],
             timeout=3, capture_output=True,
         )
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -1500,4 +1500,8 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
     project_root = pathlib.Path(__file__).resolve().parent.parent
-    run(project_root)
+    try:
+        run(project_root)
+    except KeyboardInterrupt:
+        print("\nProtea 已停止。")
+        raise SystemExit(0)
