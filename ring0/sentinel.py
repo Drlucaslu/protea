@@ -20,7 +20,6 @@ import tomllib
 
 from ring0.commit_watcher import CommitWatcher
 from ring0.fitness import FitnessTracker, evaluate_output
-from ring0.fitness_v2 import evaluate_output_v2, get_task_level_for_generation
 from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
 from ring0.memory import MemoryStore
@@ -525,24 +524,6 @@ def run(project_root: pathlib.Path) -> None:
     embedding_provider = _create_embedding_provider(cfg)
     memory_curator = _create_memory_curator(project_root)
 
-    # Initialize TaskGenerator for progressive difficulty
-    from ring1.task_generator import TaskGenerator
-    task_generator = TaskGenerator(
-        base_level=1,
-        adjustment_window=10,
-        upgrade_threshold=0.90,
-        downgrade_threshold=0.65,
-    )
-    
-    # Initialize AutoCrystallizer for automatic skill extraction
-    from ring1.auto_crystallizer import AutoCrystallizer
-    skills_dir = project_root / "skills"
-    auto_crystallizer = AutoCrystallizer(
-        skills_dir=skills_dir,
-        min_stability=0.80,
-        min_score=0.85,
-        min_occurrences=5,
-    )
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
 
