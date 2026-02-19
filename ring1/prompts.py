@@ -7,6 +7,7 @@ Crystallization: analyse surviving Ring 2 code and extract reusable skills.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 
@@ -90,6 +91,43 @@ Keep the reflection brief — the code is what matters.
 """
 
 
+def _compress_source(code: str) -> str:
+    """Strip docstrings, comments, and excess blank lines to save tokens."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+
+    # Collect line ranges of all docstrings.
+    docstring_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)):
+                ds = node.body[0]
+                for ln in range(ds.lineno, ds.end_lineno + 1):
+                    docstring_lines.add(ln)
+
+    lines = code.splitlines()
+    result: list[str] = []
+    prev_blank = False
+    for i, line in enumerate(lines, 1):
+        if i in docstring_lines:
+            continue
+        stripped = line.strip()
+        if stripped.startswith('#') and not stripped.startswith('#!'):
+            continue
+        if not stripped:
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        result.append(line.rstrip())
+
+    return '\n'.join(result)
+
+
 def build_evolution_prompt(
     current_source: str,
     fitness_history: list[dict],
@@ -121,10 +159,10 @@ def build_evolution_prompt(
     parts.append(f"Max runtime: {params.get('max_runtime_sec', 60)}s")
     parts.append("")
 
-    # Current source code
+    # Current source code (compressed to save tokens)
     parts.append("## Current Ring 2 Code")
     parts.append("```python")
-    parts.append(current_source.rstrip())
+    parts.append(_compress_source(current_source).rstrip())
     parts.append("```")
     parts.append("")
 

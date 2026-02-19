@@ -1,6 +1,7 @@
 """Tests for ring1.prompts."""
 
 from ring1.prompts import (
+    _compress_source,
     build_crystallize_prompt,
     build_evolution_prompt,
     build_memory_curation_prompt,
@@ -1221,3 +1222,76 @@ def main():
         proposal = extract_capability_proposal(response)
         assert proposal is not None
         assert proposal["dependencies"] == []
+
+
+class TestCompressSource:
+    """Verify _compress_source strips docstrings, comments, and excess blank lines."""
+
+    def test_strips_docstrings(self):
+        code = 'def f():\n    """docstring"""\n    return 1'
+        result = _compress_source(code)
+        assert '"""' not in result
+        assert 'return 1' in result
+
+    def test_strips_comments(self):
+        code = '# comment\nx = 1\n# another'
+        result = _compress_source(code)
+        assert '# comment' not in result
+        assert 'x = 1' in result
+
+    def test_preserves_shebang(self):
+        code = '#!/usr/bin/env python3\nx = 1'
+        result = _compress_source(code)
+        assert '#!/usr/bin/env python3' in result
+
+    def test_collapses_blank_lines(self):
+        code = 'a = 1\n\n\n\nb = 2'
+        result = _compress_source(code)
+        assert result == 'a = 1\n\nb = 2'
+
+    def test_invalid_syntax_returns_original(self):
+        code = 'def f(\n'
+        assert _compress_source(code) == code
+
+    def test_preserves_inline_strings(self):
+        code = 'x = "hello world"\ny = \'foo\''
+        result = _compress_source(code)
+        assert '"hello world"' in result
+
+    def test_class_docstring_stripped(self):
+        code = 'class Foo:\n    """Class doc."""\n    x = 1'
+        result = _compress_source(code)
+        assert '"""' not in result
+        assert 'x = 1' in result
+
+    def test_multiline_docstring_stripped(self):
+        code = 'def g():\n    """Line 1.\n\n    Line 2.\n    """\n    pass'
+        result = _compress_source(code)
+        assert '"""' not in result
+        assert 'pass' in result
+
+    def test_module_docstring_stripped(self):
+        code = '"""Module docstring."""\nimport os'
+        result = _compress_source(code)
+        assert '"""' not in result
+        assert 'import os' in result
+
+    def test_preserves_string_with_hash(self):
+        code = 'x = "has # inside"\nprint(x)'
+        result = _compress_source(code)
+        assert '"has # inside"' in result
+
+    def test_evolution_prompt_uses_compressed_source(self):
+        """build_evolution_prompt should compress the source code."""
+        source = 'def main():\n    """Main entry."""\n    # setup\n    print("hi")'
+        _, user = build_evolution_prompt(
+            current_source=source,
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+        )
+        assert '"""Main entry."""' not in user
+        assert '# setup' not in user
+        assert 'print("hi")' in user
