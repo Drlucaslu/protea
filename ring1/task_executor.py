@@ -529,6 +529,7 @@ class TaskExecutor:
         start = time.time()
         response = ""
         skills_used: list[str] = []
+        tool_sequence: list[str] = []
         try:
             # Build context
             snap = self.state.snapshot()
@@ -594,6 +595,7 @@ class TaskExecutor:
             try:
                 if self.registry:
                     def tracking_execute(tool_name: str, tool_input: dict) -> str:
+                        tool_sequence.append(tool_name)
                         if tool_name == "run_skill":
                             skills_used.append(tool_input.get("skill_name", "unknown"))
                         return self.registry.execute(tool_name, tool_input)
@@ -666,16 +668,18 @@ class TaskExecutor:
                             embedding = vecs[0] if vecs else None
                         except Exception:
                             log.debug("Embedding generation failed", exc_info=True)
+                    task_meta = {
+                        "response_summary": response[:200],
+                        "duration_sec": round(duration, 2),
+                        "skills_used": skills_used,
+                        "tool_sequence": tool_sequence,
+                    }
                     if embedding is not None:
                         self.memory_store.add_with_embedding(
                             generation=snap.get("generation", 0),
                             entry_type="task",
                             content=memory_text,
-                            metadata={
-                                "response_summary": response[:200],
-                                "duration_sec": round(duration, 2),
-                                "skills_used": skills_used,
-                            },
+                            metadata=task_meta,
                             embedding=embedding,
                         )
                     else:
@@ -683,11 +687,7 @@ class TaskExecutor:
                             generation=snap.get("generation", 0),
                             entry_type="task",
                             content=memory_text,
-                            metadata={
-                                "response_summary": response[:200],
-                                "duration_sec": round(duration, 2),
-                                "skills_used": skills_used,
-                            },
+                            metadata=task_meta,
                         )
                 except Exception:
                     log.debug("Failed to record task in memory", exc_info=True)
@@ -889,6 +889,7 @@ class TaskExecutor:
         start = time.time()
         response = ""
         skills_used: list[str] = []
+        tool_sequence: list[str] = []
         try:
             # Build context (same as P0)
             snap = self.state.snapshot()
@@ -951,6 +952,7 @@ class TaskExecutor:
             try:
                 if self.registry:
                     def tracking_execute(tool_name: str, tool_input: dict) -> str:
+                        tool_sequence.append(tool_name)
                         if tool_name == "run_skill":
                             skills_used.append(tool_input.get("skill_name", "unknown"))
                         return self.registry.execute(tool_name, tool_input)
@@ -1000,6 +1002,7 @@ class TaskExecutor:
                             "response_summary": response[:200],
                             "duration_sec": round(duration, 2),
                             "skills_used": skills_used,
+                            "tool_sequence": tool_sequence,
                         },
                     )
                 except Exception:
