@@ -477,13 +477,18 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestIntegration:
-    def test_habit_schedule_callback(self):
-        """Bot _handle_callback creates a scheduled task on habit:schedule:..."""
+    def test_habit_schedule_callback_with_context(self):
+        """Callback uses _habit_context for meaningful task_text."""
         from ring1.telegram_bot import SentinelState, TelegramBot
 
         state = SentinelState()
         sched_store = _make_scheduled_store()
         state.scheduled_store = sched_store
+        # Simulate _propose_habit storing context
+        state._habit_context["template:flight_price_tracker"] = {
+            "task_text": "搜索最新航班价格信息并汇报变动",
+            "task_summary": "航班价格追踪",
+        }
 
         bot = TelegramBot.__new__(TelegramBot)
         bot.state = state
@@ -494,11 +499,12 @@ class TestIntegration:
         assert "2 小时后自动停止" in reply
         sched_store.add.assert_called_once()
         call_kw = sched_store.add.call_args
-        # Check expires_at was passed
         assert call_kw[1].get("expires_at") is not None
+        # task_text should be the meaningful description, not generic
+        assert call_kw[1]["task_text"] == "搜索最新航班价格信息并汇报变动"
 
-    def test_habit_schedule_no_auto_stop(self):
-        """Callback without auto_stop_hours → no expires_at."""
+    def test_habit_schedule_fallback_without_context(self):
+        """Without _habit_context, falls back to generic label."""
         from ring1.telegram_bot import SentinelState, TelegramBot
 
         state = SentinelState()
@@ -514,6 +520,21 @@ class TestIntegration:
         assert "自动停止" not in reply
         call_kw = sched_store.add.call_args
         assert call_kw[1].get("expires_at") is None
+        # Fallback: generic but still readable
+        assert "daily_news_digest" in call_kw[1]["task_text"]
+
+    def test_default_task_text_in_template(self):
+        """Template with default_task_text uses it as sample_task."""
+        tmpl = {**FLIGHT_TEMPLATE, "default_task_text": "搜索最新航班价格信息"}
+        tasks = [
+            _make_task("帮我查机票价格"),
+            _make_task("查一下航班信息"),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        assert len(patterns) == 1
+        assert patterns[0].sample_task == "搜索最新航班价格信息"
 
     def test_habit_dismiss_callback(self):
         """Bot _handle_callback records dismissal on habit:dismiss:..."""

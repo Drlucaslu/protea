@@ -729,6 +729,14 @@ class TaskExecutor:
             "callback_data": f"habit:dismiss:{pattern.pattern_key}",
         }])
 
+        # Store proposal context so callback can build a proper task_text.
+        habit_ctx = getattr(self.state, "_habit_context", None)
+        if habit_ctx is not None:
+            habit_ctx[pattern.pattern_key] = {
+                "task_text": pattern.sample_task,
+                "task_summary": pattern.task_summary,
+            }
+
         # Put into state queue for bot to consume.
         habit_q = getattr(self.state, "habit_proposals", None)
         if habit_q is not None:

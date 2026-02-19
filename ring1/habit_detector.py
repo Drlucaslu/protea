@@ -228,7 +228,8 @@ class HabitDetector:
                     hits.append(task)
 
             if len(hits) >= min_hits and task_type != "on_demand":
-                sample = hits[0].get("content", "")[:100]
+                # Prefer template's default_task_text; fall back to first hit.
+                sample = template.get("default_task_text", "") or hits[0].get("content", "")[:100]
                 cron = default_cron or self._detect_time_pattern(hits)
 
                 patterns.append(HabitPattern(

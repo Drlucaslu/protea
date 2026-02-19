@@ -49,7 +49,7 @@ class SentinelState:
         # Service references
         "notifier", "skill_runner", "registry_client", "subagent_manager",
         # Habit detection
-        "habit_proposals", "_habit_dismissed",
+        "habit_proposals", "_habit_dismissed", "_habit_context",
     )
 
     def __init__(self) -> None:
@@ -87,6 +87,7 @@ class SentinelState:
         # Habit detection
         self.habit_proposals: queue.Queue = queue.Queue()
         self._habit_dismissed: set[str] = set()
+        self._habit_context: dict[str, dict] = {}  # pattern_key -> proposal details
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -1080,16 +1081,14 @@ class TelegramBot:
             else:
                 cron_expr = cron_and_stop
 
-            # Derive task name and text from pattern_key.
+            # Look up stored proposal context for a meaningful task_text.
             safe_name = pattern_key.replace(":", "_")
-            if pattern_key.startswith("template:"):
-                tmpl_id = pattern_key.split(":", 1)[1]
-                task_text = f"{tmpl_id} 相关任务"
-            elif pattern_key.startswith("repetitive:"):
+            ctx = getattr(self.state, "_habit_context", {}).get(pattern_key, {})
+            task_text = ctx.get("task_text", "")
+            if not task_text:
+                # Fallback: generic description from pattern_key.
                 label = pattern_key.split(":", 1)[1].replace("+", " ")
                 task_text = f"{label} 相关任务"
-            else:
-                task_text = pattern_key.split(":", 1)[1].replace("+", " ") + " 相关任务"
 
             ss = self.state.scheduled_store
             if not ss:
