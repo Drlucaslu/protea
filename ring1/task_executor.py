@@ -19,6 +19,7 @@ import queue
 import threading
 import time
 
+from ring1.habit_detector import _strip_context_prefix
 from ring1.llm_base import LLMClient, LLMError
 from ring1.tool_registry import ToolRegistry
 
@@ -620,6 +621,9 @@ class TaskExecutor:
                 except Exception:
                     log.debug("Failed to mark task completed", exc_info=True)
             log.info("P0 task done (%.1fs): %s", duration, response[:80])
+            # Strip conversation context prefix so only the user's actual
+            # text is persisted in memory and used for profile analysis.
+            clean_text = _strip_context_prefix(task.text)
             # Record task in memory (with optional embedding).
             if self.memory_store:
                 try:
@@ -627,7 +631,7 @@ class TaskExecutor:
                     embedding = None
                     if self.embedding_provider:
                         try:
-                            vecs = self.embedding_provider.embed([task.text])
+                            vecs = self.embedding_provider.embed([clean_text])
                             embedding = vecs[0] if vecs else None
                         except Exception:
                             log.debug("Embedding generation failed", exc_info=True)
@@ -635,7 +639,7 @@ class TaskExecutor:
                         self.memory_store.add_with_embedding(
                             generation=snap.get("generation", 0),
                             entry_type="task",
-                            content=task.text,
+                            content=clean_text,
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
@@ -647,7 +651,7 @@ class TaskExecutor:
                         self.memory_store.add(
                             generation=snap.get("generation", 0),
                             entry_type="task",
-                            content=task.text,
+                            content=clean_text,
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
@@ -659,7 +663,7 @@ class TaskExecutor:
             # Update user profile.
             if self.user_profiler:
                 try:
-                    self.user_profiler.update_from_task(task.text, response[:200])
+                    self.user_profiler.update_from_task(clean_text, response[:200])
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
 
