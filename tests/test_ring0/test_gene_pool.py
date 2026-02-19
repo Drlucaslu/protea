@@ -394,6 +394,154 @@ class TestBackfillFromGit:
         assert added == 0
 
 
+class TestGetTopWithId:
+    def test_results_contain_id(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# id_test\n")
+        top = gp.get_top(1)
+        assert len(top) == 1
+        assert "id" in top[0]
+        assert isinstance(top[0]["id"], int)
+
+    def test_results_contain_hit_fields(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# hit_fields\n")
+        top = gp.get_top(1)
+        assert top[0]["hit_count"] == 0
+        assert top[0]["last_hit_gen"] == 0
+
+
+class TestGetRelevantWithId:
+    def test_results_contain_id(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# rel_id\n")
+        relevant = gp.get_relevant("stream analyzer", 1)
+        assert len(relevant) == 1
+        assert "id" in relevant[0]
+        assert isinstance(relevant[0]["id"], int)
+
+
+class TestRecordHits:
+    def test_increments_hit_count(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# hit1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.record_hits([gene_id], generation=5)
+        top = gp.get_top(1)
+        assert top[0]["hit_count"] == 1
+        assert top[0]["last_hit_gen"] == 5
+
+    def test_multiple_genes(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, SAMPLE_SOURCE + "\n# m1\n")
+        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# m2\n")
+        ids = [g["id"] for g in gp.get_top(0)]
+        gp.record_hits(ids, generation=10)
+        for g in gp.get_top(0):
+            assert g["hit_count"] == 1
+            assert g["last_hit_gen"] == 10
+
+    def test_empty_list(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.record_hits([], generation=1)  # should not raise
+
+
+class TestApplyBoost:
+    def test_boost_at_threshold(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.70, SAMPLE_SOURCE + "\n# boost1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        # Simulate 3 hits.
+        for gen in range(3):
+            gp.record_hits([gene_id], generation=gen)
+        boosted = gp.apply_boost()
+        assert boosted == 1
+        top = gp.get_top(1)
+        assert abs(top[0]["score"] - 0.73) < 0.001
+        assert top[0]["hit_count"] == 0  # remainder is 0
+
+    def test_cap_at_1_0(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.99, SAMPLE_SOURCE + "\n# cap1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        for gen in range(6):
+            gp.record_hits([gene_id], generation=gen)
+        boosted = gp.apply_boost()
+        assert boosted == 1
+        top = gp.get_top(1)
+        assert top[0]["score"] == 1.0
+
+    def test_remainder_preserved(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.70, SAMPLE_SOURCE + "\n# rem1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        # 5 hits → 1 boost (3 used) + 2 remainder
+        for gen in range(5):
+            gp.record_hits([gene_id], generation=gen)
+        gp.apply_boost()
+        top = gp.get_top(1)
+        assert top[0]["hit_count"] == 2
+
+    def test_no_boost_below_threshold(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.70, SAMPLE_SOURCE + "\n# nobst\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.record_hits([gene_id], generation=1)
+        gp.record_hits([gene_id], generation=2)
+        boosted = gp.apply_boost()
+        assert boosted == 0
+        assert gp.get_top(1)[0]["hit_count"] == 2
+
+
+class TestApplyDecay:
+    def test_stale_decay(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, SAMPLE_SOURCE + "\n# decay1\n")
+        # last_hit_gen=0, current_gen=20 → stale (0 < 20-10)
+        decayed = gp.apply_decay(current_generation=20)
+        assert decayed == 1
+        top = gp.get_top(1)
+        assert abs(top[0]["score"] - 0.78) < 0.001
+
+    def test_floor_respect(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.11, SAMPLE_SOURCE + "\n# floor1\n")
+        decayed = gp.apply_decay(current_generation=20)
+        assert decayed == 1
+        top = gp.get_top(1)
+        assert abs(top[0]["score"] - 0.10) < 0.001
+
+    def test_already_at_floor(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.10, SAMPLE_SOURCE + "\n# atfloor\n")
+        decayed = gp.apply_decay(current_generation=20)
+        assert decayed == 0  # score is already at floor
+
+    def test_skip_recently_hit(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, SAMPLE_SOURCE + "\n# recent1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.record_hits([gene_id], generation=15)
+        # current_gen=20, last_hit_gen=15 → 15 is NOT < 20-10=10, so no decay
+        decayed = gp.apply_decay(current_generation=20)
+        assert decayed == 0
+        assert gp.get_top(1)[0]["score"] == 0.80
+
+
 class TestExtractTags:
     def test_splits_pascal_case(self):
         tags = GenePool.extract_tags("StreamAnalyzer")

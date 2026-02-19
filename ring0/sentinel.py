@@ -368,6 +368,10 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                     context_parts.append(err)
                 context = " ".join(context_parts)
                 genes = gene_pool.get_relevant(context, 3)
+                if genes:
+                    gene_ids = [g["id"] for g in genes if "id" in g]
+                    if gene_ids:
+                        gene_pool.record_hits(gene_ids, generation)
             except Exception:
                 pass
 
@@ -1061,6 +1065,14 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Profile decay: removed %d stale topics", removed)
                         except Exception:
                             log.debug("Profile decay failed (non-fatal)", exc_info=True)
+                    if gene_pool:
+                        try:
+                            boosted = gene_pool.apply_boost()
+                            decayed = gene_pool.apply_decay(generation)
+                            if boosted or decayed:
+                                log.info("Gene scoring: boosted=%d decayed=%d", boosted, decayed)
+                        except Exception:
+                            log.debug("Gene scoring failed (non-fatal)", exc_info=True)
 
                 # Periodic skill sync (every sync_interval seconds, default 2 hours).
                 if skill_syncer and (time.time() - last_skill_sync_time) >= sync_interval:

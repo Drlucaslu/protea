@@ -342,8 +342,8 @@ class TestDashboardServer:
     def test_genes_page(self):
         mock_gene_pool = MagicMock()
         mock_gene_pool.get_top.return_value = [
-            {"generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness,error"},
-            {"generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf"},
+            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness,error", "hit_count": 7, "last_hit_gen": 42},
+            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0},
         ]
         mock_gene_pool.count.return_value = 10
         dashboard, base = self._start(gene_pool=mock_gene_pool)
@@ -354,6 +354,8 @@ class TestDashboardServer:
             assert "Improved error handling" in body
             assert "0.85" in body
             assert "0.72" in body
+            assert "Hits" in body
+            assert "Last Hit" in body
         finally:
             dashboard.stop()
 
@@ -369,7 +371,7 @@ class TestDashboardServer:
     def test_api_genes(self):
         mock_gene_pool = MagicMock()
         mock_gene_pool.get_top.return_value = [
-            {"generation": 5, "score": 0.85, "gene_summary": "Test gene", "tags": "test"},
+            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Test gene", "tags": "test", "hit_count": 3, "last_hit_gen": 10},
         ]
         dashboard, base = self._start(gene_pool=mock_gene_pool)
         try:

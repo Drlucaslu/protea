@@ -820,14 +820,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             gen = g.get("generation", "?")
             summary = _esc(str(g.get("gene_summary", ""))[:80])
             tags = _esc(str(g.get("tags", ""))[:60])
+            hits = g.get("hit_count", 0)
+            last_hit = g.get("last_hit_gen", 0)
             rows_html.append(
                 f'<tr><td>{i}</td><td>{score:.2f}</td><td>{gen}</td>'
-                f'<td>{summary}</td><td>{tags}</td></tr>'
+                f'<td>{summary}</td><td>{tags}</td>'
+                f'<td>{hits}</td><td>{last_hit}</td></tr>'
             )
 
         table = (
             "<table><thead><tr>"
             "<th>#</th><th>Score</th><th>Gen</th><th>Summary</th><th>Tags</th>"
+            "<th>Hits</th><th>Last Hit</th>"
             "</tr></thead><tbody>"
             + "".join(rows_html)
             + "</tbody></table>"

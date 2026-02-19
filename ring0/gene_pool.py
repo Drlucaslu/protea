@@ -57,10 +57,16 @@ class GenePool(SQLiteStore):
         self._backfill_tags()
 
     def _migrate(self, con: sqlite3.Connection) -> None:
-        try:
-            con.execute("ALTER TABLE gene_pool ADD COLUMN tags TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        migrations = [
+            "ALTER TABLE gene_pool ADD COLUMN tags TEXT",
+            "ALTER TABLE gene_pool ADD COLUMN hit_count INTEGER DEFAULT 0",
+            "ALTER TABLE gene_pool ADD COLUMN last_hit_gen INTEGER DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                con.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def _backfill_tags(self) -> None:
         """Compute and store tags for existing genes that lack them."""
@@ -136,13 +142,13 @@ class GenePool(SQLiteStore):
         with self._connect() as con:
             if n <= 0:
                 rows = con.execute(
-                    "SELECT generation, score, gene_summary, tags FROM gene_pool "
-                    "ORDER BY score DESC, generation DESC",
+                    "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen "
+                    "FROM gene_pool ORDER BY score DESC, generation DESC",
                 ).fetchall()
             else:
                 rows = con.execute(
-                    "SELECT generation, score, gene_summary, tags FROM gene_pool "
-                    "ORDER BY score DESC, generation DESC LIMIT ?",
+                    "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen "
+                    "FROM gene_pool ORDER BY score DESC, generation DESC LIMIT ?",
                     (n,),
                 ).fetchall()
             return [dict(r) for r in rows]
@@ -160,7 +166,8 @@ class GenePool(SQLiteStore):
 
         with self._connect() as con:
             rows = con.execute(
-                "SELECT generation, score, gene_summary, tags FROM gene_pool"
+                "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen "
+                "FROM gene_pool"
             ).fetchall()
 
         if not rows:
@@ -182,6 +189,60 @@ class GenePool(SQLiteStore):
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [gene for _, gene in scored[:n]]
+
+    def record_hits(self, gene_ids: list[int], generation: int) -> None:
+        """Increment hit_count and update last_hit_gen for the given gene ids."""
+        if not gene_ids:
+            return
+        with self._connect() as con:
+            for gid in gene_ids:
+                con.execute(
+                    "UPDATE gene_pool SET hit_count = hit_count + 1, last_hit_gen = ? "
+                    "WHERE id = ?",
+                    (generation, gid),
+                )
+
+    def apply_boost(self) -> int:
+        """Boost genes with hit_count >= 3: +0.03 per 3 hits (cap 1.0).
+
+        Resets hit_count but preserves remainder.  Returns number of genes boosted.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, score, hit_count FROM gene_pool WHERE hit_count >= 3"
+            ).fetchall()
+            boosted = 0
+            for row in rows:
+                increments = row["hit_count"] // 3
+                remainder = row["hit_count"] % 3
+                new_score = min(row["score"] + increments * 0.03, 1.0)
+                con.execute(
+                    "UPDATE gene_pool SET score = ?, hit_count = ? WHERE id = ?",
+                    (new_score, remainder, row["id"]),
+                )
+                boosted += 1
+            return boosted
+
+    def apply_decay(self, current_generation: int, decay_rate: float = 0.02) -> int:
+        """Decay genes not hit in >10 generations: -decay_rate (floor 0.10).
+
+        Returns number of genes decayed.
+        """
+        threshold_gen = current_generation - 10
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, score FROM gene_pool WHERE last_hit_gen < ? AND score > 0.10",
+                (threshold_gen,),
+            ).fetchall()
+            decayed = 0
+            for row in rows:
+                new_score = max(row["score"] - decay_rate, 0.10)
+                con.execute(
+                    "UPDATE gene_pool SET score = ? WHERE id = ?",
+                    (new_score, row["id"]),
+                )
+                decayed += 1
+            return decayed
 
     def backfill(self, skill_store) -> int:
         """One-time backfill from existing crystallized skills.
