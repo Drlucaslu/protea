@@ -15,6 +15,7 @@ from ring1.habit_detector import (
     HabitPattern,
     _JACCARD_THRESHOLD,
     _PROPOSE_COOLDOWN_SEC,
+    _strip_context_prefix,
     load_templates,
 )
 
@@ -761,3 +762,92 @@ class TestMinKeywordHits:
         patterns = detector.detect()
         # With default min_keyword_hits=1, single "系统" is enough
         assert len(patterns) == 1
+
+
+# ---------------------------------------------------------------------------
+# Context prefix stripping
+# ---------------------------------------------------------------------------
+
+class TestContextPrefixStripping:
+    def test_strip_time_window_prefix(self):
+        """Strip '[Context: User sent this Xs after...]' prefix."""
+        text = (
+            '[Context: User sent this 46s after your last message]\n'
+            'Your previous message: "现在..."\n'
+            'User now says: 帮我查一下最近的新闻'
+        )
+        assert _strip_context_prefix(text) == "帮我查一下最近的新闻"
+
+    def test_strip_explicit_reply_prefix(self):
+        """Strip '[Context: User is replying...]' prefix."""
+        text = (
+            '[Context: User is replying to your previous message]\n'
+            'Your message: "这是之前的回复"\n'
+            "User's reply: 好的谢谢"
+        )
+        assert _strip_context_prefix(text) == "好的谢谢"
+
+    def test_no_prefix_passthrough(self):
+        """Text without context prefix is returned unchanged."""
+        text = "帮我查一下新闻"
+        assert _strip_context_prefix(text) == "帮我查一下新闻"
+
+    def test_context_prefix_not_counted_in_keyword_match(self):
+        """Keywords in context prefix should not trigger template match."""
+        NEWS_TMPL = {
+            "id": "daily_news_digest",
+            "name": "每日新闻摘要",
+            "keywords": ["新闻", "头条", "news"],
+            "regex_patterns": [],
+            "task_type": "periodic",
+            "default_cron": "0 7 * * *",
+            "min_hits": 2,
+            "window_hours": 72,
+        }
+        # These tasks mention "新闻" only in the context prefix (bot's reply),
+        # NOT in the user's actual text.
+        tasks = [
+            _make_task(
+                '[Context: User sent this 46s after your last message]\n'
+                'Your previous message: "这里是最新新闻摘要..."\n'
+                'User now says: 想要设计一个任务模板'
+            ),
+            _make_task(
+                '[Context: User sent this 63s after your last message]\n'
+                'Your previous message: "新闻已发送"\n'
+                'User now says: 好的，帮我查一下天气'
+            ),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[NEWS_TMPL])
+        patterns = detector.detect()
+        # Neither task's actual text contains "新闻", so no match
+        assert len(patterns) == 0
+
+    def test_all_samples_show_clean_content(self):
+        """all_samples should contain stripped user text, not context prefix."""
+        tasks = [
+            _make_task(
+                '[Context: User sent this 10s after your last message]\n'
+                'Your previous message: "已完成"\n'
+                'User now says: 查一下AI最新论文'
+            ),
+            _make_task("搜索AGI相关研究论文"),
+        ]
+        tmpl = {
+            "id": "academic_paper_alert",
+            "name": "学术论文监控",
+            "keywords": ["论文", "研究"],
+            "regex_patterns": [],
+            "task_type": "periodic",
+            "default_cron": "0 8 * * *",
+            "min_hits": 2,
+            "window_hours": 168,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        assert len(patterns) == 1
+        # all_samples should be the clean user text
+        assert patterns[0].all_samples[0] == "查一下AI最新论文"
+        assert patterns[0].all_samples[1] == "搜索AGI相关研究论文"

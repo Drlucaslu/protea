@@ -22,6 +22,21 @@ from datetime import datetime
 
 log = logging.getLogger("protea.habit_detector")
 
+# Regex to strip conversation context prefix injected by telegram_bot.
+# Matches: "[Context: ...]\nYour (previous )?message: \"...\"\nUser('s reply|now says): "
+_CONTEXT_PREFIX_RE = re.compile(
+    r"^\[Context:[^\]]*\]\n"
+    r"Your (?:previous )?message: \"[^\"]*(?:\.\.\.)?\"[\n]+"
+    r"User(?:'s reply|\s+now says): ",
+    re.DOTALL,
+)
+
+
+def _strip_context_prefix(text: str) -> str:
+    """Remove conversation context prefix, returning only the user's text."""
+    return _CONTEXT_PREFIX_RE.sub("", text)
+
+
 # Cooldown: do not re-propose the same pattern within this window.
 _PROPOSE_COOLDOWN_SEC = 24 * 3600  # 24 hours
 
@@ -197,9 +212,13 @@ class HabitDetector:
             # Count matching tasks within time window
             hits: list[dict] = []
             for task in tasks:
-                content = task.get("content", "")
-                if not content:
+                raw_content = task.get("content", "")
+                if not raw_content:
                     continue
+
+                # Strip conversation context prefix so we only match
+                # against the user's actual text, not the bot's prior reply.
+                content = _strip_context_prefix(raw_content)
 
                 # Check time window
                 ts_str = task.get("timestamp", "")
@@ -244,7 +263,7 @@ class HabitDetector:
                     sample_task=sample,
                     template_name=tmpl_id,
                     auto_stop_hours=auto_stop_hours,
-                    all_samples=[h.get("content", "")[:80] for h in hits[:5]],
+                    all_samples=[_strip_context_prefix(h.get("content", ""))[:80] for h in hits[:5]],
                 ))
 
         return patterns
