@@ -475,6 +475,7 @@ class TaskExecutor:
                 log.debug("Failed to mark task executing", exc_info=True)
         start = time.time()
         response = ""
+        skills_used: list[str] = []
         try:
             # Build context
             snap = self.state.snapshot()
@@ -531,10 +532,15 @@ class TaskExecutor:
             # LLM call with tool registry
             try:
                 if self.registry:
+                    def tracking_execute(tool_name: str, tool_input: dict) -> str:
+                        if tool_name == "run_skill":
+                            skills_used.append(tool_input.get("skill_name", "unknown"))
+                        return self.registry.execute(tool_name, tool_input)
+
                     response = self.client.send_message_with_tools(
                         TASK_SYSTEM_PROMPT, user_message,
                         tools=self.registry.get_schemas(),
-                        tool_executor=self.registry.execute,
+                        tool_executor=tracking_execute,
                         max_rounds=self.max_tool_rounds,
                     )
                 else:
@@ -552,9 +558,16 @@ class TaskExecutor:
             # Record conversation history for context continuity.
             self._record_history(task.text, response)
 
+            # Resolution footer.
+            elapsed = time.time() - start
+            if skills_used:
+                footer = f"\n---\nskill: {', '.join(skills_used)} | {elapsed:.0f}s"
+            else:
+                footer = f"\n---\nllm | {elapsed:.0f}s"
+
             # Reply — split into segments for Telegram's 4096-char limit.
             try:
-                _send_segmented(self.reply_fn, response)
+                _send_segmented(self.reply_fn, response + footer)
             except Exception:
                 log.error("Failed to send task reply", exc_info=True)
         finally:
@@ -591,6 +604,7 @@ class TaskExecutor:
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
+                                "skills_used": skills_used,
                             },
                             embedding=embedding,
                         )
@@ -602,6 +616,7 @@ class TaskExecutor:
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
+                                "skills_used": skills_used,
                             },
                         )
                 except Exception:
@@ -687,6 +702,7 @@ class TaskExecutor:
         self.state.p1_active.set()
         start = time.time()
         response = ""
+        skills_used: list[str] = []
         try:
             # Build context (same as P0)
             snap = self.state.snapshot()
@@ -740,10 +756,15 @@ class TaskExecutor:
 
             try:
                 if self.registry:
+                    def tracking_execute(tool_name: str, tool_input: dict) -> str:
+                        if tool_name == "run_skill":
+                            skills_used.append(tool_input.get("skill_name", "unknown"))
+                        return self.registry.execute(tool_name, tool_input)
+
                     response = self.client.send_message_with_tools(
                         TASK_SYSTEM_PROMPT, user_message,
                         tools=self.registry.get_schemas(),
-                        tool_executor=self.registry.execute,
+                        tool_executor=tracking_execute,
                         max_rounds=self.max_tool_rounds,
                     )
                 else:
@@ -758,7 +779,12 @@ class TaskExecutor:
                 response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
 
             # Report to user
-            report = f"[P1 Autonomous Work] {task_desc}\n\n{response}"
+            elapsed = time.time() - start
+            if skills_used:
+                footer = f"\n---\nskill: {', '.join(skills_used)} | {elapsed:.0f}s"
+            else:
+                footer = f"\n---\nllm | {elapsed:.0f}s"
+            report = f"[P1 Autonomous Work] {task_desc}\n\n{response}{footer}"
             if len(report) > _MAX_REPLY_LEN:
                 report = report[:_MAX_REPLY_LEN] + "\n... (truncated)"
             try:
@@ -779,6 +805,7 @@ class TaskExecutor:
                         metadata={
                             "response_summary": response[:200],
                             "duration_sec": round(duration, 2),
+                            "skills_used": skills_used,
                         },
                     )
                 except Exception:

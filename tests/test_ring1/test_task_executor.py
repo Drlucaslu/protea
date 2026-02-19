@@ -174,7 +174,8 @@ class TestTaskExecutor:
         client.send_message_with_tools.assert_called_once()
         call_args = client.send_message_with_tools.call_args
         assert "What is 2+2?" in call_args[0][1]  # user_message
-        reply_fn.assert_called_once_with("Here is my answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("Here is my answer")
 
     def test_execute_task_passes_registry(self, tmp_path):
         """Registry schemas and executor should be passed to LLM."""
@@ -213,7 +214,8 @@ class TestTaskExecutor:
 
         client.send_message.assert_called_once()
         client.send_message_with_tools.assert_not_called()
-        reply_fn.assert_called_once_with("simple answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("simple answer")
 
     def test_p0_active_signal(self, tmp_path):
         """p0_active should be set during task execution and cleared after."""
@@ -333,7 +335,7 @@ class TestTaskExecutor:
             time.sleep(0.1)
 
         assert reply_fn.called
-        assert reply_fn.call_args[0][0] == "answer"
+        assert reply_fn.call_args[0][0].startswith("answer")
 
         executor.stop()
         thread.join(timeout=5)
@@ -354,7 +356,8 @@ class TestTaskExecutor:
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)
 
-        reply_fn.assert_called_once_with("answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("answer")
 
     def test_p0_active_cleared_on_exception(self, tmp_path):
         """p0_active should be cleared even if reply_fn raises."""
@@ -450,7 +453,8 @@ class TestTaskExecutorWithMemory:
         task = Task(text="hello", chat_id="123")
         executor._execute_task(task)
 
-        reply_fn.assert_called_once_with("answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("answer")
 
 
 class TestTaskHistoryRecording:
@@ -495,7 +499,8 @@ class TestTaskHistoryRecording:
         executor = TaskExecutor(state, client, ring2, reply_fn, registry=registry)
         task = Task(text="test", chat_id="123")
         executor._execute_task(task)  # should not raise
-        reply_fn.assert_called_once_with("answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("answer")
 
 
 class TestSkillInjection:
@@ -840,7 +845,8 @@ class TestTaskPersistence:
         )
         task = Task(text="hello", chat_id="123")
         executor._execute_task(task)
-        reply_fn.assert_called_once_with("answer")
+        reply_fn.assert_called_once()
+        assert reply_fn.call_args[0][0].startswith("answer")
 
     def test_last_task_completion_updated(self, tmp_path):
         state = _make_state()
@@ -1096,3 +1102,155 @@ class TestChatHistory:
         assert len(history) == 1
         assert history[0][0] == "find credentials.json"
         assert history[0][1] == "Found 2 files"
+
+
+# ---------------------------------------------------------------------------
+# TestSkillHitTracking
+# ---------------------------------------------------------------------------
+
+class TestSkillHitTracking:
+    """Test that skill usage is tracked in metadata and footer."""
+
+    def _make_skill_registry(self):
+        """Create a test registry with run_skill tool."""
+        reg = ToolRegistry()
+        reg.register(Tool(
+            name="run_skill",
+            description="Run a skill",
+            input_schema={
+                "type": "object",
+                "properties": {"skill_name": {"type": "string"}},
+                "required": ["skill_name"],
+            },
+            execute=lambda inp: "skill output",
+        ))
+        return reg
+
+    def test_skill_used_recorded_in_metadata(self, tmp_path):
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+
+        def fake_send(system, user, tools=None, tool_executor=None, max_rounds=None):
+            if tool_executor:
+                tool_executor("run_skill", {"skill_name": "my_skill"})
+            return "Skill result"
+
+        client.send_message_with_tools.side_effect = fake_send
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=self._make_skill_registry(), memory_store=ms,
+        )
+        task = Task(text="run my skill", chat_id="123")
+        executor._execute_task(task)
+
+        tasks = ms.get_by_type("task")
+        assert len(tasks) == 1
+        assert tasks[0]["metadata"]["skills_used"] == ["my_skill"]
+
+    def test_no_skill_empty_list(self, tmp_path):
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=self._make_skill_registry(), memory_store=ms,
+        )
+        task = Task(text="just answer", chat_id="123")
+        executor._execute_task(task)
+
+        tasks = ms.get_by_type("task")
+        assert len(tasks) == 1
+        assert tasks[0]["metadata"]["skills_used"] == []
+
+    def test_multiple_skills_tracked(self, tmp_path):
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+
+        def fake_send(system, user, tools=None, tool_executor=None, max_rounds=None):
+            if tool_executor:
+                tool_executor("run_skill", {"skill_name": "skill_a"})
+                tool_executor("run_skill", {"skill_name": "skill_b"})
+            return "Done"
+
+        client.send_message_with_tools.side_effect = fake_send
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=self._make_skill_registry(), memory_store=ms,
+        )
+        task = Task(text="use skills", chat_id="123")
+        executor._execute_task(task)
+
+        tasks = ms.get_by_type("task")
+        assert tasks[0]["metadata"]["skills_used"] == ["skill_a", "skill_b"]
+
+    def test_footer_with_skill(self, tmp_path):
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+
+        def fake_send(system, user, tools=None, tool_executor=None, max_rounds=None):
+            if tool_executor:
+                tool_executor("run_skill", {"skill_name": "web_dash"})
+            return "Started"
+
+        client.send_message_with_tools.side_effect = fake_send
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=self._make_skill_registry(),
+        )
+        task = Task(text="start web dash", chat_id="123")
+        executor._execute_task(task)
+
+        sent = reply_fn.call_args[0][0]
+        assert "skill: web_dash" in sent
+        assert "---" in sent
+
+    def test_footer_llm_only(self, tmp_path):
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "LLM answer"
+        reply_fn = MagicMock()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=self._make_skill_registry(),
+        )
+        task = Task(text="what is 2+2", chat_id="123")
+        executor._execute_task(task)
+
+        sent = reply_fn.call_args[0][0]
+        assert "llm |" in sent
+        assert "---" in sent

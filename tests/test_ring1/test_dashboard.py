@@ -13,6 +13,8 @@ from ring1.dashboard import (
     DashboardHandler,
     _render_fitness_svg,
     _render_category_bars_svg,
+    _render_skill_hit_ratio_svg,
+    _compute_daily_skill_hit_ratio,
     create_dashboard,
 )
 
@@ -68,6 +70,72 @@ class TestCreateDashboard:
         cfg = {"ring1": {"dashboard": {"enabled": True, "port": 0}}}
         dashboard = create_dashboard(MagicMock(), cfg)
         assert isinstance(dashboard, Dashboard)
+
+
+class TestRenderSkillHitRatioSvg:
+    def test_empty_data(self):
+        result = _render_skill_hit_ratio_svg([])
+        assert "No task data" in result
+
+    def test_all_zero_totals(self):
+        data = [{"date": "2026-02-19", "total": 0, "skill": 0, "ratio": 0.0}]
+        result = _render_skill_hit_ratio_svg(data)
+        assert "No task data" in result
+
+    def test_single_day(self):
+        data = [{"date": "2026-02-19", "total": 5, "skill": 3, "ratio": 0.6}]
+        svg = _render_skill_hit_ratio_svg(data)
+        assert "<svg" in svg
+        assert "3/5" in svg
+
+    def test_multi_day(self):
+        data = [
+            {"date": "2026-02-18", "total": 2, "skill": 1, "ratio": 0.5},
+            {"date": "2026-02-19", "total": 4, "skill": 3, "ratio": 0.75},
+        ]
+        svg = _render_skill_hit_ratio_svg(data)
+        assert "<svg" in svg
+        assert "1/2" in svg
+        assert "3/4" in svg
+
+
+class TestComputeDailySkillHitRatio:
+    def test_empty_store(self):
+        mock_store = MagicMock()
+        mock_store.get_by_type.return_value = []
+        data = _compute_daily_skill_hit_ratio(mock_store)
+        assert len(data) == 14
+        assert all(d["total"] == 0 for d in data)
+
+    def test_with_skills(self):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        mock_store = MagicMock()
+        mock_store.get_by_type.side_effect = lambda t, limit: [
+            {"timestamp": f"{today}T10:00:00", "metadata": {"skills_used": ["s1"]}},
+            {"timestamp": f"{today}T11:00:00", "metadata": {}},
+        ] if t == "task" else []
+
+        data = _compute_daily_skill_hit_ratio(mock_store)
+        today_entry = [d for d in data if d["date"] == today]
+        assert len(today_entry) == 1
+        assert today_entry[0]["total"] == 2
+        assert today_entry[0]["skill"] == 1
+
+    def test_legacy_no_skills_key(self):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        mock_store = MagicMock()
+        mock_store.get_by_type.side_effect = lambda t, limit: [
+            {"timestamp": f"{today}T10:00:00", "metadata": {}},
+        ] if t == "task" else []
+
+        data = _compute_daily_skill_hit_ratio(mock_store)
+        today_entry = [d for d in data if d["date"] == today]
+        assert today_entry[0]["total"] == 1
+        assert today_entry[0]["skill"] == 0
 
 
 class TestDashboardServer:
@@ -211,6 +279,30 @@ class TestDashboardServer:
         try:
             code, _ = self._get(f"{base}/nonexistent")
             assert code == 404
+        finally:
+            dashboard.stop()
+
+    def test_api_skill_hit_ratio(self):
+        mock_memory = MagicMock()
+        mock_memory.get_by_type.return_value = []
+        mock_memory.get_stats.return_value = {}
+        dashboard, base = self._start(memory_store=mock_memory)
+        try:
+            code, data = self._get_json(f"{base}/api/skill_hit_ratio")
+            assert code == 200
+            assert isinstance(data, list)
+        finally:
+            dashboard.stop()
+
+    def test_overview_contains_skill_hit_ratio(self):
+        mock_memory = MagicMock()
+        mock_memory.get_stats.return_value = {}
+        mock_memory.get_by_type.return_value = []
+        dashboard, base = self._start(memory_store=mock_memory)
+        try:
+            code, body = self._get(f"{base}/")
+            assert code == 200
+            assert "Skill Hit Ratio" in body
         finally:
             dashboard.stop()
 

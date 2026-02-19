@@ -229,6 +229,89 @@ def _render_category_bars_svg(categories: dict[str, float], width: int = 400, he
     return "".join(parts)
 
 
+def _compute_daily_skill_hit_ratio(memory_store, days: int = 14) -> list[dict]:
+    """Compute daily skill hit ratio from task memory entries.
+
+    Returns a list of {date, total, skill, ratio} dicts for the last *days* days.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    entries = []
+    for entry_type in ("task", "p1_task"):
+        try:
+            entries.extend(memory_store.get_by_type(entry_type, 200))
+        except Exception:
+            pass
+
+    # Bucket by date
+    buckets: dict[str, dict] = {}
+    for e in entries:
+        ts = e.get("timestamp", "")
+        if not ts:
+            continue
+        day = ts[:10]  # "YYYY-MM-DD"
+        if day not in buckets:
+            buckets[day] = {"total": 0, "skill": 0}
+        buckets[day]["total"] += 1
+        meta = e.get("metadata", {})
+        if meta.get("skills_used"):
+            buckets[day]["skill"] += 1
+
+    # Fill in missing days
+    today = datetime.now(timezone.utc).date()
+    result = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        key = d.isoformat()
+        b = buckets.get(key, {"total": 0, "skill": 0})
+        ratio = b["skill"] / b["total"] if b["total"] > 0 else 0.0
+        result.append({"date": key, "total": b["total"], "skill": b["skill"], "ratio": ratio})
+    return result
+
+
+def _render_skill_hit_ratio_svg(daily_data: list[dict], width: int = 800, height: int = 200) -> str:
+    """Bar chart SVG for daily skill hit ratio."""
+    if not daily_data or all(d["total"] == 0 for d in daily_data):
+        return '<p style="color:#777">No task data yet.</p>'
+
+    margin = 40
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    n = len(daily_data)
+    bar_w = max(4, plot_w / n - 4)
+
+    parts = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">'
+        f'<rect width="{width}" height="{height}" fill="#0d1230" rx="8"/>',
+        # Axes
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
+        f'<line x1="{margin}" y1="{margin + plot_h}" x2="{margin + plot_w}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
+    ]
+
+    # Y-axis labels (0% - 100%)
+    for pct in (0, 25, 50, 75, 100):
+        y = margin + plot_h - pct / 100 * plot_h
+        parts.append(f'<text x="{margin - 5}" y="{y + 4}" fill="#555" font-size="10" text-anchor="end">{pct}%</text>')
+        parts.append(f'<line x1="{margin}" y1="{y}" x2="{margin + plot_w}" y2="{y}" stroke="#1a1f3a" stroke-width="0.5" stroke-dasharray="4"/>')
+
+    # Bars
+    for i, d in enumerate(daily_data):
+        x = margin + i * (plot_w / n) + 2
+        ratio = d["ratio"]
+        bar_h = max(0, ratio * plot_h)
+        y = margin + plot_h - bar_h
+        if d["total"] > 0:
+            parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" rx="2" fill="#667eea" opacity="0.8"/>')
+            # Label: skill/total
+            parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{y - 4:.1f}" fill="#999" font-size="9" text-anchor="middle">{d["skill"]}/{d["total"]}</text>')
+        # X-axis: day number
+        day_num = d["date"][8:10]  # DD
+        parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{margin + plot_h + 14}" fill="#555" font-size="9" text-anchor="middle">{day_num}</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
@@ -290,6 +373,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_status()
         elif path == "/api/schedules":
             self._api_schedules()
+        elif path == "/api/skill_hit_ratio":
+            self._api_skill_hit_ratio()
         else:
             self._send_error(404, "Not Found")
 
@@ -386,10 +471,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Skill hit ratio chart
+        hit_ratio_svg = ""
+        if self.memory_store:
+            try:
+                daily_data = _compute_daily_skill_hit_ratio(self.memory_store)
+                hit_ratio_svg = _render_skill_hit_ratio_svg(daily_data)
+            except Exception:
+                pass
+
         body = (
             f'<div class="cards">{gen_card}{mem_card}{skill_card}{intent_card}{profile_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
+            f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
+            f'{hit_ratio_svg}'
         )
         self._send_html(_page("Overview", body))
 
@@ -715,6 +811,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._send_json(tasks)
+
+    def _api_skill_hit_ratio(self) -> None:
+        data = []
+        if self.memory_store:
+            try:
+                data = _compute_daily_skill_hit_ratio(self.memory_store)
+            except Exception:
+                pass
+        self._send_json(data)
 
     def _api_fitness(self) -> None:
         history = []
