@@ -28,9 +28,20 @@ _MAX_REPLY_LEN = 8000  # Allow longer replies; split into segments if needed
 
 _TG_MSG_LIMIT = 4000  # Telegram hard limit ~4096, leave margin
 
-_RECALL_KEYWORD_RE = __import__("re").compile(r"[a-zA-Z0-9_\u4e00-\u9fff]+")
+import re as _re
 
-_SKILL_TOKEN_RE = __import__("re").compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")
+_RECALL_KEYWORD_RE = _re.compile(r"[a-zA-Z0-9_\u4e00-\u9fff]+")
+
+_SKILL_TOKEN_RE = _re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")
+
+# Patterns that indicate a user correction / standing instruction.
+_CORRECTION_PATTERNS: list[_re.Pattern[str]] = [
+    _re.compile(r"(不对|错了|不是这样|搞错了|弄错了)"),
+    _re.compile(r"(你应该|应该是|正确的是|正确做法)"),
+    _re.compile(r"(记住|要记住|你要记住|别忘了).*[，,。.]"),
+    _re.compile(r"(下次|以后|每次).*(要|应该|别|不要)"),
+    _re.compile(r"(wrong|incorrect|should be|remember|always|never)", _re.IGNORECASE),
+]
 
 
 def _tokenize_for_matching(text: str) -> set[str]:
@@ -256,6 +267,7 @@ def _build_task_context(
     recalled: list[dict] | None = None,
     recommended_skills: list[dict] | None = None,
     other_skills: list[dict] | None = None,
+    semantic_rules: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     parts = ["## Protea State"]
@@ -333,6 +345,13 @@ def _build_task_context(
             gen = mem.get("generation", "?")
             content = mem.get("content", "")[:200]
             parts.append(f"- [Gen {gen}, archived] {content}")
+
+    if semantic_rules:
+        parts.append("")
+        parts.append("## Correction Rules (MUST follow)")
+        for rule in semantic_rules[:10]:
+            content = rule.get("content", "")[:150]
+            parts.append(f"- {content}")
 
     return "\n".join(parts)
 
@@ -528,12 +547,20 @@ class TaskExecutor:
                 else:
                     other_skills = skills
 
+            semantic_rules: list[dict] = []
+            if self.memory_store:
+                try:
+                    semantic_rules = self.memory_store.get_semantic_rules(limit=10)
+                except Exception:
+                    pass
+
             history = self._get_recent_history()
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
                 chat_history=history, recalled=recalled,
                 recommended_skills=recommended_skills,
                 other_skills=other_skills,
+                semantic_rules=semantic_rules,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -565,6 +592,9 @@ class TaskExecutor:
 
             # Record conversation history for context continuity.
             self._record_history(task.text, response)
+
+            # Check for correction pattern and persist as semantic_rule.
+            self._check_and_store_correction(task.text)
 
             # Resolution footer.
             elapsed = time.time() - start
@@ -635,6 +665,24 @@ class TaskExecutor:
                     self.user_profiler.update_from_task(task.text, response[:200])
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
+
+    def _check_and_store_correction(self, task_text: str) -> None:
+        """If *task_text* contains a correction pattern, store as semantic_rule."""
+        if not self.memory_store:
+            return
+        for pat in _CORRECTION_PATTERNS:
+            if pat.search(task_text):
+                rule_text = task_text.strip()
+                if len(rule_text) > 200:
+                    rule_text = rule_text[:200]
+                self.memory_store.add(
+                    generation=self.state.snapshot().get("generation", 0),
+                    entry_type="semantic_rule",
+                    content=rule_text,
+                    importance=0.8,
+                )
+                log.info("Correction detected, stored as semantic_rule: %s", rule_text[:60])
+                break
 
     def _propose_habit(self, pattern) -> None:
         """Push a habit proposal to state.habit_proposals for the bot to send."""
@@ -812,10 +860,18 @@ class TaskExecutor:
                 else:
                     other_skills_p1 = skills
 
+            semantic_rules_p1: list[dict] = []
+            if self.memory_store:
+                try:
+                    semantic_rules_p1 = self.memory_store.get_semantic_rules(limit=10)
+                except Exception:
+                    pass
+
             context = _build_task_context(
                 snap, ring2_source, memories=memories, recalled=recalled,
                 recommended_skills=recommended_skills_p1,
                 other_skills=other_skills_p1,
+                semantic_rules=semantic_rules_p1,
             )
             user_message = f"{context}\n\n## Autonomous Task\n{task_desc}"
 

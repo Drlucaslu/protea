@@ -89,9 +89,15 @@ class HabitDetector:
     # ------------------------------------------------------------------
 
     def _get_tasks(self, limit: int) -> list[dict]:
-        """Fetch recent task entries from memory."""
+        """Fetch recent task entries from memory.
+
+        Only keeps tasks with importance >= 0.5, filtering out operational
+        commands (e.g. "/calendar 取消") and session follow-up corrections
+        that should not count as independent repeated patterns.
+        """
         try:
-            return self._memory.get_by_type("task", limit=limit)
+            tasks = self._memory.get_by_type("task", limit=limit)
+            return [t for t in tasks if t.get("importance", 0.5) >= 0.5]
         except Exception:
             log.debug("Failed to fetch tasks from memory", exc_info=True)
             return []

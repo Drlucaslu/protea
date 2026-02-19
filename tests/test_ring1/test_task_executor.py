@@ -1254,3 +1254,219 @@ class TestSkillHitTracking:
         sent = reply_fn.call_args[0][0]
         assert "llm |" in sent
         assert "---" in sent
+
+
+# ---------------------------------------------------------------------------
+# TestCorrectionDetection
+# ---------------------------------------------------------------------------
+
+class TestCorrectionDetection:
+    """Test correction pattern detection and semantic_rule storage."""
+
+    def test_correction_detected_and_stored(self, tmp_path):
+        """Task text with correction pattern stored as semantic_rule."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "OK, 我记住了"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="不对，你应该用中文回复", chat_id="123")
+        executor._execute_task(task)
+
+        rules = ms.get_semantic_rules(limit=10)
+        assert len(rules) == 1
+        assert "你应该用中文回复" in rules[0]["content"]
+
+    def test_remember_pattern_stored(self, tmp_path):
+        """'记住...' pattern should trigger semantic_rule storage."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "Got it"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="记住，新闻要用中文源。", chat_id="123")
+        executor._execute_task(task)
+
+        rules = ms.get_semantic_rules(limit=10)
+        assert len(rules) == 1
+
+    def test_future_directive_stored(self, tmp_path):
+        """'下次...要...' pattern should trigger semantic_rule storage."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "Understood"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="下次查新闻要用中文搜索", chat_id="123")
+        executor._execute_task(task)
+
+        rules = ms.get_semantic_rules(limit=10)
+        assert len(rules) == 1
+
+    def test_english_correction_stored(self, tmp_path):
+        """English correction patterns work too."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "Noted"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="That's wrong, you should always reply in Chinese", chat_id="123")
+        executor._execute_task(task)
+
+        rules = ms.get_semantic_rules(limit=10)
+        assert len(rules) == 1
+
+    def test_non_correction_not_stored(self, tmp_path):
+        """Normal task text does not trigger semantic_rule creation."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "Here's the weather"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="今天天气怎么样", chat_id="123")
+        executor._execute_task(task)
+
+        rules = ms.get_semantic_rules(limit=10)
+        assert len(rules) == 0
+
+    def test_no_memory_store_no_crash(self, tmp_path):
+        """Correction detection gracefully handles missing memory_store."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "OK"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=None,
+        )
+        task = Task(text="不对，你应该用中文回复", chat_id="123")
+        executor._execute_task(task)  # should not raise
+        reply_fn.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestSemanticRulesContext
+# ---------------------------------------------------------------------------
+
+class TestSemanticRulesContext:
+    """Test that semantic_rules are injected into task context."""
+
+    def test_semantic_rules_in_context(self):
+        """_build_task_context includes semantic_rules section."""
+        snap = {"generation": 1, "alive": True, "paused": False,
+                "last_score": 0.9, "last_survived": True}
+        rules = [
+            {"content": "你应该用中文回复", "generation": 1},
+            {"content": "新闻要用中文源", "generation": 2},
+        ]
+        ctx = _build_task_context(snap, "", semantic_rules=rules)
+        assert "## Correction Rules (MUST follow)" in ctx
+        assert "你应该用中文回复" in ctx
+        assert "新闻要用中文源" in ctx
+
+    def test_semantic_rules_empty_no_section(self):
+        """No semantic_rules -> no section in context."""
+        snap = {"generation": 1, "alive": True, "paused": False,
+                "last_score": 0.9, "last_survived": True}
+        ctx = _build_task_context(snap, "", semantic_rules=[])
+        assert "Correction Rules" not in ctx
+
+    def test_semantic_rules_none_no_section(self):
+        """semantic_rules=None -> no section in context."""
+        snap = {"generation": 1, "alive": True, "paused": False,
+                "last_score": 0.9, "last_survived": True}
+        ctx = _build_task_context(snap, "", semantic_rules=None)
+        assert "Correction Rules" not in ctx
+
+    def test_semantic_rules_injected_in_p0(self, tmp_path):
+        """P0 task context should contain semantic_rules from memory."""
+        from ring0.memory import MemoryStore
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        ms.add(1, "semantic_rule", "你应该用中文回复", importance=0.8)
+
+        captured = []
+        def capture(system, user, *args, **kwargs):
+            captured.append(user)
+            return "answer"
+
+        client = MagicMock()
+        client.send_message_with_tools.side_effect = capture
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms,
+        )
+        task = Task(text="今天有什么新闻", chat_id="123")
+        executor._execute_task(task)
+
+        assert len(captured) == 1
+        assert "Correction Rules" in captured[0]
+        assert "你应该用中文回复" in captured[0]

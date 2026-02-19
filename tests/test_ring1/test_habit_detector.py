@@ -393,3 +393,63 @@ class TestIntegration:
         detector = HabitDetector(mem)
         patterns = detector.detect()
         assert patterns == []
+
+
+# ---------------------------------------------------------------------------
+# Importance filtering
+# ---------------------------------------------------------------------------
+
+class TestImportanceFiltering:
+    def test_low_importance_tasks_filtered(self):
+        """Tasks with importance < 0.5 should not be considered."""
+        tasks = [
+            {**_make_task(f"commit #{i}", skills_used=["git"]),
+             "importance": 0.3}
+            for i in range(5)
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        assert len(patterns) == 0
+
+    def test_high_importance_tasks_detected(self):
+        """Tasks with importance >= 0.5 should be detected."""
+        tasks = [
+            {**_make_task(f"分析数据 #{i}", skills_used=["analyzer"]),
+             "importance": 0.7}
+            for i in range(4)
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        skill_patterns = [p for p in patterns if p.pattern_type == "skill_reuse"]
+        assert len(skill_patterns) == 1
+
+    def test_mixed_importance_only_high_counted(self):
+        """Only tasks above threshold contribute to pattern count."""
+        tasks = [
+            {**_make_task("分析数据", skills_used=["analyzer"]), "importance": 0.7},
+            {**_make_task("分析数据", skills_used=["analyzer"]), "importance": 0.7},
+            {**_make_task("分析数据", skills_used=["analyzer"]), "importance": 0.7},
+            {**_make_task("commit", skills_used=["analyzer"]), "importance": 0.3},
+            {**_make_task("ok", skills_used=["analyzer"]), "importance": 0.2},
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        skill_patterns = [p for p in patterns if p.pattern_type == "skill_reuse"]
+        assert len(skill_patterns) == 1
+        assert skill_patterns[0].count == 3  # only the 3 high-importance ones
+
+    def test_default_importance_passes(self):
+        """Tasks without importance field default to 0.5 and pass the filter."""
+        tasks = [
+            _make_task(f"查询天气 #{i}", skills_used=["weather"])
+            for i in range(4)
+        ]
+        # No "importance" key in these tasks — should default to 0.5.
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        skill_patterns = [p for p in patterns if p.pattern_type == "skill_reuse"]
+        assert len(skill_patterns) == 1
