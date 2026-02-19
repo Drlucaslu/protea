@@ -202,14 +202,17 @@ class CommitWatcher:
         self._last_fetch_time = now
 
         if not self._fetch():
+            log.warning("git fetch origin failed")
             return False
 
         remote_head = self._get_remote_head()
         if remote_head is None:
+            log.warning("Could not resolve origin/main or origin/master")
             return False
 
         # Already synced this hash (or it's the initial state).
         if remote_head == self._last_synced_hash:
+            log.info("Remote %s: up to date", remote_head[:12])
             return False
 
         # Skip hash that previously failed tests.
