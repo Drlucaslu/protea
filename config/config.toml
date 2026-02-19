@@ -51,7 +51,7 @@ host = "127.0.0.1"
 port = 8899
 
 [ring1.embeddings]
-provider = "none"               # "openai" | "none"
+provider = "local"              # "openai" | "local" | "none"
 api_key_env = "OPENAI_API_KEY"  # environment variable name
 model = "text-embedding-3-small"
 dimensions = 256
