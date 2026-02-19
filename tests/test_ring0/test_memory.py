@@ -382,7 +382,7 @@ class TestEmbedding:
         store = MemoryStore(tmp_path / "mem.db")
         store.add_with_embedding(1, "task", "python coding", embedding=[1.0, 0.0, 0.0])
         store.add_with_embedding(2, "task", "stock market", embedding=[0.0, 1.0, 0.0])
-        store.add_with_embedding(3, "task", "python debug", embedding=[0.9, 0.1, 0.0])
+        store.add_with_embedding(3, "task", "python debug", embedding=[0.7, 0.7, 0.0])
 
         results = store.search_similar([1.0, 0.0, 0.0], limit=2)
         assert len(results) == 2
@@ -942,3 +942,178 @@ class TestSemanticRule:
         # Unrelated entry unchanged.
         hot = store.get_by_tier("hot")
         assert any(e["id"] == id3 for e in hot)
+
+
+# -----------------------------------------------------------------------
+# Vector deduplication
+# -----------------------------------------------------------------------
+
+
+class TestVectorDedup:
+    """Storage-time vector deduplication via _is_vector_duplicate()."""
+
+    def test_vector_duplicate_rejected(self, tmp_path):
+        """Cosine > 0.95 on second insert → rejected (return -1)."""
+        store = MemoryStore(tmp_path / "mem.db")
+        emb = [1.0, 0.0, 0.0]
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=emb)
+        # Nearly identical embedding (cosine ≈ 1.0).
+        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究", embedding=[1.0, 0.001, 0.0])
+        assert rid1 > 0
+        assert rid2 == -1
+
+    def test_vector_similar_but_different_allowed(self, tmp_path):
+        """Cosine ~0.8 should NOT be rejected at storage time (threshold 0.95)."""
+        store = MemoryStore(tmp_path / "mem.db")
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=[1.0, 0.0, 0.0])
+        rid2 = store.add_with_embedding(2, "task", "查找量子计算研究", embedding=[0.6, 0.8, 0.0])
+        assert rid1 > 0
+        assert rid2 > 0
+
+    def test_vector_dedup_without_embedding_skipped(self, tmp_path):
+        """No embedding → vector dedup phase is skipped entirely."""
+        store = MemoryStore(tmp_path / "mem.db")
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=[1.0, 0.0, 0.0])
+        # Second entry has no embedding — should NOT trigger vector dedup.
+        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究")
+        assert rid1 > 0
+        assert rid2 > 0
+
+    def test_vector_dedup_ignores_archived(self, tmp_path):
+        """Archived entries should not participate in vector dedup check."""
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        emb = [1.0, 0.0, 0.0]
+        emb_json = __import__("json").dumps(emb)
+        # Insert an archived entry with the same embedding.
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (1, 'task', 'archived AI paper search', '{}', 0.5, 'archive', '', ?)",
+            (emb_json,),
+        )
+        con.commit()
+        con.close()
+
+        # New entry with identical embedding should NOT be blocked.
+        rid = store.add_with_embedding(2, "task", "搜索AI论文", embedding=emb)
+        assert rid > 0
+
+
+class TestDeduplicateByVector:
+    """Batch vector deduplication via deduplicate_by_vector()."""
+
+    def test_archives_lower_importance(self, tmp_path):
+        """Among a similar pair, the one with lower importance gets archived."""
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        emb_json = __import__("json").dumps([1.0, 0.0, 0.0])
+        emb_json2 = __import__("json").dumps([1.0, 0.01, 0.0])  # cosine ≈ 0.9999
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (1, 'task', 'AI paper search v1', '{}', 0.5, 'hot', '', ?)",
+            (emb_json,),
+        )
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (2, 'task', 'AI paper search v2', '{}', 0.8, 'hot', '', ?)",
+            (emb_json2,),
+        )
+        con.commit()
+        con.close()
+
+        archived = store.deduplicate_by_vector()
+        assert archived == 1
+        # The lower-importance one (0.5) should be archived.
+        hot = store.get_by_tier("hot")
+        assert len(hot) == 1
+        assert hot[0]["importance"] == 0.8
+
+    def test_keeps_newer_on_tie(self, tmp_path):
+        """Same importance → archive the older entry (lower id)."""
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        emb_json = __import__("json").dumps([1.0, 0.0, 0.0])
+        emb_json2 = __import__("json").dumps([1.0, 0.01, 0.0])
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (1, 'task', 'older entry', '{}', 0.7, 'hot', '', ?)",
+            (emb_json,),
+        )
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (2, 'task', 'newer entry', '{}', 0.7, 'hot', '', ?)",
+            (emb_json2,),
+        )
+        con.commit()
+        con.close()
+
+        archived = store.deduplicate_by_vector()
+        assert archived == 1
+        hot = store.get_by_tier("hot")
+        assert len(hot) == 1
+        assert hot[0]["content"] == "newer entry"
+
+    def test_no_embeddings_noop(self, tmp_path):
+        """No entries with embeddings → returns 0."""
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "task", "no embedding entry")
+        assert store.deduplicate_by_vector() == 0
+
+    def test_below_threshold_kept(self, tmp_path):
+        """Cosine < 0.85 → both entries kept."""
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        emb1 = __import__("json").dumps([1.0, 0.0, 0.0])
+        emb2 = __import__("json").dumps([0.0, 1.0, 0.0])  # cosine = 0.0
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (1, 'task', 'python coding', '{}', 0.7, 'hot', '', ?)",
+            (emb1,),
+        )
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (2, 'task', 'stock market', '{}', 0.7, 'hot', '', ?)",
+            (emb2,),
+        )
+        con.commit()
+        con.close()
+
+        archived = store.deduplicate_by_vector()
+        assert archived == 0
+
+
+class TestCompactVectorDedup:
+    """compact() integration with vector deduplication."""
+
+    def test_compact_includes_vector_dedup(self, tmp_path):
+        """compact() result should contain vector_deduped field."""
+        store = MemoryStore(tmp_path / "mem.db")
+        result = store.compact(current_generation=0)
+        assert "vector_deduped" in result
+
+    def test_compact_vector_dedup_runs(self, tmp_path):
+        """compact() should actually archive vector duplicates."""
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        emb_json = __import__("json").dumps([1.0, 0.0, 0.0])
+        emb_json2 = __import__("json").dumps([1.0, 0.01, 0.0])
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (1, 'task', 'entry A', '{}', 0.5, 'hot', '', ?)",
+            (emb_json,),
+        )
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
+            "VALUES (2, 'task', 'entry B', '{}', 0.8, 'hot', '', ?)",
+            (emb_json2,),
+        )
+        con.commit()
+        con.close()
+
+        result = store.compact(current_generation=50)
+        assert result["vector_deduped"] == 1

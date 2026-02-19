@@ -395,6 +395,32 @@ class MemoryStore(SQLiteStore):
 
         return False
 
+    _VECTOR_DEDUP_THRESHOLD = 0.95
+    _VECTOR_DEDUP_WINDOW = 50
+
+    def _is_vector_duplicate(
+        self,
+        embedding: list[float],
+        threshold: float = _VECTOR_DEDUP_THRESHOLD,
+        window: int = _VECTOR_DEDUP_WINDOW,
+    ) -> bool:
+        """Check if embedding is too similar to any recent non-archived entry."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT embedding FROM memory "
+                "WHERE embedding != '' AND tier != 'archive' "
+                "ORDER BY id DESC LIMIT ?",
+                (window,),
+            ).fetchall()
+        for row in rows:
+            try:
+                stored = json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if _cosine_similarity(embedding, stored) >= threshold:
+                return True
+        return False
+
     def add(
         self,
         generation: int,
@@ -470,7 +496,12 @@ class MemoryStore(SQLiteStore):
         # PHASE 4: Deduplication
         if self._is_recent_duplicate(entry_type, content):
             return -1  # Rejected: duplicate
-        
+
+        # PHASE 5: Vector deduplication — reject semantically identical content.
+        if embedding:
+            if self._is_vector_duplicate(embedding):
+                return -1  # Rejected: vector duplicate
+
         keywords = _extract_keywords(content)
         meta_json = json.dumps(metadata or {})
         emb_json = json.dumps(embedding) if embedding else ""
@@ -792,6 +823,67 @@ class MemoryStore(SQLiteStore):
             )
             return len(ids)
 
+    _BATCH_VECTOR_DEDUP_THRESHOLD = 0.85
+
+    def deduplicate_by_vector(
+        self,
+        threshold: float = _BATCH_VECTOR_DEDUP_THRESHOLD,
+    ) -> int:
+        """Archive semantically duplicate non-archived entries by cosine similarity.
+
+        For each similar pair, archive the one with lower importance (ties: keep newer).
+        Returns count archived.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, importance, embedding FROM memory "
+                "WHERE embedding != '' AND tier != 'archive' "
+                "ORDER BY id DESC",
+            ).fetchall()
+
+        if len(rows) < 2:
+            return 0
+
+        # Parse embeddings up front.
+        entries: list[tuple[int, float, list[float]]] = []
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            entries.append((row["id"], row["importance"], emb))
+
+        to_archive: set[int] = set()
+        for i in range(len(entries)):
+            if entries[i][0] in to_archive:
+                continue
+            for j in range(i + 1, len(entries)):
+                if entries[j][0] in to_archive:
+                    continue
+                sim = _cosine_similarity(entries[i][2], entries[j][2])
+                if sim >= threshold:
+                    # Archive the one with lower importance; ties: archive older (higher j = lower id).
+                    if entries[j][1] < entries[i][1]:
+                        to_archive.add(entries[j][0])
+                    elif entries[j][1] > entries[i][1]:
+                        to_archive.add(entries[i][0])
+                    else:
+                        # Same importance — archive the older one (entries ordered id DESC,
+                        # so j has the smaller/older id).
+                        to_archive.add(entries[j][0])
+
+        if not to_archive:
+            return 0
+
+        ids = list(to_archive)
+        placeholders = ",".join("?" * len(ids))
+        with self._connect() as con:
+            con.execute(
+                f"UPDATE memory SET tier = 'archive' WHERE id IN ({placeholders})",
+                ids,
+            )
+        return len(ids)
+
     def compact(self, current_generation: int, curator=None) -> dict:
         """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup.
 
@@ -801,10 +893,11 @@ class MemoryStore(SQLiteStore):
 
         Returns dict with counts: hot_to_warm, warm_to_cold, deleted, llm_curated.
         """
-        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0}
+        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0, "vector_deduped": 0}
 
         # --- Phase 0: Deduplication ---
         result["deduped"] = self.deduplicate()
+        result["vector_deduped"] = self.deduplicate_by_vector()
 
         # --- Phase 1: Hot → Warm (rule-driven) ---
         result["hot_to_warm"] = self._compact_hot_to_warm(current_generation)
