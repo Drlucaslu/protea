@@ -19,6 +19,7 @@ class CrystallizationResult(NamedTuple):
     action: str      # "create" | "update" | "skip" | "error"
     skill_name: str
     reason: str
+    llm_usage: dict = {}
 
 
 class Crystallizer:
@@ -72,22 +73,25 @@ class Crystallizer:
         try:
             client = self._get_client()
             response = client.send_message(system_prompt, user_message)
+            llm_usage = client.last_usage
         except LLMError as exc:
             return CrystallizationResult("error", "", f"LLM error: {exc}")
 
         # 4. Parse.
         data = parse_crystallize_response(response)
         if data is None:
-            return CrystallizationResult("error", "", "failed to parse LLM response")
+            return CrystallizationResult("error", "", "failed to parse LLM response", llm_usage)
 
         # 5. Execute.
         action = data["action"]
         if action == "create":
-            return self._handle_create(data, source_code, skill_cap)
+            result = self._handle_create(data, source_code, skill_cap)
+            return CrystallizationResult(result.action, result.skill_name, result.reason, llm_usage)
         if action == "update":
-            return self._handle_update(data, source_code)
+            result = self._handle_update(data, source_code)
+            return CrystallizationResult(result.action, result.skill_name, result.reason, llm_usage)
         # skip
-        return CrystallizationResult("skip", "", data.get("reason", ""))
+        return CrystallizationResult("skip", "", data.get("reason", ""), llm_usage)
 
     # ------------------------------------------------------------------
     # Internal handlers

@@ -63,6 +63,9 @@ class ClaudeClient(LLMClient):
             "messages": [{"role": "user", "content": user_message}],
         }
         body = self._call_api(payload)
+        self._reset_usage()
+        usage = body.get("usage", {})
+        self._add_usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0))
         for block in body.get("content", []):
             if block.get("type") == "text":
                 return block["text"]
@@ -96,6 +99,7 @@ class ClaudeClient(LLMClient):
         # Track the last text seen in a tool_use round as a fallback for
         # when the loop exhausts without a final end_turn response.
         last_text_parts: list[str] = []
+        self._reset_usage()
 
         for round_idx in range(max_rounds):
             payload = {
@@ -106,6 +110,8 @@ class ClaudeClient(LLMClient):
                 "tools": tools,
             }
             body = self._call_api(payload)
+            usage = body.get("usage", {})
+            self._add_usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0))
 
             # Compress tool results already seen by the LLM to save input tokens.
             n = compress_tool_results(messages)

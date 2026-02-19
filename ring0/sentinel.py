@@ -435,6 +435,20 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
+            # Record LLM token usage.
+            if result.metadata and result.metadata.get("llm_usage"):
+                usage = result.metadata["llm_usage"]
+                try:
+                    fitness.record_llm_usage(
+                        generation, "evolution",
+                        usage["input_tokens"], usage["output_tokens"],
+                    )
+                except Exception:
+                    pass
+                log.info(
+                    "Evolution tokens: in=%d out=%d",
+                    usage["input_tokens"], usage["output_tokens"],
+                )
             if result.metadata:
                 blast = result.metadata.get("blast_radius", {})
                 log.info(
@@ -487,7 +501,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         return False
 
 
-def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None):
+def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None, fitness=None):
     """Best-effort crystallization.  Returns action string or None."""
     try:
         from ring1.config import load_ring1_config
@@ -507,6 +521,22 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
         )
         log.info("Crystallization result: action=%s skill=%s reason=%s",
                  result.action, result.skill_name, result.reason)
+        # Record LLM token usage.
+        if result.llm_usage and result.llm_usage.get("input_tokens"):
+            if fitness:
+                try:
+                    fitness.record_llm_usage(
+                        generation, "crystallization",
+                        result.llm_usage["input_tokens"],
+                        result.llm_usage["output_tokens"],
+                    )
+                except Exception:
+                    pass
+            log.info(
+                "Crystallization tokens: in=%d out=%d",
+                result.llm_usage["input_tokens"],
+                result.llm_usage["output_tokens"],
+            )
 
         # Auto-publish to registry on successful crystallization.
         if result.action in ("create", "update") and result.skill_name and registry_client:
@@ -973,6 +1003,7 @@ def run(project_root: pathlib.Path) -> None:
                             project_root, skill_store, source, output,
                             generation, skill_cap=skill_cap,
                             registry_client=registry_client,
+                            fitness=fitness,
                         )
                         last_crystallized_hash = source_hash
                     else:

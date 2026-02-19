@@ -137,6 +137,29 @@ class TestSendMessage:
         assert result == "Hello from OpenAI"
         assert handler.call_count == 1
 
+    def test_usage_tracked(self, mock_api):
+        handler, url = mock_api
+        handler.response_body = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 35},
+        }
+        client = OpenAIClient(api_key="sk-test", model="gpt-4o", api_url=url)
+        client.send_message("system", "hello")
+        assert client.last_usage == {"input_tokens": 120, "output_tokens": 35}
+
+    def test_usage_zero_when_missing(self, mock_api):
+        handler, url = mock_api
+        handler.response_body = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}, "finish_reason": "stop"}
+            ],
+        }
+        client = OpenAIClient(api_key="sk-test", model="gpt-4o", api_url=url)
+        client.send_message("system", "hello")
+        assert client.last_usage == {"input_tokens": 0, "output_tokens": 0}
+
     def test_system_message_sent(self, mock_api):
         handler, url = mock_api
         client = OpenAIClient(api_key="sk-test", model="gpt-4o", api_url=url)
@@ -405,6 +428,38 @@ class TestSendMessageWithTools:
         assert tools_sent[0]["type"] == "function"
         assert tools_sent[0]["function"]["name"] == "web_search"
         assert "parameters" in tools_sent[0]["function"]
+
+    def test_usage_accumulated_across_rounds(self, mock_api):
+        handler, url = mock_api
+        handler.response_bodies = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query": "q"}'},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            },
+            {
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Done"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 150, "completion_tokens": 40},
+            },
+        ]
+        client = OpenAIClient(api_key="sk-test", model="gpt-4o", api_url=url)
+        client.send_message_with_tools(
+            "system", "test", _DUMMY_TOOLS, _dummy_executor,
+        )
+        assert client.last_usage == {"input_tokens": 230, "output_tokens": 60}
 
     def test_tool_results_compressed_after_api_call(self, mock_api):
         """Large tool results from earlier rounds should be compressed in messages."""

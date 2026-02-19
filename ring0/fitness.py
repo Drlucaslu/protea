@@ -188,6 +188,18 @@ def evaluate_output(
     return round(score, 4), detail
 
 
+_CREATE_LLM_USAGE = """\
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id            INTEGER PRIMARY KEY,
+    generation    INTEGER,
+    caller        TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    timestamp     TEXT DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
 class FitnessTracker(SQLiteStore):
     """Evaluate and record fitness scores in a local SQLite database."""
 
@@ -199,6 +211,7 @@ class FitnessTracker(SQLiteStore):
             con.execute("ALTER TABLE fitness_log ADD COLUMN detail TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        con.execute(_CREATE_LLM_USAGE)
 
     def record(
         self,
@@ -324,6 +337,68 @@ class FitnessTracker(SQLiteStore):
 
         # Return errors appearing in 2+ generations (persistent).
         return [sig for sig, count in error_counter.most_common(5) if count >= 2]
+
+    # ------------------------------------------------------------------
+    # LLM token usage tracking
+    # ------------------------------------------------------------------
+
+    def record_llm_usage(
+        self, generation: int, caller: str, input_tokens: int, output_tokens: int,
+    ) -> int:
+        """Record an LLM usage entry and return its rowid."""
+        with self._connect() as con:
+            cur = con.execute(
+                "INSERT INTO llm_usage (generation, caller, input_tokens, output_tokens) "
+                "VALUES (?, ?, ?, ?)",
+                (generation, caller, input_tokens, output_tokens),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def get_llm_usage(self, limit: int = 50) -> list[dict]:
+        """Return recent LLM usage entries, most recent first."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM llm_usage ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def get_llm_usage_summary(self) -> dict:
+        """Return aggregate LLM usage statistics.
+
+        Returns a dict with keys:
+        - total_input, total_output, total_calls
+        - by_caller: {caller: {input_tokens, output_tokens, calls}}
+        """
+        with self._connect() as con:
+            # Overall totals.
+            row = con.execute(
+                "SELECT COALESCE(SUM(input_tokens), 0) AS total_input, "
+                "COALESCE(SUM(output_tokens), 0) AS total_output, "
+                "COUNT(*) AS total_calls FROM llm_usage",
+            ).fetchone()
+            summary: dict = {
+                "total_input": row["total_input"],
+                "total_output": row["total_output"],
+                "total_calls": row["total_calls"],
+            }
+
+            # Per-caller breakdown.
+            rows = con.execute(
+                "SELECT caller, "
+                "SUM(input_tokens) AS input_tokens, "
+                "SUM(output_tokens) AS output_tokens, "
+                "COUNT(*) AS calls "
+                "FROM llm_usage GROUP BY caller",
+            ).fetchall()
+            summary["by_caller"] = {
+                r["caller"]: {
+                    "input_tokens": r["input_tokens"],
+                    "output_tokens": r["output_tokens"],
+                    "calls": r["calls"],
+                }
+                for r in rows
+            }
+            return summary
 
     def is_plateaued(self, window: int = 5, epsilon: float = 0.03) -> bool:
         """Check if recent survived scores are stagnant.

@@ -380,6 +380,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_schedules()
         elif path == "/api/skill_hit_ratio":
             self._api_skill_hit_ratio()
+        elif path == "/api/llm_usage":
+            self._api_llm_usage()
         else:
             self._send_error(404, "Not Found")
 
@@ -505,6 +507,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f'<div class="detail">skill coverage: {recent_ratio:.0%}</div></div>'
         )
 
+        # Token usage card
+        token_total = 0
+        token_detail = ""
+        if self.fitness_tracker:
+            try:
+                usage_summary = self.fitness_tracker.get_llm_usage_summary()
+                token_total = usage_summary.get("total_input", 0) + usage_summary.get("total_output", 0)
+                token_detail = f'in: {usage_summary.get("total_input", 0):,} out: {usage_summary.get("total_output", 0):,}'
+            except Exception:
+                pass
+        token_card = (
+            f'<div class="card"><h3>LLM Tokens</h3>'
+            f'<div class="value">{token_total:,}</div>'
+            f'<div class="detail">{token_detail}</div></div>'
+        )
+
         # Skill hit ratio chart
         hit_ratio_svg = ""
         if self.memory_store:
@@ -515,7 +533,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
         body = (
-            f'<div class="cards">{gen_card}{mem_card}{skill_card}{gene_card}{intent_card}{profile_card}{cooldown_card}</div>'
+            f'<div class="cards">{gen_card}{mem_card}{skill_card}{gene_card}{intent_card}{profile_card}{cooldown_card}{token_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
             f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
@@ -921,6 +939,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.memory_store:
             try:
                 data = _compute_daily_skill_hit_ratio(self.memory_store)
+            except Exception:
+                pass
+        self._send_json(data)
+
+    def _api_llm_usage(self) -> None:
+        data: dict = {"recent": [], "summary": {}}
+        if self.fitness_tracker:
+            try:
+                data["recent"] = self.fitness_tracker.get_llm_usage(limit=50)
+                data["summary"] = self.fitness_tracker.get_llm_usage_summary()
             except Exception:
                 pass
         self._send_json(data)

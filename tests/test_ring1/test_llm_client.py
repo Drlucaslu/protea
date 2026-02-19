@@ -88,6 +88,23 @@ class TestSendMessage:
         assert result == "Hello from Claude"
         assert mock_api.call_count == 1
 
+    def test_usage_tracked(self, mock_api):
+        mock_api.response_body = {
+            "content": [{"type": "text", "text": "Hello"}],
+            "usage": {"input_tokens": 150, "output_tokens": 42},
+        }
+        client = ClaudeClient(api_key="sk-test")
+        client.send_message("system", "hello")
+        assert client.last_usage == {"input_tokens": 150, "output_tokens": 42}
+
+    def test_usage_zero_when_missing(self, mock_api):
+        mock_api.response_body = {
+            "content": [{"type": "text", "text": "Hello"}],
+        }
+        client = ClaudeClient(api_key="sk-test")
+        client.send_message("system", "hello")
+        assert client.last_usage == {"input_tokens": 0, "output_tokens": 0}
+
     def test_custom_response(self, mock_api):
         mock_api.response_body = {
             "content": [{"type": "text", "text": "custom reply"}]
@@ -324,6 +341,33 @@ class TestSendMessageWithTools:
         )
         assert result == "Handled error"
         assert mock_api.call_count == 2
+
+    def test_usage_accumulated_across_rounds(self, mock_api):
+        """Token usage should accumulate across multiple tool-use rounds."""
+        mock_api.response_bodies = [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "web_search",
+                        "input": {"query": "test"},
+                    },
+                ],
+                "usage": {"input_tokens": 100, "output_tokens": 30},
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "Done"}],
+                "usage": {"input_tokens": 200, "output_tokens": 50},
+            },
+        ]
+        client = ClaudeClient(api_key="sk-test")
+        client.send_message_with_tools(
+            "system", "test", _DUMMY_TOOLS, _dummy_executor,
+        )
+        assert client.last_usage == {"input_tokens": 300, "output_tokens": 80}
 
     def test_tool_results_compressed_after_api_call(self, mock_api):
         """Large tool results from earlier rounds should be compressed in messages."""

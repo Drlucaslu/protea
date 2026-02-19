@@ -29,6 +29,32 @@ class LLMClient(abc.ABC):
     _BASE_DELAY: float = 2.0
     _LOG_PREFIX: str = "LLM API"
 
+    # ------------------------------------------------------------------
+    # Token usage tracking
+    # ------------------------------------------------------------------
+
+    def _reset_usage(self) -> None:
+        """Reset the accumulated token usage counters."""
+        self._usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def _add_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Add to the accumulated token usage counters."""
+        if not hasattr(self, "_usage"):
+            self._reset_usage()
+        self._usage["input_tokens"] += input_tokens
+        self._usage["output_tokens"] += output_tokens
+
+    @property
+    def last_usage(self) -> dict:
+        """Return the token usage from the last send_message* call."""
+        if not hasattr(self, "_usage"):
+            return {"input_tokens": 0, "output_tokens": 0}
+        return dict(self._usage)
+
+    # ------------------------------------------------------------------
+    # HTTP retry
+    # ------------------------------------------------------------------
+
     def _call_api_with_retry(self, url: str, data: bytes, headers: dict) -> dict:
         """HTTP POST with exponential-backoff retry on transient errors."""
         last_error: Exception | None = None

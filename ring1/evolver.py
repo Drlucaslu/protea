@@ -145,6 +145,7 @@ class Evolver:
         try:
             client = self._get_client()
             response = client.send_message(system_prompt, user_message)
+            llm_usage = client.last_usage
         except LLMError as exc:
             log.error("LLM call failed: %s", exc)
             return EvolutionResult(False, f"LLM error: {exc}", "")
@@ -188,6 +189,7 @@ class Evolver:
             if evolution_intent
             else {"blast_radius": blast_radius}
         )
+        metadata["llm_usage"] = llm_usage
 
         # Include capability proposal in metadata if present.
         if capability_proposal:

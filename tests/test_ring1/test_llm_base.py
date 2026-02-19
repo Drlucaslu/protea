@@ -195,3 +195,46 @@ class TestCompressToolResults:
         # Second pass — already below threshold, should be no-op.
         assert compress_tool_results(messages) == 0
         assert messages[0]["content"] == first
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking
+# ---------------------------------------------------------------------------
+
+
+class TestUsageTracking:
+    """LLMClient._reset_usage / _add_usage / last_usage."""
+
+    def _make_client(self):
+        """Create a concrete subclass for testing."""
+        class DummyClient(LLMClient):
+            def send_message(self, system_prompt, user_message):
+                return ""
+            def send_message_with_tools(self, system_prompt, user_message, tools, tool_executor, max_rounds=5):
+                return ""
+        return DummyClient()
+
+    def test_last_usage_default_zero(self):
+        client = self._make_client()
+        assert client.last_usage == {"input_tokens": 0, "output_tokens": 0}
+
+    def test_reset_usage(self):
+        client = self._make_client()
+        client._add_usage(100, 50)
+        client._reset_usage()
+        assert client.last_usage == {"input_tokens": 0, "output_tokens": 0}
+
+    def test_add_usage_accumulates(self):
+        client = self._make_client()
+        client._reset_usage()
+        client._add_usage(100, 50)
+        client._add_usage(200, 75)
+        assert client.last_usage == {"input_tokens": 300, "output_tokens": 125}
+
+    def test_last_usage_returns_copy(self):
+        client = self._make_client()
+        client._reset_usage()
+        client._add_usage(10, 20)
+        u = client.last_usage
+        u["input_tokens"] = 999
+        assert client.last_usage["input_tokens"] == 10

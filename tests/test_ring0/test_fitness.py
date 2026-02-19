@@ -372,6 +372,73 @@ class TestPersistentErrors:
         assert tracker.get_recent_error_signatures() == []
 
 
+class TestLLMUsage:
+    """FitnessTracker LLM token usage tracking."""
+
+    def test_record_and_retrieve(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        rid = tracker.record_llm_usage(1, "evolution", 500, 200)
+        assert rid == 1
+        rows = tracker.get_llm_usage(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["caller"] == "evolution"
+        assert rows[0]["input_tokens"] == 500
+        assert rows[0]["output_tokens"] == 200
+
+    def test_get_llm_usage_ordering(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record_llm_usage(1, "evolution", 100, 50)
+        tracker.record_llm_usage(2, "crystallization", 200, 75)
+        rows = tracker.get_llm_usage(limit=10)
+        assert rows[0]["caller"] == "crystallization"  # most recent first
+        assert rows[1]["caller"] == "evolution"
+
+    def test_get_llm_usage_respects_limit(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        for i in range(10):
+            tracker.record_llm_usage(i, "evolution", 100, 50)
+        rows = tracker.get_llm_usage(limit=3)
+        assert len(rows) == 3
+
+    def test_summary_totals(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record_llm_usage(1, "evolution", 500, 200)
+        tracker.record_llm_usage(2, "crystallization", 300, 100)
+        tracker.record_llm_usage(3, "evolution", 400, 150)
+        summary = tracker.get_llm_usage_summary()
+        assert summary["total_input"] == 1200
+        assert summary["total_output"] == 450
+        assert summary["total_calls"] == 3
+
+    def test_summary_by_caller(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record_llm_usage(1, "evolution", 500, 200)
+        tracker.record_llm_usage(2, "crystallization", 300, 100)
+        tracker.record_llm_usage(3, "evolution", 400, 150)
+        summary = tracker.get_llm_usage_summary()
+        by_caller = summary["by_caller"]
+        assert by_caller["evolution"]["input_tokens"] == 900
+        assert by_caller["evolution"]["output_tokens"] == 350
+        assert by_caller["evolution"]["calls"] == 2
+        assert by_caller["crystallization"]["calls"] == 1
+
+    def test_summary_empty_db(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        summary = tracker.get_llm_usage_summary()
+        assert summary["total_input"] == 0
+        assert summary["total_output"] == 0
+        assert summary["total_calls"] == 0
+        assert summary["by_caller"] == {}
+
+    def test_migration_creates_table(self, tmp_path):
+        """Creating FitnessTracker should also create the llm_usage table."""
+        db = tmp_path / "fitness.db"
+        tracker = FitnessTracker(db)
+        # Should not raise — table exists.
+        tracker.record_llm_usage(1, "test", 100, 50)
+        assert tracker.get_llm_usage(limit=1)[0]["caller"] == "test"
+
+
 class TestPlateau:
     """FitnessTracker.is_plateaued detects stagnant scores."""
 
