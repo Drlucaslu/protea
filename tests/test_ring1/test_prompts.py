@@ -1295,3 +1295,233 @@ class TestCompressSource:
         assert '"""Main entry."""' not in user
         assert '# setup' not in user
         assert 'print("hi")' in user
+
+
+class TestSemanticRulesInEvolution:
+    """Verify semantic_rules parameter in build_evolution_prompt."""
+
+    def test_semantic_rules_included(self):
+        rules = [
+            {"content": "CA patterns are robust"},
+            {"content": "Heartbeat must run in main thread"},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            semantic_rules=rules,
+        )
+        assert "## Semantic Rules" in user
+        assert "CA patterns are robust" in user
+        assert "Heartbeat must run in main thread" in user
+
+    def test_no_semantic_rules_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            semantic_rules=None,
+        )
+        assert "Semantic Rules" not in user
+
+    def test_empty_semantic_rules_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            semantic_rules=[],
+        )
+        assert "Semantic Rules" not in user
+
+    def test_semantic_rules_truncated_at_150(self):
+        rules = [{"content": "x" * 200}]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            semantic_rules=rules,
+        )
+        assert "x" * 150 + "..." in user
+        assert "x" * 151 not in user
+
+    def test_semantic_rules_between_patterns_and_tasks(self):
+        memories = [{"generation": 5, "content": "pattern A"}]
+        tasks = [{"content": "task B"}]
+        rules = [{"content": "rule C"}]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            memories=memories,
+            task_history=tasks,
+            semantic_rules=rules,
+        )
+        patterns_pos = user.index("Learned Patterns")
+        rules_pos = user.index("Semantic Rules")
+        tasks_pos = user.index("User Tasks")
+        assert patterns_pos < rules_pos < tasks_pos
+
+
+class TestIntentDrivenContext:
+    """Verify intent-driven section inclusion/exclusion."""
+
+    def _build(self, intent_name, **kwargs):
+        """Helper to build prompt with a specific intent."""
+        intent = {"intent": intent_name, "signals": ["test"]}
+        defaults = dict(
+            current_source="x=1",
+            fitness_history=[{"generation": 0, "score": 0.5, "survived": True}],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            persistent_errors=["some error"],
+            semantic_rules=[{"content": "a rule"}],
+            user_profile_summary="User interests: coding (100%)",
+            gene_pool=[{"generation": 1, "score": 0.9, "gene_summary": "class A: pass"}],
+            skill_hit_summary={"total": 10, "skill": 5, "ratio": 0.5, "top_skills": {}},
+            evolution_intent=intent,
+        )
+        defaults.update(kwargs)
+        return build_evolution_prompt(**defaults)
+
+    # --- repair intent ---
+    def test_repair_includes_persistent_errors(self):
+        _, user = self._build("repair")
+        assert "PERSISTENT BUGS" in user
+
+    def test_repair_excludes_user_profile(self):
+        _, user = self._build("repair")
+        assert "User Profile" not in user
+
+    def test_repair_excludes_gene_pool(self):
+        _, user = self._build("repair")
+        assert "Inherited Patterns" not in user
+
+    def test_repair_excludes_semantic_rules(self):
+        _, user = self._build("repair")
+        assert "Semantic Rules" not in user
+
+    def test_repair_excludes_skill_coverage(self):
+        _, user = self._build("repair")
+        assert "Skill Coverage" not in user
+
+    def test_repair_task_history_limit_2(self):
+        tasks = [{"content": f"task {i}"} for i in range(5)]
+        _, user = self._build("repair", task_history=tasks)
+        assert "task 1" in user
+        assert "task 2" not in user
+
+    def test_repair_fitness_history_limit_5(self):
+        history = [{"generation": i, "score": 0.5, "survived": True} for i in range(7)]
+        _, user = self._build("repair", fitness_history=history)
+        # Should include up to 5 entries
+        assert "Gen 4" in user
+
+    # --- optimize intent ---
+    def test_optimize_includes_persistent_errors(self):
+        _, user = self._build("optimize")
+        assert "PERSISTENT BUGS" in user
+
+    def test_optimize_includes_user_profile(self):
+        _, user = self._build("optimize")
+        assert "User Profile" in user
+
+    def test_optimize_includes_gene_pool(self):
+        _, user = self._build("optimize")
+        assert "Inherited Patterns" in user
+
+    def test_optimize_includes_semantic_rules(self):
+        _, user = self._build("optimize")
+        assert "Semantic Rules" in user
+
+    def test_optimize_includes_skill_coverage(self):
+        _, user = self._build("optimize")
+        assert "Skill Coverage" in user
+
+    # --- explore intent ---
+    def test_explore_excludes_persistent_errors(self):
+        _, user = self._build("explore")
+        assert "PERSISTENT BUGS" not in user
+
+    def test_explore_includes_user_profile(self):
+        _, user = self._build("explore")
+        assert "User Profile" in user
+
+    def test_explore_includes_gene_pool(self):
+        _, user = self._build("explore")
+        assert "Inherited Patterns" in user
+
+    def test_explore_includes_semantic_rules(self):
+        _, user = self._build("explore")
+        assert "Semantic Rules" in user
+
+    def test_explore_fitness_history_limit_2(self):
+        history = [{"generation": i, "score": 0.5, "survived": True} for i in range(5)]
+        _, user = self._build("explore", fitness_history=history)
+        assert "Gen 1" in user
+        assert "Gen 2" not in user
+
+    # --- adapt intent ---
+    def test_adapt_excludes_persistent_errors(self):
+        _, user = self._build("adapt")
+        assert "PERSISTENT BUGS" not in user
+
+    def test_adapt_includes_user_profile(self):
+        _, user = self._build("adapt")
+        assert "User Profile" in user
+
+    def test_adapt_excludes_gene_pool(self):
+        _, user = self._build("adapt")
+        assert "Inherited Patterns" not in user
+
+    def test_adapt_includes_semantic_rules(self):
+        _, user = self._build("adapt")
+        assert "Semantic Rules" in user
+
+    def test_adapt_excludes_skill_coverage(self):
+        _, user = self._build("adapt")
+        assert "Skill Coverage" not in user
+
+    def test_adapt_fitness_history_limit_2(self):
+        history = [{"generation": i, "score": 0.5, "survived": True} for i in range(5)]
+        _, user = self._build("adapt", fitness_history=history)
+        assert "Gen 1" in user
+        assert "Gen 2" not in user
+
+    # --- no intent (default optimize) ---
+    def test_no_intent_defaults_to_optimize_behavior(self):
+        """Without evolution_intent, defaults to optimize (include all)."""
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            persistent_errors=["error"],
+            semantic_rules=[{"content": "rule"}],
+            user_profile_summary="profile",
+            gene_pool=[{"generation": 1, "score": 0.9, "gene_summary": "class A"}],
+            skill_hit_summary={"total": 10, "skill": 5, "ratio": 0.5, "top_skills": {}},
+        )
+        assert "PERSISTENT BUGS" in user
+        assert "Semantic Rules" in user
+        assert "User Profile" in user
+        assert "Inherited Patterns" in user
+        assert "Skill Coverage" in user

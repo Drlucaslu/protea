@@ -149,6 +149,7 @@ def build_evolution_prompt(
     permanent_capabilities: list[dict] | None = None,
     allowed_packages: list[str] | None = None,
     skill_hit_summary: dict | None = None,
+    semantic_rules: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -159,6 +160,18 @@ def build_evolution_prompt(
     parts.append(f"Max runtime: {params.get('max_runtime_sec', 60)}s")
     parts.append("")
 
+    # Intent-driven context selection flags.
+    _intent = (evolution_intent or {}).get("intent", "optimize")
+
+    include_persistent_errors = _intent in ("repair", "optimize")
+    include_user_profile = _intent in ("optimize", "explore", "adapt")
+    include_gene_pool = _intent in ("optimize", "explore")
+    include_semantic_rules = _intent in ("optimize", "explore", "adapt")
+    include_skill_coverage = _intent in ("optimize", "explore")
+
+    task_history_limit = 2 if _intent == "repair" else 5
+    fitness_history_limit = 2 if _intent in ("explore", "adapt") else 5
+
     # Current source code (compressed to save tokens)
     parts.append("## Current Ring 2 Code")
     parts.append("```python")
@@ -166,10 +179,10 @@ def build_evolution_prompt(
     parts.append("```")
     parts.append("")
 
-    # Fitness history (compact — limit to 5 to save tokens)
+    # Fitness history (compact — limit by intent)
     if fitness_history:
         parts.append("## Recent Fitness History")
-        for entry in fitness_history[:5]:
+        for entry in fitness_history[:fitness_history_limit]:
             status = "SURVIVED" if entry.get("survived") else "DIED"
             detail_str = ""
             detail_raw = entry.get("detail")
@@ -197,8 +210,8 @@ def build_evolution_prompt(
             )
         parts.append("")
 
-    # Persistent errors — MUST FIX (high priority)
-    if persistent_errors:
+    # Persistent errors — MUST FIX (high priority, intent-gated)
+    if include_persistent_errors and persistent_errors:
         parts.append("## PERSISTENT BUGS (must fix!)")
         parts.append("These errors have appeared across multiple generations "
                       "and MUST be fixed in this evolution:")
@@ -218,18 +231,29 @@ def build_evolution_prompt(
             parts.append(f"- [Gen {gen}] {content}")
         parts.append("")
 
-    # Recent user tasks — PRIMARY evolution signal (compact)
+    # Semantic rules — validated patterns from experience (intent-gated)
+    if include_semantic_rules and semantic_rules:
+        parts.append("## Semantic Rules")
+        parts.append("Validated patterns from experience:")
+        for rule in semantic_rules[:10]:
+            content = rule.get("content", "")
+            if len(content) > 150:
+                content = content[:150] + "..."
+            parts.append(f"- {content}")
+        parts.append("")
+
+    # Recent user tasks — PRIMARY evolution signal (compact, intent-limited)
     if task_history:
         parts.append("## User Tasks (PRIORITY)")
-        for task in task_history[:5]:
+        for task in task_history[:task_history_limit]:
             content = task.get("content", "")
             if len(content) > 100:
                 content = content[:100] + "..."
             parts.append(f"- {content}")
         parts.append("")
 
-    # User profile — aggregated interests and directions (compact)
-    if user_profile_summary:
+    # User profile — aggregated interests and directions (intent-gated)
+    if include_user_profile and user_profile_summary:
         parts.append("## User Profile")
         profile_text = user_profile_summary
         if len(profile_text) > 200:
@@ -262,8 +286,8 @@ def build_evolution_prompt(
         parts.append("Do NOT propose packages outside this list.")
         parts.append("")
 
-    # Skill coverage — tell LLM about task resolution effectiveness.
-    if skill_hit_summary and skill_hit_summary.get("total", 0) > 0:
+    # Skill coverage — tell LLM about task resolution effectiveness (intent-gated).
+    if include_skill_coverage and skill_hit_summary and skill_hit_summary.get("total", 0) > 0:
         hit = skill_hit_summary
         parts.append("## Skill Coverage (recent tasks)")
         parts.append(
@@ -304,8 +328,8 @@ def build_evolution_prompt(
             parts.append(f"Unused: {unused_count} skills — evolve toward uncovered domains.")
         parts.append("")
 
-    # Inherited gene patterns from best past generations (compact).
-    if gene_pool:
+    # Inherited gene patterns from best past generations (intent-gated).
+    if include_gene_pool and gene_pool:
         parts.append("## Inherited Patterns")
         for gene in gene_pool[:3]:
             gen = gene.get("generation", "?")
@@ -317,7 +341,7 @@ def build_evolution_prompt(
         parts.append("")
 
     # Recent crash logs — only on failure path or repair intent
-    _is_repair = (evolution_intent or {}).get("intent") == "repair"
+    _is_repair = _intent == "repair"
     if crash_logs and (not survived or _is_repair):
         parts.append("## Recent Crashes")
         for log_entry in crash_logs[:2]:
@@ -550,12 +574,13 @@ def parse_crystallize_response(response: str) -> dict | None:
 
 MEMORY_CURATION_SYSTEM_PROMPT = """\
 You are the memory curator for Protea, a self-evolving AI system.
-Your task: review memory entries and decide which to keep, discard, or summarize.
+Your task: review memory entries and decide which to keep, discard, summarize, or extract_rule.
 
 ## Decision criteria
 - keep: Unique insights, user preferences, important lessons, recurring patterns
 - summarize: Valuable but verbose — condense to 1-2 sentences
 - discard: Redundant, outdated, trivial, or superseded by newer memories
+- extract_rule: When you see 2+ related entries forming a pattern, distill into a reusable rule/preference. Return: {"id": [1, 2, 3], "action": "extract_rule", "rule": "Concise rule text"}
 
 ## Response format
 Respond with a JSON array (no markdown fences):
@@ -585,6 +610,6 @@ def build_memory_curation_prompt(candidates: list[dict]) -> tuple[str, str]:
             f"- **ID {entry_id}** [{entry_type}] (importance: {importance:.2f}): {content}"
         )
     parts.append("")
-    parts.append(f"Total: {len(candidates)} entries. Review each and decide: keep, discard, or summarize.")
+    parts.append(f"Total: {len(candidates)} entries. Review each and decide: keep, discard, summarize, or extract_rule.")
 
     return MEMORY_CURATION_SYSTEM_PROMPT, "\n".join(parts)

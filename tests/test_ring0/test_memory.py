@@ -868,3 +868,77 @@ class TestCompactThresholds:
         store.add(4, "observation", "old low importance entry", importance=0.3)
         result = store.compact(current_generation=10)
         assert result["hot_to_warm"] > 0
+
+
+class TestSemanticRule:
+    """Semantic rule importance, get_semantic_rules, and _apply_curation extract_rule."""
+
+    def test_semantic_rule_importance(self):
+        assert _compute_importance("semantic_rule", "Always use heartbeat") == 0.8
+
+    def test_get_semantic_rules_returns_correct(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "semantic_rule", "Rule A", importance=0.8)
+        store.add(2, "semantic_rule", "Rule B", importance=0.9)
+        store.add(3, "observation", "Not a rule")
+
+        rules = store.get_semantic_rules()
+        assert len(rules) == 2
+        # Ordered by importance DESC
+        assert rules[0]["content"] == "Rule B"
+        assert rules[1]["content"] == "Rule A"
+
+    def test_get_semantic_rules_excludes_archive(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "semantic_rule", "Active rule", importance=0.8)
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+            "VALUES (1, 'semantic_rule', 'Archived rule', '{}', 0.8, 'archive', '')",
+        )
+        con.commit()
+        con.close()
+
+        rules = store.get_semantic_rules()
+        assert len(rules) == 1
+        assert rules[0]["content"] == "Active rule"
+
+    def test_get_semantic_rules_respects_limit(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        for i in range(5):
+            store.add(i, "semantic_rule", f"Rule {i}", importance=0.8)
+        rules = store.get_semantic_rules(limit=3)
+        assert len(rules) == 3
+
+    def test_apply_curation_extract_rule(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(10, "reflection", "CA patterns survive")
+        id2 = store.add(12, "reflection", "CA with heartbeat is robust")
+        id3 = store.add(15, "observation", "unrelated observation")
+
+        decisions = [
+            {"id": [id1, id2], "action": "extract_rule", "rule": "CA patterns are the most robust approach"},
+        ]
+        store._apply_curation(decisions, current_generation=20)
+
+        # Source entries demoted to cold.
+        src1 = [e for e in store.get_by_tier("cold") if e["id"] == id1]
+        src2 = [e for e in store.get_by_tier("cold") if e["id"] == id2]
+        assert len(src1) == 1
+        assert len(src2) == 1
+
+        # New semantic_rule entry created.
+        rules = store.get_semantic_rules()
+        assert len(rules) == 1
+        assert rules[0]["content"] == "CA patterns are the most robust approach"
+        assert rules[0]["entry_type"] == "semantic_rule"
+        assert rules[0]["importance"] == 0.8
+        assert rules[0]["tier"] == "hot"
+        assert rules[0]["metadata"]["source_ids"] == [id1, id2]
+        # Generation should be max of sources (12), not current_generation
+        assert rules[0]["generation"] == 12
+
+        # Unrelated entry unchanged.
+        hot = store.get_by_tier("hot")
+        assert any(e["id"] == id3 for e in hot)

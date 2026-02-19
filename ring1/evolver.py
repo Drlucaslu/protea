@@ -91,6 +91,7 @@ class Evolver:
         permanent_capabilities: list[dict] | None = None,
         allowed_packages: list[str] | None = None,
         skill_hit_summary: dict | None = None,
+        semantic_rules: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -139,6 +140,7 @@ class Evolver:
             permanent_capabilities=permanent_capabilities,
             allowed_packages=allowed_packages,
             skill_hit_summary=skill_hit_summary,
+            semantic_rules=semantic_rules,
         )
 
         # 4. Call Claude API.

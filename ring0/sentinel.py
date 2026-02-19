@@ -413,6 +413,14 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         # Build allowed packages list.
         allowed_pkg_set = allowed_packages
 
+        # Fetch semantic rules for evolution context.
+        semantic_rules = []
+        if memory_store:
+            try:
+                semantic_rules = memory_store.get_semantic_rules(limit=10)
+            except Exception:
+                pass
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -432,6 +440,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             permanent_capabilities=permanent_caps or None,
             allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
             skill_hit_summary=skill_hit_summary,
+            semantic_rules=semantic_rules or None,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)

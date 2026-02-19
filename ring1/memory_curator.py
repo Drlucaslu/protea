@@ -67,19 +67,39 @@ class MemoryCurator:
             return []
 
         valid_ids = {c["id"] for c in candidates}
-        valid_actions = {"keep", "discard", "summarize"}
+        valid_actions = {"keep", "discard", "summarize", "extract_rule"}
 
         result = []
         for d in decisions:
             if not isinstance(d, dict):
                 continue
-            entry_id = d.get("id")
             action = d.get("action", "keep")
-            if entry_id not in valid_ids or action not in valid_actions:
+            if action not in valid_actions:
                 continue
-            entry = {"id": entry_id, "action": action}
-            if action == "summarize" and d.get("summary"):
-                entry["summary"] = d["summary"]
-            result.append(entry)
+
+            if action == "extract_rule":
+                # id can be a list of ints or a single int.
+                raw_id = d.get("id")
+                if isinstance(raw_id, int):
+                    ids = [raw_id]
+                elif isinstance(raw_id, list):
+                    ids = [i for i in raw_id if isinstance(i, int)]
+                else:
+                    continue
+                # All ids must be valid.
+                if not ids or not all(i in valid_ids for i in ids):
+                    continue
+                rule = d.get("rule")
+                if not rule or not isinstance(rule, str) or not rule.strip():
+                    continue
+                result.append({"id": ids, "action": "extract_rule", "rule": rule.strip()})
+            else:
+                entry_id = d.get("id")
+                if entry_id not in valid_ids:
+                    continue
+                entry = {"id": entry_id, "action": action}
+                if action == "summarize" and d.get("summary"):
+                    entry["summary"] = d["summary"]
+                result.append(entry)
 
         return result

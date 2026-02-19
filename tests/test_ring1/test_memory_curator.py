@@ -98,3 +98,74 @@ class TestCurate:
         curator = MemoryCurator(mock_client)
         decisions = curator.curate(_make_candidates())
         assert decisions == []
+
+
+class TestExtractRule:
+    """extract_rule action parsing in _parse_response."""
+
+    def test_extract_rule_with_list_ids(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": [1, 2], "action": "extract_rule", "rule": "CA patterns are most robust"},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 1
+        assert decisions[0]["action"] == "extract_rule"
+        assert decisions[0]["id"] == [1, 2]
+        assert decisions[0]["rule"] == "CA patterns are most robust"
+
+    def test_extract_rule_with_single_id(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": 1, "action": "extract_rule", "rule": "Always use heartbeat"},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 1
+        assert decisions[0]["id"] == [1]
+
+    def test_extract_rule_invalid_id_rejected(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": [1, 999], "action": "extract_rule", "rule": "Some rule"},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 0
+
+    def test_extract_rule_missing_rule_rejected(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": [1, 2], "action": "extract_rule"},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 0
+
+    def test_extract_rule_empty_rule_rejected(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": [1, 2], "action": "extract_rule", "rule": "  "},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 0
+
+    def test_extract_rule_mixed_with_other_actions(self):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = json.dumps([
+            {"id": 1, "action": "keep"},
+            {"id": [2, 3], "action": "extract_rule", "rule": "Observations and reflections agree"},
+        ])
+
+        curator = MemoryCurator(mock_client)
+        decisions = curator.curate(_make_candidates())
+        assert len(decisions) == 2
+        assert decisions[0]["action"] == "keep"
+        assert decisions[1]["action"] == "extract_rule"

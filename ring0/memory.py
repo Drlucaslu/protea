@@ -43,6 +43,7 @@ _IMPORTANCE_BASE: dict[str, float] = {
     "reflection": 0.4,    # Machine-generated — repetitive, compacts aggressively
     "observation": 0.3,
     "evolution_intent": 0.3,
+    "semantic_rule": 0.8,
 }
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -814,7 +815,7 @@ class MemoryStore(SQLiteStore):
             try:
                 decisions = curator.curate(warm_candidates)
                 if decisions:
-                    self._apply_curation(decisions)
+                    self._apply_curation(decisions, current_generation)
                     result["llm_curated"] = len(decisions)
                     result["warm_to_cold"] = len(decisions)
                 else:
@@ -902,12 +903,45 @@ class MemoryStore(SQLiteStore):
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def _apply_curation(self, decisions: list[dict]) -> None:
+    def _apply_curation(self, decisions: list[dict], current_generation: int = 0) -> None:
         """Apply LLM curation decisions to memory entries."""
         with self._connect() as con:
             for d in decisions:
-                entry_id = d.get("id")
                 action = d.get("action", "keep")
+                if action == "extract_rule":
+                    source_ids = d.get("id", [])
+                    rule_text = d.get("rule", "")
+                    if not source_ids or not rule_text:
+                        continue
+                    # Determine generation from source entries or use current.
+                    gen = current_generation
+                    if source_ids:
+                        placeholders = ",".join("?" * len(source_ids))
+                        rows = con.execute(
+                            f"SELECT MAX(generation) as mg FROM memory "
+                            f"WHERE id IN ({placeholders})",
+                            source_ids,
+                        ).fetchone()
+                        if rows and rows["mg"] is not None:
+                            gen = rows["mg"]
+                    # Create semantic_rule entry.
+                    meta = json.dumps({"source_ids": source_ids})
+                    keywords = _extract_keywords(rule_text)
+                    con.execute(
+                        "INSERT INTO memory "
+                        "(generation, entry_type, content, metadata, importance, tier, keywords) "
+                        "VALUES (?, 'semantic_rule', ?, ?, 0.8, 'hot', ?)",
+                        (gen, rule_text, meta, keywords),
+                    )
+                    # Demote source entries to cold.
+                    con.execute(
+                        f"UPDATE memory SET tier = 'cold' "
+                        f"WHERE id IN ({placeholders})",
+                        source_ids,
+                    )
+                    continue
+
+                entry_id = d.get("id")
                 if action == "discard":
                     con.execute("DELETE FROM memory WHERE id = ?", (entry_id,))
                 elif action == "summarize":
@@ -927,6 +961,17 @@ class MemoryStore(SQLiteStore):
                         "UPDATE memory SET tier = 'cold' WHERE id = ?",
                         (entry_id,),
                     )
+
+    def get_semantic_rules(self, limit: int = 10) -> list[dict]:
+        """Return semantic rule entries, highest importance first."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM memory WHERE entry_type = 'semantic_rule' "
+                "AND tier != 'archive' "
+                "ORDER BY importance DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def _rule_based_warm_to_cold(self, candidates: list[dict]) -> int:
         """Fallback rule-based warm→cold transition."""
