@@ -1067,8 +1067,23 @@ def run(project_root: pathlib.Path) -> None:
                             log.debug("Profile decay failed (non-fatal)", exc_info=True)
                     if gene_pool:
                         try:
+                            recent_tasks = []
+                            if memory_store:
+                                recent_tasks = [
+                                    t for t in memory_store.get_by_type("task", limit=20)
+                                    if t.get("generation", 0) > generation - 10
+                                ]
+                                if recent_tasks:
+                                    task_ctx = " ".join(t.get("content", "") for t in recent_tasks)
+                                    matched = gene_pool.get_relevant(task_ctx, 5)
+                                    if matched:
+                                        ids = [g["id"] for g in matched if "id" in g]
+                                        if ids:
+                                            gene_pool.record_hits(ids, generation)
                             boosted = gene_pool.apply_boost()
-                            decayed = gene_pool.apply_decay(generation)
+                            decayed = 0
+                            if recent_tasks:
+                                decayed = gene_pool.apply_decay(generation)
                             if boosted or decayed:
                                 log.info("Gene scoring: boosted=%d decayed=%d", boosted, decayed)
                         except Exception:

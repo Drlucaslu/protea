@@ -67,6 +67,9 @@ class GenePool(SQLiteStore):
                 con.execute(sql)
             except sqlite3.OperationalError:
                 pass  # column already exists
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS gene_blacklist (source_hash TEXT PRIMARY KEY)"
+        )
 
     def _backfill_tags(self) -> None:
         """Compute and store tags for existing genes that lack them."""
@@ -97,6 +100,14 @@ class GenePool(SQLiteStore):
         tags_str = " ".join(self.extract_tags(gene_summary))
 
         with self._connect() as con:
+            # Check blacklist (tombstoned genes can never be re-added).
+            blacklisted = con.execute(
+                "SELECT 1 FROM gene_blacklist WHERE source_hash = ?",
+                (source_hash,),
+            ).fetchone()
+            if blacklisted:
+                return False
+
             # Check for duplicate source.
             existing = con.execute(
                 "SELECT id FROM gene_pool WHERE source_hash = ?",
@@ -152,6 +163,27 @@ class GenePool(SQLiteStore):
                     (n,),
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    def delete_gene(self, gene_id: int) -> bool:
+        """Permanently delete a gene and blacklist its source_hash.
+
+        The blacklist prevents the gene from being re-added via
+        backfill_from_git() or survival-path add().
+        Returns True if the gene existed and was deleted.
+        """
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT source_hash FROM gene_pool WHERE id = ?", (gene_id,)
+            ).fetchone()
+            if not row:
+                return False
+            con.execute(
+                "INSERT OR IGNORE INTO gene_blacklist (source_hash) VALUES (?)",
+                (row["source_hash"],),
+            )
+            con.execute("DELETE FROM gene_pool WHERE id = ?", (gene_id,))
+            log.info("Gene %d deleted and blacklisted (hash=%s…)", gene_id, row["source_hash"][:12])
+            return True
 
     def get_relevant(self, context: str, n: int = 3) -> list[dict]:
         """Return top N genes matched to context, falling back to score.

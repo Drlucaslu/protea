@@ -714,3 +714,59 @@ class TestTagBackfill:
         assert len(top[0]["tags"]) > 0
         # Should contain tags from the summary (StreamAnalyzer, etc.)
         assert "stream" in top[0]["tags"]
+
+
+class TestDeleteGene:
+    def test_delete_removes_gene(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# del1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        result = gp.delete_gene(gene_id)
+        assert result is True
+        assert gp.count() == 0
+
+    def test_delete_nonexistent_returns_false(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        result = gp.delete_gene(9999)
+        assert result is False
+
+
+class TestBlacklist:
+    def test_deleted_gene_cannot_be_readded(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        source = SAMPLE_SOURCE + "\n# bl1\n"
+        gp.add(1, 0.85, source)
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.delete_gene(gene_id)
+        # Try to re-add the same source.
+        added = gp.add(2, 0.95, source)
+        assert added is False
+        assert gp.count() == 0
+
+    def test_different_gene_still_addable(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        source_a = SAMPLE_SOURCE + "\n# bl_a\n"
+        source_b = SAMPLE_SOURCE + "\n# bl_b\n"
+        gp.add(1, 0.85, source_a)
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.delete_gene(gene_id)
+        # Different source should still be addable.
+        added = gp.add(2, 0.90, source_b)
+        assert added is True
+        assert gp.count() == 1
+
+    def test_blacklist_survives_reopen(self, tmp_path):
+        db = tmp_path / "test.db"
+        source = SAMPLE_SOURCE + "\n# bl_persist\n"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, source)
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.delete_gene(gene_id)
+        # Re-open the database.
+        gp2 = GenePool(db, max_size=10)
+        added = gp2.add(2, 0.95, source)
+        assert added is False
