@@ -306,6 +306,20 @@ class TestDashboardServer:
         finally:
             dashboard.stop()
 
+    def test_overview_contains_cooldown_card(self):
+        mock_memory = MagicMock()
+        mock_memory.get_stats.return_value = {}
+        mock_memory.get_by_type.return_value = []
+        dashboard, base = self._start(memory_store=mock_memory)
+        try:
+            code, body = self._get(f"{base}/")
+            assert code == 200
+            assert "Evo Cooldown" in body
+            assert "1.0x" in body
+            assert "skill coverage:" in body
+        finally:
+            dashboard.stop()
+
     def test_no_data_sources(self):
         """Dashboard should work with no data sources (all None)."""
         dashboard, base = self._start()

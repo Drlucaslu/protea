@@ -555,3 +555,43 @@ class TestEvolver:
 
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("allowed_packages") == ["requests", "pandas"]
+
+    def test_skill_hit_summary_passed_to_prompt(self, tmp_path):
+        """skill_hit_summary should be forwarded to build_evolution_prompt."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+        hit_summary = {"total": 10, "skill": 7, "ratio": 0.7, "top_skills": {"s1": 5}}
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True,
+                           skill_hit_summary=hit_summary)
+
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("skill_hit_summary") == hit_summary
+
+    def test_skill_hit_summary_default_none(self, tmp_path):
+        """Calling evolve without skill_hit_summary should pass None."""
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+
+        llm_response = f"```python\n{VALID_SOURCE}```"
+        config = _make_config()
+        fitness = _make_fitness()
+
+        config.get_llm_client.return_value.send_message.return_value = llm_response
+        with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
+            mock_prompt.return_value = ("system", "user")
+            evolver = Evolver(config, fitness)
+            evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        call_kwargs = mock_prompt.call_args
+        assert call_kwargs[1].get("skill_hit_summary") is None

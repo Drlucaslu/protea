@@ -15,6 +15,8 @@ from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
 from ring0.sentinel import (
     _classify_failure,
+    _compute_skill_hit_ratio,
+    _effective_cooldown,
     _read_ring2_output,
     _start_ring2,
     _stop_ring2,
@@ -288,6 +290,91 @@ class TestLogRotation:
         # All old lines should still be present.
         assert "old line 0" in content
         assert "old line 99" in content
+
+
+class TestComputeSkillHitRatio:
+    """Verify _compute_skill_hit_ratio computes correctly."""
+
+    def test_empty_store(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_by_type.return_value = []
+        result = _compute_skill_hit_ratio(store)
+        assert result["total"] == 0
+        assert result["skill"] == 0
+        assert result["ratio"] == 0.0
+        assert result["top_skills"] == {}
+
+    def test_mixed_tasks(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_by_type.side_effect = lambda t, limit: [
+            {"metadata": {"skills_used": ["summarize"]}},
+            {"metadata": {}},
+            {"metadata": {"skills_used": ["translate"]}},
+        ] if t == "task" else []
+        result = _compute_skill_hit_ratio(store)
+        assert result["total"] == 3
+        assert result["skill"] == 2
+        assert abs(result["ratio"] - 2 / 3) < 0.01
+
+    def test_multiple_skills_counted_once(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_by_type.side_effect = lambda t, limit: [
+            {"metadata": {"skills_used": ["s1", "s2", "s3"]}},
+        ] if t == "task" else []
+        result = _compute_skill_hit_ratio(store)
+        assert result["total"] == 1
+        assert result["skill"] == 1  # one task, counts once
+        assert result["ratio"] == 1.0
+        assert result["top_skills"] == {"s1": 1, "s2": 1, "s3": 1}
+
+    def test_top_skills_sorted(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_by_type.side_effect = lambda t, limit: [
+            {"metadata": {"skills_used": ["a"]}},
+            {"metadata": {"skills_used": ["b"]}},
+            {"metadata": {"skills_used": ["a"]}},
+            {"metadata": {"skills_used": ["a", "b"]}},
+        ] if t == "task" else []
+        result = _compute_skill_hit_ratio(store)
+        skills = list(result["top_skills"].keys())
+        assert skills[0] == "a"  # 3 times
+        assert result["top_skills"]["a"] == 3
+        assert result["top_skills"]["b"] == 2
+
+    def test_no_metadata_key(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_by_type.side_effect = lambda t, limit: [
+            {"metadata": {}},
+            {},
+        ] if t == "task" else []
+        result = _compute_skill_hit_ratio(store)
+        assert result["total"] == 2
+        assert result["skill"] == 0
+
+
+class TestEffectiveCooldown:
+    """Verify _effective_cooldown scaling."""
+
+    def test_zero_ratio(self):
+        assert _effective_cooldown(1800, 0.0) == 1800
+
+    def test_full_ratio(self):
+        assert _effective_cooldown(1800, 1.0) == 5400  # 3.0x
+
+    def test_half_ratio(self):
+        assert _effective_cooldown(1800, 0.5) == 3600  # 2.0x
+
+    def test_clamp_above_one(self):
+        # ratio > 1.0 should be clamped to 3.0x
+        assert _effective_cooldown(1800, 1.5) == 5400
+
+    def test_quarter_ratio(self):
+        assert _effective_cooldown(1000, 0.25) == 1500  # 1.5x
 
 
 class TestConfigLoading:

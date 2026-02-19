@@ -869,6 +869,123 @@ class TestMemoryCurationPrompt:
         assert len(user) < 500
 
 
+class TestSkillHitSummary:
+    """Verify skill_hit_summary parameter in build_evolution_prompt."""
+
+    def test_skill_hit_summary_included(self):
+        summary = {"total": 10, "skill": 7, "ratio": 0.7, "top_skills": {"summarize": 5, "translate": 2}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "Skill Coverage" in user
+        assert "7 of 10" in user
+        assert "70%" in user
+
+    def test_no_summary_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=None,
+        )
+        assert "Skill Coverage" not in user
+
+    def test_empty_total_no_section(self):
+        summary = {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "Skill Coverage" not in user
+
+    def test_high_ratio_message(self):
+        summary = {"total": 10, "skill": 8, "ratio": 0.8, "top_skills": {}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "covering most" in user
+
+    def test_medium_ratio_message(self):
+        summary = {"total": 10, "skill": 5, "ratio": 0.5, "top_skills": {}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "partially cover" in user
+
+    def test_low_ratio_no_guidance_message(self):
+        summary = {"total": 10, "skill": 2, "ratio": 0.2, "top_skills": {}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "Skill Coverage" in user
+        assert "covering most" not in user
+        assert "partially cover" not in user
+
+    def test_top_skills_displayed(self):
+        summary = {"total": 10, "skill": 5, "ratio": 0.5, "top_skills": {"web_scraper": 3, "translator": 2}}
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+        )
+        assert "web_scraper" in user
+        assert "3x" in user
+        assert "translator" in user
+
+    def test_skill_coverage_before_existing_skills(self):
+        summary = {"total": 10, "skill": 5, "ratio": 0.5, "top_skills": {}}
+        skills = [{"name": "s1", "description": "d", "usage_count": 1}]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            skill_hit_summary=summary,
+            skills=skills,
+        )
+        coverage_pos = user.index("Skill Coverage")
+        skills_pos = user.index("Existing Skills")
+        assert coverage_pos < skills_pos
+
+
 class TestCapabilityEvolutionInPrompt:
     """Verify tool_names, permanent_capabilities, and allowed_packages in prompt."""
 

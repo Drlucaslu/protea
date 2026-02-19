@@ -471,6 +471,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Cooldown status card
+        recent_ratio = 0.0
+        if self.memory_store:
+            try:
+                from ring0.sentinel import _compute_skill_hit_ratio
+                hit = _compute_skill_hit_ratio(self.memory_store)
+                recent_ratio = hit["ratio"]
+            except Exception:
+                pass
+        multiplier = 1.0 + 2.0 * recent_ratio
+        cooldown_card = (
+            f'<div class="card"><h3>Evo Cooldown</h3>'
+            f'<div class="value">{multiplier:.1f}x</div>'
+            f'<div class="detail">skill coverage: {recent_ratio:.0%}</div></div>'
+        )
+
         # Skill hit ratio chart
         hit_ratio_svg = ""
         if self.memory_store:
@@ -481,7 +497,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
         body = (
-            f'<div class="cards">{gen_card}{mem_card}{skill_card}{intent_card}{profile_card}</div>'
+            f'<div class="cards">{gen_card}{mem_card}{skill_card}{intent_card}{profile_card}{cooldown_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
             f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'

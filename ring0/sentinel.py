@@ -176,6 +176,44 @@ def _best_effort(label, factory):
         return None
 
 
+def _compute_skill_hit_ratio(memory_store, limit: int = 50) -> dict:
+    """Compute skill hit ratio from recent task metadata.
+
+    Returns {"total": int, "skill": int, "ratio": float, "top_skills": dict[str,int]}.
+    """
+    entries = []
+    for t in ("task", "p1_task"):
+        try:
+            entries.extend(memory_store.get_by_type(t, limit))
+        except Exception:
+            pass
+    if not entries:
+        return {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
+
+    total = len(entries)
+    skill_count = 0
+    skill_freq: dict[str, int] = {}
+    for e in entries:
+        used = e.get("metadata", {}).get("skills_used", [])
+        if used:
+            skill_count += 1
+            for s in used:
+                skill_freq[s] = skill_freq.get(s, 0) + 1
+
+    top = dict(sorted(skill_freq.items(), key=lambda x: -x[1])[:5])
+    ratio = skill_count / total if total else 0.0
+    return {"total": total, "skill": skill_count, "ratio": ratio, "top_skills": top}
+
+
+def _effective_cooldown(base_cooldown: int, skill_ratio: float) -> int:
+    """Scale cooldown by skill hit ratio: 1.0x at 0%, up to 3.0x at 100%.
+
+    Linear: multiplier = 1.0 + 2.0 * ratio.
+    """
+    multiplier = 1.0 + 2.0 * min(skill_ratio, 1.0)
+    return int(base_cooldown * multiplier)
+
+
 def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int = 5, plateau_epsilon: float = 0.03, has_directive: bool = False) -> tuple[bool, bool]:
     """Check whether evolution should proceed.
 
@@ -264,7 +302,7 @@ def _try_install_capability(proposal, skill_store, venv_manager, allowed_package
     return True
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", venv_manager=None, allowed_packages=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -389,6 +427,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             user_profile_summary=user_profile_summary,
             permanent_capabilities=permanent_caps or None,
             allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
+            skill_hit_summary=skill_hit_summary,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -936,17 +975,27 @@ def run(project_root: pathlib.Path) -> None:
                         log.debug("Skipping crystallization — source unchanged (hash=%s…)", source_hash[:12])
 
                 # Evolve (best-effort) — skip if busy, cooling down, or plateaued.
+                # Dynamic cooldown based on skill hit ratio.
+                skill_hit = {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
+                if memory_store:
+                    try:
+                        skill_hit = _compute_skill_hit_ratio(memory_store)
+                    except Exception:
+                        pass
+                eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
+
                 with state.lock:
                     pending_directive = state.evolution_directive
                 should_evo, plateaued = _should_evolve(
-                    state, cooldown_sec, fitness=fitness,
+                    state, eff_cooldown, fitness=fitness,
                     plateau_window=plateau_window,
                     plateau_epsilon=plateau_epsilon,
                     has_directive=bool(pending_directive),
                 )
                 if not should_evo:
                     if not plateaued:
-                        log.info("Skipping evolution (busy or cooldown)")
+                        log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
+                                 eff_cooldown, skill_hit["ratio"] * 100)
                     evolved = False
                 else:
                     with state.lock:
@@ -979,6 +1028,7 @@ def run(project_root: pathlib.Path) -> None:
                         user_profile_summary=profile_summary,
                         venv_manager=venv_manager,
                         allowed_packages=allowed_packages,
+                        skill_hit_summary=skill_hit,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -1098,16 +1148,26 @@ def run(project_root: pathlib.Path) -> None:
 
             # Evolve from the good base (best-effort) — skip if busy or cooling down.
             # Failures always trigger evolution (no plateau skip) to fix the issue.
+            # Dynamic cooldown based on skill hit ratio.
+            skill_hit = {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
+            if memory_store:
+                try:
+                    skill_hit = _compute_skill_hit_ratio(memory_store)
+                except Exception:
+                    pass
+            eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
+
             with state.lock:
                 pending_directive = state.evolution_directive
             should_evo, plateaued = _should_evolve(
-                state, cooldown_sec, fitness=fitness,
+                state, eff_cooldown, fitness=fitness,
                 plateau_window=plateau_window,
                 plateau_epsilon=plateau_epsilon,
                 has_directive=True,  # failures always force evolution
             )
             if not should_evo:
-                log.info("Skipping evolution (busy or cooldown)")
+                log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
+                         eff_cooldown, skill_hit["ratio"] * 100)
                 evolved = False
             else:
                 with state.lock:
@@ -1140,6 +1200,7 @@ def run(project_root: pathlib.Path) -> None:
                     user_profile_summary=profile_summary,
                     venv_manager=venv_manager,
                     allowed_packages=allowed_packages,
+                    skill_hit_summary=skill_hit,
                 )
             if evolved:
                 state.last_evolution_time = time.time()

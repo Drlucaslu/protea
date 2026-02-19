@@ -110,6 +110,7 @@ def build_evolution_prompt(
     tool_names: list[str] | None = None,
     permanent_capabilities: list[dict] | None = None,
     allowed_packages: list[str] | None = None,
+    skill_hit_summary: dict | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -223,6 +224,29 @@ def build_evolution_prompt(
         parts.append("## Allowed Packages for Capability Skills")
         parts.append(f"You may use: {', '.join(sorted(allowed_packages))}")
         parts.append("Do NOT propose packages outside this list.")
+        parts.append("")
+
+    # Skill coverage — tell LLM about task resolution effectiveness.
+    if skill_hit_summary and skill_hit_summary.get("total", 0) > 0:
+        hit = skill_hit_summary
+        parts.append("## Skill Coverage (recent tasks)")
+        parts.append(
+            f"{hit['skill']} of {hit['total']} tasks ({hit['ratio']:.0%}) "
+            f"were resolved using existing skills."
+        )
+        if hit.get("top_skills"):
+            top_str = ", ".join(f"{name} ({count}x)" for name, count in hit["top_skills"].items())
+            parts.append(f"Most effective: {top_str}")
+        if hit["ratio"] >= 0.7:
+            parts.append(
+                "Skills are covering most user needs. Focus evolution on "
+                "NOVEL capabilities outside current skill coverage."
+            )
+        elif hit["ratio"] >= 0.3:
+            parts.append(
+                "Skills partially cover user needs. Consider what task types "
+                "still require raw LLM reasoning and evolve toward those gaps."
+            )
         parts.append("")
 
     # Existing skills — avoid duplication + highlight unused ones

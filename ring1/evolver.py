@@ -90,6 +90,7 @@ class Evolver:
         tool_names: list[str] | None = None,
         permanent_capabilities: list[dict] | None = None,
         allowed_packages: list[str] | None = None,
+        skill_hit_summary: dict | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -137,6 +138,7 @@ class Evolver:
             tool_names=tool_names,
             permanent_capabilities=permanent_capabilities,
             allowed_packages=allowed_packages,
+            skill_hit_summary=skill_hit_summary,
         )
 
         # 4. Call Claude API.
