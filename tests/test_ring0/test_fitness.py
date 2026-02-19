@@ -6,6 +6,7 @@ import json
 
 from ring0.fitness import (
     FitnessTracker,
+    _is_real_error_line,
     _output_fingerprint,
     compute_novelty,
     evaluate_output,
@@ -470,3 +471,88 @@ class TestPlateau:
         for i in range(2):
             tracker.record(i + 3, f"f{i}", 0.10, 10.0, False)
         assert tracker.is_plateaued(window=5) is False
+
+
+class TestRealErrorDetection:
+    """_is_real_error_line distinguishes actual errors from reported errors."""
+
+    def test_traceback_header(self):
+        assert _is_real_error_line("Traceback (most recent call last):")
+
+    def test_traceback_frame(self):
+        assert _is_real_error_line('  File "main.py", line 10, in <module>')
+
+    def test_python_exception(self):
+        assert _is_real_error_line("TypeError: foo() missing 1 required argument")
+        assert _is_real_error_line("ValueError: invalid literal")
+        assert _is_real_error_line("FileNotFoundError: [Errno 2] No such file")
+        assert _is_real_error_line("ZeroDivisionError: division by zero")
+
+    def test_generic_exception(self):
+        assert _is_real_error_line("RuntimeException: something went wrong")
+
+    def test_log_analyzer_error_count_not_matched(self):
+        """Lines reporting error counts should NOT be flagged."""
+        assert not _is_real_error_line("cycle 53: 52 new lines, 15 errors, 1 anomalies")
+        assert not _is_real_error_line("error rate: 100.00%")
+        assert not _is_real_error_line("recent errors (2):")
+        assert not _is_real_error_line("error_count = 5")
+
+    def test_json_error_key_not_matched(self):
+        """JSON data mentioning 'error' should NOT be flagged."""
+        assert not _is_real_error_line('{"severity_counts": {"error": 15, "info": 37}}')
+        assert not _is_real_error_line('"error": 2')
+
+    def test_report_text_not_matched(self):
+        """Analytical/report text should NOT be flagged."""
+        assert not _is_real_error_line("[critical] high_error_rate: 100%")
+        assert not _is_real_error_line("Another error occurred")
+        assert not _is_real_error_line("No errors found in the log")
+        assert not _is_real_error_line("error_penalty: 0.03")
+
+    def test_normal_output_not_matched(self):
+        assert not _is_real_error_line("result_42: 3.14")
+        assert not _is_real_error_line("status: running")
+        assert not _is_real_error_line("")
+
+
+class TestErrorPenaltyFalsePositive:
+    """evaluate_output should not penalize programs that report on errors."""
+
+    def test_log_analyzer_output_no_penalty(self):
+        """Log analyzer output mentioning 'error' should have zero penalty."""
+        lines = [
+            "[22:26:01] cycle 53: 52 new lines, 15 errors, 1 anomalies",
+            'json_summary: {"cycle": 53, "severity_counts": {"error": 15, "info": 37}}',
+            "[22:26:11] cycle 54: 2 new lines, 2 errors, 1 anomalies",
+            "[critical] high_error_rate: error rate: 100.00% (2 errors in 2 lines)",
+            "recent errors (2):",
+            "normal analysis output line",
+        ] * 10  # 60 lines total
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["error_penalty"] == 0.0
+        assert detail["error_lines"] == 0
+
+    def test_real_traceback_still_penalized(self):
+        """Actual Python tracebacks should still be penalized."""
+        lines = [
+            "Traceback (most recent call last):",
+            '  File "main.py", line 10, in <module>',
+            "    foo()",
+            "TypeError: foo() missing 1 required argument",
+        ]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["error_penalty"] > 0.0
+        assert detail["error_lines"] == 3  # traceback header + frame + TypeError
+
+    def test_mixed_real_and_reported_errors(self):
+        """Only real errors should count, not reported ones."""
+        lines = [
+            "Analyzing log file...",
+            "Found 15 errors in log",
+            "error rate: 50%",
+            "ValueError: invalid config",  # only this is a real error
+            "Analysis complete",
+        ]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["error_lines"] == 1

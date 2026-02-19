@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS fitness_log (
 """
 
 
+# Patterns that indicate actual program errors (tracebacks, Python exceptions).
+# Deliberately excludes generic "error" substring to avoid false positives when
+# the program is *reporting on* errors (e.g. log analyzers printing "15 errors").
+_REAL_ERROR_PATTERNS = [
+    re.compile(r"Traceback \(most recent call last\):", re.IGNORECASE),
+    re.compile(r"^\s+File \".+\", line \d+"),          # traceback frame
+    re.compile(r"\b[A-Z]\w*(?:Error|Exception)\s*:"),   # TypeError:, ValueError:, …
+]
+
+
+def _is_real_error_line(line: str) -> bool:
+    """Return True only for lines that look like actual program errors."""
+    return any(pat.search(line) for pat in _REAL_ERROR_PATTERNS)
+
+
 _STRUCTURED_PATTERNS = [
     re.compile(r"^\s*[\[{]"),           # JSON array/object start
     re.compile(r"^\s*\|.*\|"),          # Markdown/ASCII table row
@@ -85,15 +100,20 @@ def compute_novelty(
 
 
 def _count_persistent_errors(output_lines: list[str]) -> list[str]:
-    """Extract unique error signatures from output for cross-generation tracking."""
+    """Extract unique error signatures from output for cross-generation tracking.
+
+    Only counts lines that look like actual program errors (tracebacks,
+    Python exceptions), not lines that merely mention the word "error".
+    """
     errors: list[str] = []
     for ln in output_lines:
+        if not _is_real_error_line(ln):
+            continue
         low = ln.lower().strip()
-        if "error" in low or "exception" in low:
-            # Normalize: strip line numbers and memory addresses.
-            sig = re.sub(r"0x[0-9a-f]+", "0xADDR", low)
-            sig = re.sub(r"line \d+", "line N", sig)
-            errors.append(sig)
+        # Normalize: strip line numbers and memory addresses.
+        sig = re.sub(r"0x[0-9a-f]+", "0xADDR", low)
+        sig = re.sub(r"line \d+", "line N", sig)
+        errors.append(sig)
     return list(dict.fromkeys(errors))[:10]  # unique, max 10
 
 
@@ -157,12 +177,8 @@ def evaluate_output(
             functional_count += 1
     functional = min(functional_count / max(total, 1) * 5, 1.0) * 0.05
 
-    # Error penalty: traceback/error lines reduce score.
-    error_count = 0
-    for ln in output_lines:
-        low = ln.lower()
-        if "traceback" in low or "error" in low or "exception" in low:
-            error_count += 1
+    # Error penalty: only count actual program errors (tracebacks, exceptions).
+    error_count = sum(1 for ln in output_lines if _is_real_error_line(ln))
     error_penalty = min(error_count / max(total, 1), 1.0) * 0.10
 
     # Extract error signatures for cross-generation tracking.
