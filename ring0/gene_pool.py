@@ -116,6 +116,36 @@ class GenePool(SQLiteStore):
             if existing:
                 return False
 
+            # Check for near-duplicate by tag Jaccard similarity.
+            new_tags = set(tags_str.split()) if tags_str else set()
+            if new_tags:
+                rows = con.execute(
+                    "SELECT id, score, tags, hit_count FROM gene_pool WHERE tags IS NOT NULL AND tags != ''"
+                ).fetchall()
+                for row in rows:
+                    existing_tags = set(row["tags"].split())
+                    intersection = len(new_tags & existing_tags)
+                    union = len(new_tags | existing_tags)
+                    if union > 0 and intersection / union > 0.8:
+                        if score > row["score"]:
+                            # Better variant — replace, preserve hit_count.
+                            con.execute(
+                                "UPDATE gene_pool SET generation = ?, score = ?, "
+                                "source_hash = ?, gene_summary = ?, tags = ? WHERE id = ?",
+                                (generation, score, source_hash, gene_summary, tags_str, row["id"]),
+                            )
+                            log.info(
+                                "Gene pool: replaced similar gene %d (%.2f→%.2f, jaccard=%.2f)",
+                                row["id"], row["score"], score, intersection / union,
+                            )
+                            return True
+                        else:
+                            log.debug(
+                                "Gene pool: skipped near-duplicate of gene %d (jaccard=%.2f)",
+                                row["id"], intersection / union,
+                            )
+                            return False
+
             count = con.execute("SELECT COUNT(*) AS cnt FROM gene_pool").fetchone()["cnt"]
 
             if count < self.max_size:

@@ -61,6 +61,39 @@ if __name__ == "__main__":
     main()
 '''
 
+def _make_distinct_source(class_name: str, method_name: str, docstring: str) -> str:
+    """Generate a distinct Ring 2 source with unique summary/tags."""
+    return f'''\
+import os, pathlib, time, threading
+
+class {class_name}:
+    """{docstring}"""
+
+    def __init__(self):
+        self.data = []
+
+    def {method_name}(self, value):
+        """Process the given value."""
+        self.data.append(value)
+
+def main():
+    hb = pathlib.Path(os.environ.get("PROTEA_HEARTBEAT", ".heartbeat"))
+    pid = os.getpid()
+    while True:
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
+'''
+
+# Pre-built distinct sources for tests that need multiple different genes.
+DISTINCT_SOURCES = [
+    _make_distinct_source("WeatherForecast", "predict", "Atmospheric pressure prediction engine"),
+    _make_distinct_source("MusicComposer", "compose", "Algorithmic melody generation system"),
+    _make_distinct_source("ChessEngine", "evaluate", "Board position evaluation framework"),
+    _make_distinct_source("GraphTraversal", "search", "Breadth-first graph exploration tool"),
+]
+
 TRIVIAL_SOURCE = '''\
 import os, pathlib, time
 
@@ -177,15 +210,13 @@ class TestGenePoolAdd:
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=3)
 
-        # Fill the pool with 3 entries.
+        # Fill the pool with 3 genuinely different entries.
         for i in range(3):
-            source = SAMPLE_SOURCE + f"\n# unique_{i}\n"
-            gp.add(i, 0.50 + i * 0.10, source)
+            gp.add(i, 0.50 + i * 0.10, DISTINCT_SOURCES[i])
         assert gp.count() == 3
 
         # Add a higher score — should evict the lowest (0.50).
-        new_source = SAMPLE_SOURCE + "\n# unique_high\n"
-        added = gp.add(99, 0.95, new_source)
+        added = gp.add(99, 0.95, SAMPLE_SOURCE)
         assert added is True
         assert gp.count() == 3
 
@@ -199,12 +230,12 @@ class TestGenePoolAdd:
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=2)
 
-        gp.add(1, 0.80, SAMPLE_SOURCE + "\n# a\n")
-        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# b\n")
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gp.add(2, 0.90, DISTINCT_SOURCES[1])
         assert gp.count() == 2
 
         # Score too low to enter.
-        added = gp.add(3, 0.70, SAMPLE_SOURCE + "\n# c\n")
+        added = gp.add(3, 0.70, DISTINCT_SOURCES[2])
         assert added is False
         assert gp.count() == 2
 
@@ -214,9 +245,9 @@ class TestGenePoolGetTop:
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=10)
 
-        gp.add(1, 0.60, SAMPLE_SOURCE + "\n# v1\n")
-        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# v2\n")
-        gp.add(3, 0.75, SAMPLE_SOURCE + "\n# v3\n")
+        gp.add(1, 0.60, DISTINCT_SOURCES[0])
+        gp.add(2, 0.90, DISTINCT_SOURCES[1])
+        gp.add(3, 0.75, DISTINCT_SOURCES[2])
 
         top = gp.get_top(2)
         assert len(top) == 2
@@ -258,8 +289,8 @@ class TestGenePoolBackfill:
         class MockSkillStore:
             def get_active(self, limit):
                 return [
-                    {"id": 1, "source_code": SAMPLE_SOURCE, "usage_count": 5},
-                    {"id": 2, "source_code": SAMPLE_SOURCE + "\n# v2\n", "usage_count": 0},
+                    {"id": 1, "source_code": DISTINCT_SOURCES[0], "usage_count": 5},
+                    {"id": 2, "source_code": DISTINCT_SOURCES[1], "usage_count": 0},
                 ]
 
         added = gp.backfill(MockSkillStore())
@@ -319,9 +350,7 @@ class TestBackfillFromGit:
         ring2 = tmp_path / "ring2"
         ring2.mkdir()
 
-        source_v1 = SAMPLE_SOURCE + "\n# gen1\n"
-        source_v2 = SAMPLE_SOURCE + "\n# gen2\n"
-        hashes = _init_git_repo(ring2, [(source_v1, ""), (source_v2, "")])
+        hashes = _init_git_repo(ring2, [(DISTINCT_SOURCES[0], ""), (DISTINCT_SOURCES[1], "")])
 
         gp = GenePool(db, max_size=10)
         ft = FitnessTracker(db)
@@ -438,8 +467,8 @@ class TestRecordHits:
     def test_multiple_genes(self, tmp_path):
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=10)
-        gp.add(1, 0.80, SAMPLE_SOURCE + "\n# m1\n")
-        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# m2\n")
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gp.add(2, 0.90, DISTINCT_SOURCES[1])
         ids = [g["id"] for g in gp.get_top(0)]
         gp.record_hits(ids, generation=10)
         for g in gp.get_top(0):
@@ -636,8 +665,8 @@ if __name__ == "__main__":
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=10)
 
-        gp.add(1, 0.60, SAMPLE_SOURCE + "\n# v1\n")
-        gp.add(2, 0.90, SAMPLE_SOURCE + "\n# v2\n")
+        gp.add(1, 0.60, DISTINCT_SOURCES[0])
+        gp.add(2, 0.90, DISTINCT_SOURCES[1])
 
         # Context with completely unrelated terms.
         relevant = gp.get_relevant("xyzzy quantum entanglement", 2)
@@ -770,3 +799,85 @@ class TestBlacklist:
         gp2 = GenePool(db, max_size=10)
         added = gp2.add(2, 0.95, source)
         assert added is False
+
+
+class TestSimilarityDedup:
+    """Near-duplicate detection via tag Jaccard similarity."""
+
+    # Variant with a tiny comment change — same summary/tags as SAMPLE_SOURCE.
+    VARIANT_SOURCE = SAMPLE_SOURCE + "\n# minor_tweak_xyz\n"
+
+    def test_similar_higher_score_replaces(self, tmp_path):
+        """A higher-score near-duplicate replaces the existing gene."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.70, SAMPLE_SOURCE)
+        assert gp.count() == 1
+        old_id = gp.get_top(1)[0]["id"]
+
+        # Same summary, different source_hash, higher score → replace.
+        added = gp.add(2, 0.90, self.VARIANT_SOURCE)
+        assert added is True
+        assert gp.count() == 1  # replaced, not added
+        top = gp.get_top(1)[0]
+        assert top["id"] == old_id  # same id preserved
+        assert top["score"] == 0.90
+        assert top["generation"] == 2
+
+    def test_similar_lower_score_skipped(self, tmp_path):
+        """A lower-score near-duplicate is skipped."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.90, SAMPLE_SOURCE)
+
+        added = gp.add(2, 0.70, self.VARIANT_SOURCE)
+        assert added is False
+        assert gp.count() == 1
+        assert gp.get_top(1)[0]["score"] == 0.90  # original kept
+
+    def test_similar_preserves_hit_count(self, tmp_path):
+        """Replacing a similar gene preserves its hit_count."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.70, SAMPLE_SOURCE)
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.record_hits([gene_id], generation=5)
+        gp.record_hits([gene_id], generation=6)
+
+        gp.add(2, 0.90, self.VARIANT_SOURCE)
+        top = gp.get_top(1)[0]
+        assert top["hit_count"] == 2  # preserved
+
+    def test_different_genes_not_affected(self, tmp_path):
+        """Genes with genuinely different tags are not considered similar."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, SAMPLE_SOURCE)
+
+        # Completely different gene.
+        different_source = '''\
+import os, pathlib, time, threading
+
+class WeatherForecast:
+    """Predict weather patterns using atmospheric pressure data."""
+
+    def predict(self, pressure_readings):
+        """Generate forecast from pressure readings."""
+        pass
+
+    def calibrate(self, historical_data):
+        """Calibrate model with historical weather data."""
+        pass
+
+def main():
+    hb = pathlib.Path(os.environ.get("PROTEA_HEARTBEAT", ".heartbeat"))
+    pid = os.getpid()
+    while True:
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
+'''
+        added = gp.add(2, 0.75, different_source)
+        assert added is True
+        assert gp.count() == 2  # both kept
