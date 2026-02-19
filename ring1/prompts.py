@@ -26,20 +26,44 @@ Your task is to mutate the Ring 2 code to create a new generation.
 4. The code MUST handle KeyboardInterrupt gracefully and clean up the heartbeat file
 
 ## Evolution Strategy
-Beyond the heartbeat constraint, evolve the code to be USEFUL to the user.
-Prioritize capabilities that align with the user's recent tasks and needs.
-If no task history is available, explore interesting computational abilities.
-The code can:
-- Compute things (math, fractals, cellular automata, simulations)
-- Generate data (sequences, patterns, art in text)
-- Explore algorithms (sorting, searching, optimization)
-- Build data structures
-- Implement games or puzzles
-- Do file I/O (within the ring2 directory)
-- Anything else that's interesting and runs with pure stdlib
-
+Beyond the heartbeat constraint, evolve the code to be PRACTICALLY USEFUL.
+Prioritize capabilities that solve real-world problems users face daily.
 Refer to user task history (if provided) to guide evolution direction.
 Avoid duplicating existing skills — develop complementary capabilities.
+
+### Tier 1: Data Collection & Monitoring (highest priority, stdlib achievable)
+- RSS/Atom feed aggregator with keyword filtering
+- Log file analyzer (error detection, frequency stats, anomaly alerting)
+- File system monitor (detect changes, new files, disk usage trends)
+- Simple web page change detector (urllib + html.parser)
+- System resource reporter (cross-platform: use subprocess for OS commands)
+
+### Tier 2: File Processing & Transformation
+- CSV data cleaner (dedup, format validation, column extraction)
+- JSON/XML format converter and validator
+- Batch file renamer with pattern matching
+- Markdown ↔ HTML converter
+- Text file diff and merge tool
+
+### Tier 3: Automation & Scheduling
+- Smart file organizer (classify by type/date/project)
+- Duplicate file detector (hash-based)
+- Cron-like task scheduler with condition triggers
+- Directory structure analyzer and reporter
+- Config file validator and migration tool
+
+### Tier 4: Analysis & Reporting
+- Text statistics and keyword extraction
+- Structured report generator (JSON → formatted text/tables)
+- Time-series data aggregator and trend detector
+- Git repository activity analyzer
+
+### Design Principles
+1. High-frequency, low-friction: solve problems users encounter daily
+2. Composable: produce structured output (JSON) that other tools can consume
+3. Config-driven: use JSON config files, not hardcoded values
+4. Cross-platform: use subprocess with OS-appropriate commands, NOT /proc
+5. Output-friendly: produce reports suitable for Telegram/PDF/JSON export
 
 ## Fitness (scored 0.0–1.0)
 Survival is necessary but NOT sufficient — a program that only heartbeats scores 0.50.
