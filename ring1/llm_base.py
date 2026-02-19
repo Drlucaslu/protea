@@ -141,3 +141,55 @@ def create_llm_client(
         )
 
     raise LLMError(f"Unknown LLM provider: {provider!r}")
+
+
+# ---------------------------------------------------------------------------
+# Tool result compression — reduces input tokens on multi-round tool loops.
+# ---------------------------------------------------------------------------
+
+TOOL_RESULT_COMPRESS_THRESHOLD = 1500  # chars; below this, keep as-is
+_COMPRESS_HEAD = 300
+_COMPRESS_TAIL = 200
+
+
+def _compress_content(text: str, threshold: int = TOOL_RESULT_COMPRESS_THRESHOLD) -> str:
+    """Truncate a tool result string if it exceeds *threshold*."""
+    if len(text) <= threshold:
+        return text
+    omitted = len(text) - _COMPRESS_HEAD - _COMPRESS_TAIL
+    return (
+        text[:_COMPRESS_HEAD]
+        + f"\n\n[... {omitted} chars omitted ...]\n\n"
+        + text[-_COMPRESS_TAIL:]
+    )
+
+
+def compress_tool_results(
+    messages: list[dict],
+    threshold: int = TOOL_RESULT_COMPRESS_THRESHOLD,
+) -> int:
+    """Compress tool result content in-place. Returns count of results compressed.
+
+    Handles both Anthropic format (role=user, content=[{type: tool_result}])
+    and OpenAI format (role=tool, content=str).
+    """
+    compressed = 0
+    for msg in messages:
+        role = msg.get("role", "")
+        # Anthropic: role=user with tool_result blocks
+        if role == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        orig = block.get("content", "")
+                        if isinstance(orig, str) and len(orig) > threshold:
+                            block["content"] = _compress_content(orig, threshold)
+                            compressed += 1
+        # OpenAI: role=tool with content string
+        elif role == "tool":
+            orig = msg.get("content", "")
+            if isinstance(orig, str) and len(orig) > threshold:
+                msg["content"] = _compress_content(orig, threshold)
+                compressed += 1
+    return compressed

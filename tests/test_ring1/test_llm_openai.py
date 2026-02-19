@@ -406,6 +406,60 @@ class TestSendMessageWithTools:
         assert tools_sent[0]["function"]["name"] == "web_search"
         assert "parameters" in tools_sent[0]["function"]
 
+    def test_tool_results_compressed_after_api_call(self, mock_api):
+        """Large tool results from earlier rounds should be compressed in messages."""
+        handler, url = mock_api
+        big_result = "X" * 3000
+
+        def big_executor(name, inp):
+            return big_result
+
+        handler.response_bodies = [
+            # Round 1: tool call
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query": "first"}'},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }]
+            },
+            # Round 2: another tool call — round 1 result should be compressed
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query": "second"}'},
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }]
+            },
+            # Round 3: final text
+            {
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Done"},
+                    "finish_reason": "stop",
+                }]
+            },
+        ]
+        client = OpenAIClient(api_key="sk-test", model="gpt-4o", api_url=url)
+        result = client.send_message_with_tools(
+            "system", "test", _DUMMY_TOOLS, big_executor, max_rounds=5,
+        )
+        assert result == "Done"
+        assert handler.call_count == 3
+
     def test_invalid_json_arguments(self, mock_api):
         """Bad JSON in tool arguments should not crash — fall back to empty dict."""
         handler, url = mock_api

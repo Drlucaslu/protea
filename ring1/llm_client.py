@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Callable
 
-from ring1.llm_base import LLMClient, LLMError  # noqa: F401 — re-export LLMError
+from ring1.llm_base import LLMClient, LLMError, compress_tool_results  # noqa: F401 — re-export LLMError
 
 log = logging.getLogger("protea.llm_client")
 
@@ -106,6 +106,11 @@ class ClaudeClient(LLMClient):
                 "tools": tools,
             }
             body = self._call_api(payload)
+
+            # Compress tool results already seen by the LLM to save input tokens.
+            n = compress_tool_results(messages)
+            if n:
+                log.debug("Compressed %d tool results in context", n)
 
             content_blocks = body.get("content", [])
             stop_reason = body.get("stop_reason", "end_turn")

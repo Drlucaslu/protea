@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Callable
 
-from ring1.llm_base import LLMClient, LLMError
+from ring1.llm_base import LLMClient, LLMError, compress_tool_results
 
 log = logging.getLogger("protea.llm_openai")
 
@@ -107,6 +107,12 @@ class OpenAIClient(LLMClient):
                 "tools": openai_tools,
             }
             body = self._call_api(payload)
+
+            # Compress tool results already seen by the LLM to save input tokens.
+            n = compress_tool_results(messages)
+            if n:
+                log.debug("Compressed %d tool results in context", n)
+
             choice = body.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason", "stop")

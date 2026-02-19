@@ -324,3 +324,48 @@ class TestSendMessageWithTools:
         )
         assert result == "Handled error"
         assert mock_api.call_count == 2
+
+    def test_tool_results_compressed_after_api_call(self, mock_api):
+        """Large tool results from earlier rounds should be compressed in messages."""
+        big_result = "X" * 3000
+
+        def big_executor(name, inp):
+            return big_result
+
+        mock_api.response_bodies = [
+            # Round 1: tool_use
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "web_search",
+                        "input": {"query": "first"},
+                    },
+                ],
+            },
+            # Round 2: another tool_use — by now round 1 result should be compressed
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_2",
+                        "name": "web_search",
+                        "input": {"query": "second"},
+                    },
+                ],
+            },
+            # Round 3: final text
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "Done"}],
+            },
+        ]
+        client = ClaudeClient(api_key="sk-test")
+        result = client.send_message_with_tools(
+            "system", "test", _DUMMY_TOOLS, big_executor, max_rounds=5,
+        )
+        assert result == "Done"
+        assert mock_api.call_count == 3
