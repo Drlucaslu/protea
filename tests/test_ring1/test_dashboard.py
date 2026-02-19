@@ -330,9 +330,89 @@ class TestDashboardServer:
             assert code == 200
             code, body = self._get(f"{base}/skills")
             assert code == 200
+            code, body = self._get(f"{base}/genes")
+            assert code == 200
             code, body = self._get(f"{base}/intent")
             assert code == 200
             code, body = self._get(f"{base}/profile")
             assert code == 200
+        finally:
+            dashboard.stop()
+
+    def test_genes_page(self):
+        mock_gene_pool = MagicMock()
+        mock_gene_pool.get_top.return_value = [
+            {"generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness,error"},
+            {"generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf"},
+        ]
+        mock_gene_pool.count.return_value = 10
+        dashboard, base = self._start(gene_pool=mock_gene_pool)
+        try:
+            code, body = self._get(f"{base}/genes")
+            assert code == 200
+            assert "Gene Leaderboard" in body
+            assert "Improved error handling" in body
+            assert "0.85" in body
+            assert "0.72" in body
+        finally:
+            dashboard.stop()
+
+    def test_genes_page_no_data(self):
+        dashboard, base = self._start()
+        try:
+            code, body = self._get(f"{base}/genes")
+            assert code == 200
+            assert "No genes in pool yet" in body
+        finally:
+            dashboard.stop()
+
+    def test_api_genes(self):
+        mock_gene_pool = MagicMock()
+        mock_gene_pool.get_top.return_value = [
+            {"generation": 5, "score": 0.85, "gene_summary": "Test gene", "tags": "test"},
+        ]
+        dashboard, base = self._start(gene_pool=mock_gene_pool)
+        try:
+            code, data = self._get_json(f"{base}/api/genes")
+            assert code == 200
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["score"] == 0.85
+        finally:
+            dashboard.stop()
+
+    def test_overview_contains_gene_card(self):
+        mock_gene_pool = MagicMock()
+        mock_gene_pool.count.return_value = 42
+        dashboard, base = self._start(gene_pool=mock_gene_pool)
+        try:
+            code, body = self._get(f"{base}/")
+            assert code == 200
+            assert "Genes" in body
+            assert "42" in body
+            assert "in gene pool" in body
+        finally:
+            dashboard.stop()
+
+    def test_skills_page_has_leaderboard(self):
+        mock_skills = MagicMock()
+        mock_skills.get_active.return_value = [
+            {"name": "top_skill", "description": "Most used", "tags": ["util"],
+             "usage_count": 15, "source": "crystallized", "last_used": "2026-02-19T10:00", "permanent": True},
+            {"name": "second_skill", "description": "Also used", "tags": [],
+             "usage_count": 8, "source": "evolved", "last_used": "2026-02-18T09:00"},
+            {"name": "unused_skill", "description": "Never used", "tags": [],
+             "usage_count": 0, "source": "evolved"},
+        ]
+        dashboard, base = self._start(skill_store=mock_skills)
+        try:
+            code, body = self._get(f"{base}/skills")
+            assert code == 200
+            assert "Top Skills by Usage" in body
+            assert "top_skill" in body
+            assert "second_skill" in body
+            # unused_skill should NOT be in leaderboard (usage_count=0)
+            # but it should still appear in the gallery cards
+            assert "unused_skill" in body
         finally:
             dashboard.stop()

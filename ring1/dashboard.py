@@ -103,6 +103,7 @@ _NAV_HTML = """\
 <a href="/">Overview</a>
 <a href="/memory">Memory</a>
 <a href="/skills">Skills</a>
+<a href="/genes">Genes</a>
 <a href="/intent">Intent</a>
 <a href="/profile">Profile</a>
 <a href="/schedule">Schedule</a>
@@ -350,6 +351,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_memory(query)
         elif path == "/skills":
             self._serve_skills()
+        elif path == "/genes":
+            self._serve_genes()
         elif path == "/intent":
             self._serve_intent()
         elif path == "/profile":
@@ -363,6 +366,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_memory_stats()
         elif path == "/api/skills":
             self._api_skills()
+        elif path == "/api/genes":
+            self._api_genes()
         elif path == "/api/intent":
             self._api_intent()
         elif path == "/api/profile":
@@ -444,6 +449,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f'<div class="detail">top interest</div></div>'
         )
 
+        # Gene count
+        gene_count = 0
+        if self.gene_pool:
+            try:
+                gene_count = self.gene_pool.count()
+            except Exception:
+                pass
+        gene_card = (
+            f'<div class="card"><h3>Genes</h3>'
+            f'<div class="value">{gene_count}</div>'
+            f'<div class="detail">in gene pool</div></div>'
+        )
+
         # Generation / Ring 2 status
         gen_num = 0
         r2_alive = False
@@ -497,7 +515,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
         body = (
-            f'<div class="cards">{gen_card}{mem_card}{skill_card}{intent_card}{profile_card}{cooldown_card}</div>'
+            f'<div class="cards">{gen_card}{mem_card}{skill_card}{gene_card}{intent_card}{profile_card}{cooldown_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
             f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
@@ -613,8 +631,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 f'</div>'
             )
 
+        # Leaderboard table — top skills by usage
+        top_skills = [s for s in skills if s.get("usage_count", 0) > 0][:15]
+        if top_skills:
+            lb_rows = []
+            for rank, s in enumerate(top_skills, 1):
+                name = _esc(s.get("name", "unknown"))
+                usage = s.get("usage_count", 0)
+                last_used = _esc(str(s.get("last_used", ""))[:16])
+                source = _esc(s.get("source", ""))
+                perm = "yes" if s.get("permanent") else "no"
+                lb_rows.append(
+                    f'<tr><td>{rank}</td><td>{name}</td><td>{usage}</td>'
+                    f'<td>{last_used}</td><td>{source}</td><td>{perm}</td></tr>'
+                )
+            leaderboard_html = (
+                '<h2 style="margin-bottom:1rem">Top Skills by Usage</h2>'
+                "<table><thead><tr>"
+                "<th>#</th><th>Name</th><th>Usage</th><th>Last Used</th><th>Source</th><th>Permanent</th>"
+                "</tr></thead><tbody>"
+                + "".join(lb_rows)
+                + "</tbody></table>"
+                + '<div style="margin-bottom:2rem"></div>'
+            )
+        else:
+            leaderboard_html = ""
+
         body_content = '<div class="grid">' + "".join(cards) + "</div>" if cards else '<p style="color:#777">No skills registered yet.</p>'
-        body = f"<h2>Skills Gallery</h2>{body_content}"
+        body = f"{leaderboard_html}<h2>Skills Gallery</h2>{body_content}"
         self._send_html(_page("Skills", body))
 
     def _serve_intent(self) -> None:
@@ -761,6 +805,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = f"<h2>Scheduled Tasks ({count})</h2>{table_html}"
         self._send_html(_page("Schedule", body))
 
+    def _serve_genes(self) -> None:
+        """Gene leaderboard page — top genes by score."""
+        genes = []
+        if self.gene_pool:
+            try:
+                genes = self.gene_pool.get_top(20)
+            except Exception:
+                pass
+
+        rows_html = []
+        for i, g in enumerate(genes, 1):
+            score = g.get("score", 0)
+            gen = g.get("generation", "?")
+            summary = _esc(str(g.get("gene_summary", ""))[:80])
+            tags = _esc(str(g.get("tags", ""))[:60])
+            rows_html.append(
+                f'<tr><td>{i}</td><td>{score:.2f}</td><td>{gen}</td>'
+                f'<td>{summary}</td><td>{tags}</td></tr>'
+            )
+
+        table = (
+            "<table><thead><tr>"
+            "<th>#</th><th>Score</th><th>Gen</th><th>Summary</th><th>Tags</th>"
+            "</tr></thead><tbody>"
+            + "".join(rows_html)
+            + "</tbody></table>"
+        ) if rows_html else '<p style="color:#777">No genes in pool yet.</p>'
+
+        body = f"<h2>Gene Leaderboard</h2>{table}"
+        self._send_html(_page("Genes", body))
+
     # ------------------------------------------------------------------
     # API handlers
     # ------------------------------------------------------------------
@@ -789,6 +864,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._send_json(stats)
+
+    def _api_genes(self) -> None:
+        genes = []
+        if self.gene_pool:
+            try:
+                genes = self.gene_pool.get_top(20)
+            except Exception:
+                pass
+        self._send_json(genes)
 
     def _api_skills(self) -> None:
         skills = []
