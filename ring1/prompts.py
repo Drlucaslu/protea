@@ -365,8 +365,10 @@ def build_evolution_prompt(
                 parts.append(f"- {sig}")
         elif intent == "explore":
             parts.append(
-                "Scores have PLATEAUED. Try something fundamentally different "
-                "— new algorithm, new domain."
+                "Scores have PLATEAUED. Evolve toward capabilities that better serve "
+                "the user based on their profile and recent tasks. "
+                "Do NOT explore randomly — focus on gaps between what the user needs "
+                "and what the current code provides."
             )
         elif intent == "adapt":
             parts.append(

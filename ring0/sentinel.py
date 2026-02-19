@@ -214,7 +214,7 @@ def _effective_cooldown(base_cooldown: int, skill_ratio: float) -> int:
     return int(base_cooldown * multiplier)
 
 
-def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int = 5, plateau_epsilon: float = 0.03, has_directive: bool = False) -> tuple[bool, bool]:
+def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int = 5, plateau_epsilon: float = 0.03, has_directive: bool = False, last_task_time: float = 0) -> tuple[bool, bool]:
     """Check whether evolution should proceed.
 
     Returns (should_evolve, is_plateaued):
@@ -225,6 +225,9 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
     Adaptive evolution: when scores are plateaued AND no user directive
     is pending, skip the LLM call to save tokens.  A directive always
     forces evolution.
+
+    Task idle decay: when no tasks have been completed recently, extend
+    the effective cooldown to save tokens during inactive periods.
     """
     if state.p0_active.is_set():
         return False, False
@@ -232,6 +235,16 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
         return False, False
     if time.time() - state.last_evolution_time < cooldown_sec:
         return False, False
+
+    # Task idle decay: extend cooldown when no tasks are coming in.
+    if last_task_time > 0:
+        idle_hours = (time.time() - last_task_time) / 3600
+        if idle_hours >= 2:
+            idle_multiplier = min(1.0 + idle_hours / 2, 4.0)
+            idle_cooldown = int(cooldown_sec * idle_multiplier)
+            if time.time() - state.last_evolution_time < idle_cooldown:
+                log.info("Task idle %.1fh — extended cooldown %ds", idle_hours, idle_cooldown)
+                return False, False
 
     # Detect plateau.
     plateaued = False
@@ -300,6 +313,41 @@ def _try_install_capability(proposal, skill_store, venv_manager, allowed_package
             log.warning("Capability '%s' venv setup failed (will retry on first run): %s", name, exc)
 
     return True
+
+
+def _try_auto_directive(memory_store, user_profiler, project_root):
+    """Best-effort: generate a directive from recent tasks + user profile.
+
+    Returns a directive string or None on failure / insufficient data.
+    """
+    try:
+        from ring1.config import load_ring1_config
+        from ring1.directive_generator import DirectiveGenerator
+
+        r1_config = load_ring1_config(project_root)
+        if not r1_config.has_llm_config():
+            return None
+
+        task_history = []
+        if memory_store:
+            try:
+                task_history = memory_store.get_by_type("task", limit=30)
+            except Exception:
+                pass
+
+        profile_summary = ""
+        if user_profiler:
+            try:
+                profile_summary = user_profiler.get_profile_summary()
+            except Exception:
+                pass
+
+        client = r1_config.get_llm_client()
+        generator = DirectiveGenerator(client)
+        return generator.generate(task_history, profile_summary)
+    except Exception as exc:
+        log.debug("Auto-directive generation failed: %s", exc)
+        return None
 
 
 def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
@@ -1035,11 +1083,23 @@ def run(project_root: pathlib.Path) -> None:
                     plateau_window=plateau_window,
                     plateau_epsilon=plateau_epsilon,
                     has_directive=bool(pending_directive),
+                    last_task_time=state.last_task_completion,
                 )
                 if not should_evo:
-                    if not plateaued:
+                    if plateaued and not pending_directive:
+                        auto_dir = _try_auto_directive(memory_store, user_profiler, project_root)
+                        if auto_dir:
+                            with state.lock:
+                                state.evolution_directive = auto_dir
+                            should_evo = True
+                            pending_directive = auto_dir
+                            log.info("Auto-directive: %s", auto_dir[:80])
+                        else:
+                            log.info("Plateau, no auto-directive — skipping")
+                    elif not plateaued:
                         log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
                                  eff_cooldown, skill_hit["ratio"] * 100)
+                if not should_evo:
                     evolved = False
                 else:
                     with state.lock:
@@ -1231,6 +1291,7 @@ def run(project_root: pathlib.Path) -> None:
                 plateau_window=plateau_window,
                 plateau_epsilon=plateau_epsilon,
                 has_directive=True,  # failures always force evolution
+                last_task_time=state.last_task_completion,
             )
             if not should_evo:
                 log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
