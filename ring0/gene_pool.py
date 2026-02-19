@@ -129,13 +129,22 @@ class GenePool(SQLiteStore):
             return False
 
     def get_top(self, n: int = 3) -> list[dict]:
-        """Return top N genes by score, each with gene_summary field."""
+        """Return top N genes by score (then generation DESC as tiebreaker).
+
+        Pass n=0 to return all genes.
+        """
         with self._connect() as con:
-            rows = con.execute(
-                "SELECT generation, score, gene_summary, tags FROM gene_pool "
-                "ORDER BY score DESC LIMIT ?",
-                (n,),
-            ).fetchall()
+            if n <= 0:
+                rows = con.execute(
+                    "SELECT generation, score, gene_summary, tags FROM gene_pool "
+                    "ORDER BY score DESC, generation DESC",
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT generation, score, gene_summary, tags FROM gene_pool "
+                    "ORDER BY score DESC, generation DESC LIMIT ?",
+                    (n,),
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def get_relevant(self, context: str, n: int = 3) -> list[dict]:

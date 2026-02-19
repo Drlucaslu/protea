@@ -810,7 +810,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         genes = []
         if self.gene_pool:
             try:
-                genes = self.gene_pool.get_top(20)
+                genes = self.gene_pool.get_top(0)
             except Exception:
                 pass
 
@@ -869,7 +869,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         genes = []
         if self.gene_pool:
             try:
-                genes = self.gene_pool.get_top(20)
+                genes = self.gene_pool.get_top(0)
             except Exception:
                 pass
         self._send_json(genes)
