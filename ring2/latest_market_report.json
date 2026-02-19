@@ -1,0 +1,24 @@
+{
+  "symbols": [
+    "AAPL",
+    "GOOGL",
+    "MSFT",
+    "AMZN",
+    "TSLA",
+    "NVDA",
+    "META",
+    "NFLX"
+  ],
+  "generated_at": 1771489640.8735821,
+  "signals": {
+    "AAPL": "BUY",
+    "GOOGL": "BUY",
+    "MSFT": "STRONG SELL",
+    "AMZN": "STRONG SELL",
+    "TSLA": "BUY",
+    "NVDA": "STRONG SELL",
+    "META": "SELL",
+    "NFLX": "STRONG SELL"
+  },
+  "output_file": "market_report_20260219_162720.txt"
+}

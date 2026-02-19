@@ -1,0 +1,11 @@
+{
+  "query": "Trump",
+  "date_range": "Last 3 days",
+  "generated_at": 1771487677.623487,
+  "article_count": 9,
+  "sources": [
+    "feeds.bbci.co.uk",
+    "rss.nytimes.com"
+  ],
+  "output_file": "trump_news_report_20260219_155437.txt"
+}

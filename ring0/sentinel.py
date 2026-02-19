@@ -920,6 +920,10 @@ def run(project_root: pathlib.Path) -> None:
         pass
 
     log.info("Sentinel online — heartbeat every %ds, timeout %ds, cooldown %ds", interval, timeout, cooldown_sec)
+    
+    # Notify Telegram that sentinel is online
+    if notifier:
+        notifier.notify_sentinel_online(generation)
 
     try:
         params = generate_params(generation, seed)

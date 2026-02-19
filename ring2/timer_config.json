@@ -1,0 +1,12 @@
+{
+  "task_1771459693_0": {
+    "id": "task_1771459693_0",
+    "name": "System Time Report",
+    "interval_seconds": 300,
+    "action": "system_time",
+    "enabled": true,
+    "last_run": 1771477837.198787,
+    "run_count": 60,
+    "created_at": 1771459693.9637141
+  }
+}

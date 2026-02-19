@@ -76,6 +76,16 @@ class TelegramNotifier:
         )
         return self.send(msg)
 
+    def notify_sentinel_online(self, generation: int) -> bool:
+        """Notify that the sentinel (Ring 0) has started/restarted."""
+        msg = (
+            f"🛡️ *哨兵程序已上线*\n\n"
+            f"Ring 0 已启动\n"
+            f"当前代数: Gen {generation}\n"
+            f"监控状态: ✅ 运行中"
+        )
+        return self.send(msg)
+
 
 def create_notifier(config) -> TelegramNotifier | None:
     """Create a TelegramNotifier from Ring1Config, or None if disabled.

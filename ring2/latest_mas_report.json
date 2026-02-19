@@ -1,0 +1,21 @@
+{
+  "generated_at": 1771491302.522316,
+  "period": "12 months",
+  "approval_rates": {
+    "13O": 74.07,
+    "13U": 84.38,
+    "13R": 85.71
+  },
+  "market_intelligence": {
+    "total_applications_tracked": 87,
+    "scheme_distribution": {
+      "13R": 33.8,
+      "13U": 38.0,
+      "13O": 28.2
+    },
+    "market_momentum": "Accelerating",
+    "policy_activity": 37,
+    "regulatory_environment": "Tightening"
+  },
+  "output_file": "mas_ipa_report_20260219_165502.txt"
+}
