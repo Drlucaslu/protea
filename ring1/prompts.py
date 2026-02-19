@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import platform
 import re
 
 SYSTEM_PROMPT = """\
@@ -158,6 +159,17 @@ def build_evolution_prompt(
     parts.append(f"Previous generation {'SURVIVED' if survived else 'DIED'}.")
     parts.append(f"Mutation rate: {params.get('mutation_rate', 0.1)}")
     parts.append(f"Max runtime: {params.get('max_runtime_sec', 60)}s")
+    parts.append("")
+
+    # Platform info — prevent generating OS-specific code that can't run here.
+    parts.append("## Platform")
+    parts.append(f"OS: {platform.system()} {platform.release()} ({platform.machine()})")
+    if platform.system() == "Darwin":
+        parts.append("WARNING: This is macOS. /proc filesystem does NOT exist. "
+                      "Do NOT use /proc/net, /proc/stat, /proc/meminfo, or "
+                      "/proc/[pid] paths. Use subprocess with macOS commands "
+                      "(sysctl, vm_stat, netstat, ps) or platform-agnostic "
+                      "Python APIs instead.")
     parts.append("")
 
     # Intent-driven context selection flags.

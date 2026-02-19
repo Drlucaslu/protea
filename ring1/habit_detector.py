@@ -24,9 +24,10 @@ log = logging.getLogger("protea.habit_detector")
 
 # Regex to strip conversation context prefix injected by telegram_bot.
 # Matches: "[Context: ...]\nYour (previous )?message: \"...\"\nUser('s reply|now says): "
+# Uses .*? (lazy) with DOTALL to handle internal quotes in bot messages.
 _CONTEXT_PREFIX_RE = re.compile(
     r"^\[Context:[^\]]*\]\n"
-    r"Your (?:previous )?message: \"[^\"]*(?:\.\.\.)?\"[\n]+"
+    r"Your (?:previous )?message: \".*?\"[\n]+"
     r"User(?:'s reply|\s+now says): ",
     re.DOTALL,
 )
