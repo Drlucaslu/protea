@@ -16,6 +16,9 @@ from ring1.habit_detector import (
     _JACCARD_THRESHOLD,
     _PROPOSE_COOLDOWN_SEC,
     _strip_context_prefix,
+    _tool_profile,
+    _tool_profile_cosine,
+    classify_task_intent,
     load_templates,
 )
 
@@ -29,19 +32,27 @@ def _make_task(
     keywords: str = "",
     timestamp: str | None = None,
     importance: float = 0.7,
+    tool_sequence: list[str] | None = None,
+    embedding: list[float] | None = None,
 ) -> dict:
     """Create a mock task memory entry."""
     if timestamp is None:
         timestamp = datetime.now().isoformat()
-    return {
+    metadata: dict = {}
+    if tool_sequence is not None:
+        metadata["tool_sequence"] = tool_sequence
+    task: dict = {
         "content": content,
-        "metadata": {},
+        "metadata": metadata,
         "keywords": keywords,
         "timestamp": timestamp,
         "generation": 1,
         "entry_type": "task",
         "importance": importance,
     }
+    if embedding is not None:
+        task["embedding"] = embedding
+    return task
 
 
 def _make_memory_store(tasks: list[dict]) -> MagicMock:
@@ -221,28 +232,68 @@ class TestTemplateMatching:
 # ---------------------------------------------------------------------------
 
 class TestRepetitiveDetection:
-    def test_detect_with_high_threshold(self):
-        """5+ occurrences, 3+ days, LLM YES → detected."""
-        base = datetime(2026, 2, 10, 9, 0)
-        tasks = [
+    """Layer 2: tool-sequence + intent based detection."""
+
+    def _search_tasks(self, n: int, base: datetime | None = None) -> list[dict]:
+        """Helper: create n search-like tasks across different days."""
+        if base is None:
+            base = datetime(2026, 2, 10, 9, 0)
+        return [
             _make_task(
-                "分析销售数据报表",
-                keywords="分析 销售 数据 报表",
+                "搜索最新AI研究论文",
                 timestamp=(base + timedelta(days=i)).isoformat(),
+                tool_sequence=["web_search", "web_search", "web_fetch", "message"],
             )
-            for i in range(6)
+            for i in range(n)
         ]
+
+    def test_similar_tool_sequences_detected(self):
+        """3+ similar tool sequences across 2+ days → detected."""
+        tasks = self._search_tasks(4)
         mem = _make_memory_store(tasks)
-        llm = MagicMock()
-        llm.send_message.return_value = "YES, this is a useful pattern."
-        detector = HabitDetector(mem, llm_client=llm)
+        detector = HabitDetector(mem)
         patterns = detector.detect()
         rep = [p for p in patterns if p.pattern_type == "repetitive"]
         assert len(rep) >= 1
-        assert rep[0].count >= 5
+        assert rep[0].count >= 3
+        assert rep[0].pattern_key.startswith("tool_pattern:")
 
-    def test_below_occurrence_threshold(self):
-        """Only 3 occurrences (need 5) → no repetitive pattern."""
+    def test_different_tool_sequences_not_clustered(self):
+        """Tasks with completely different tool profiles → no cluster."""
+        base = datetime(2026, 2, 10, 9, 0)
+        tasks = [
+            _make_task("搜索论文", timestamp=(base + timedelta(days=0)).isoformat(),
+                       tool_sequence=["web_search", "web_search", "message"]),
+            _make_task("写代码", timestamp=(base + timedelta(days=1)).isoformat(),
+                       tool_sequence=["write_file", "edit_file", "exec"]),
+            _make_task("发文件", timestamp=(base + timedelta(days=2)).isoformat(),
+                       tool_sequence=["read_file", "send_file", "message"]),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) == 0
+
+    def test_non_repeatable_tasks_excluded(self):
+        """Tasks dominated by write_file (create intent) → excluded."""
+        base = datetime(2026, 2, 10, 9, 0)
+        tasks = [
+            _make_task(
+                "写一个脚本",
+                timestamp=(base + timedelta(days=i)).isoformat(),
+                tool_sequence=["write_file", "write_file", "edit_file", "exec"],
+            )
+            for i in range(5)
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) == 0
+
+    def test_no_tool_sequence_skipped(self):
+        """Old tasks without tool_sequence → skipped by L2."""
         base = datetime(2026, 2, 10, 9, 0)
         tasks = [
             _make_task(
@@ -250,81 +301,186 @@ class TestRepetitiveDetection:
                 keywords="分析 销售 数据",
                 timestamp=(base + timedelta(days=i)).isoformat(),
             )
-            for i in range(3)
+            for i in range(6)
         ]
         mem = _make_memory_store(tasks)
-        llm = MagicMock()
-        llm.send_message.return_value = "YES"
-        detector = HabitDetector(mem, llm_client=llm)
+        detector = HabitDetector(mem)
         patterns = detector.detect()
         rep = [p for p in patterns if p.pattern_type == "repetitive"]
         assert len(rep) == 0
 
-    def test_insufficient_time_spread(self):
-        """5 occurrences but same day → no pattern (need 3 days)."""
+    def test_same_day_insufficient_spread(self):
+        """3 tasks on same day (need 2 days) → no pattern."""
         ts = datetime(2026, 2, 15, 9, 0).isoformat()
         tasks = [
-            _make_task("分析销售数据", keywords="分析 销售 数据", timestamp=ts)
-            for _ in range(6)
+            _make_task("搜索论文", timestamp=ts,
+                       tool_sequence=["web_search", "web_fetch", "message"])
+            for _ in range(4)
         ]
         mem = _make_memory_store(tasks)
-        llm = MagicMock()
-        llm.send_message.return_value = "YES"
-        detector = HabitDetector(mem, llm_client=llm)
+        detector = HabitDetector(mem)
         patterns = detector.detect()
         rep = [p for p in patterns if p.pattern_type == "repetitive"]
         assert len(rep) == 0
 
-    def test_llm_rejects(self):
-        """LLM says NO → no pattern."""
-        base = datetime(2026, 2, 10, 9, 0)
-        tasks = [
-            _make_task(
-                "分析销售数据",
-                keywords="分析 销售 数据",
-                timestamp=(base + timedelta(days=i)).isoformat(),
-            )
-            for i in range(6)
-        ]
-        mem = _make_memory_store(tasks)
-        llm = MagicMock()
-        llm.send_message.return_value = "NO, this is not useful."
-        detector = HabitDetector(mem, llm_client=llm)
-        patterns = detector.detect()
-        rep = [p for p in patterns if p.pattern_type == "repetitive"]
-        assert len(rep) == 0
-
-    def test_no_llm_conservative(self):
-        """No LLM client → no repetitive patterns (conservative)."""
-        base = datetime(2026, 2, 10, 9, 0)
-        tasks = [
-            _make_task(
-                "分析销售数据",
-                keywords="分析 销售 数据",
-                timestamp=(base + timedelta(days=i)).isoformat(),
-            )
-            for i in range(6)
-        ]
+    def test_no_llm_still_works(self):
+        """L2 works without LLM client (no longer requires it)."""
+        tasks = self._search_tasks(4)
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem, llm_client=None)
         patterns = detector.detect()
         rep = [p for p in patterns if p.pattern_type == "repetitive"]
-        assert len(rep) == 0
+        assert len(rep) >= 1
 
     def test_l1_takes_precedence(self):
         """If L1 finds something, L2 is not run."""
         tasks = [
-            _make_task("查一下机票"),
-            _make_task("帮我查航班"),
+            _make_task("查一下机票",
+                       tool_sequence=["web_search", "web_search", "message"]),
+            _make_task("帮我查航班",
+                       tool_sequence=["web_search", "web_search", "message"]),
         ]
         mem = _make_memory_store(tasks)
-        llm = MagicMock()
-        detector = HabitDetector(mem, templates=[FLIGHT_TEMPLATE], llm_client=llm)
+        detector = HabitDetector(mem, templates=[FLIGHT_TEMPLATE])
         patterns = detector.detect()
         assert len(patterns) == 1
         assert patterns[0].pattern_type == "template"
-        # LLM should NOT have been called (L2 skipped).
-        llm.send_message.assert_not_called()
+
+    def test_pattern_key_format(self):
+        """pattern_key has format 'tool_pattern:{intent}:{tools}'."""
+        tasks = self._search_tasks(4)
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) >= 1
+        key = rep[0].pattern_key
+        assert key.startswith("tool_pattern:")
+        parts = key.split(":")
+        assert len(parts) == 3
+        assert parts[1] == "search"
+
+    def test_all_samples_populated(self):
+        """all_samples filled with cluster task contents."""
+        tasks = self._search_tasks(4)
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) >= 1
+        assert len(rep[0].all_samples) >= 3
+
+    def test_below_occurrence_threshold(self):
+        """Only 2 tasks (need 3) → no repetitive pattern."""
+        tasks = self._search_tasks(2)
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) == 0
+
+
+# ---------------------------------------------------------------------------
+# classify_task_intent
+# ---------------------------------------------------------------------------
+
+class TestClassifyTaskIntent:
+    def test_search_task_repeatable(self):
+        task = _make_task("搜索论文", tool_sequence=["web_search", "web_fetch", "message"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "search"
+        assert rep is True
+
+    def test_create_task_not_repeatable(self):
+        task = _make_task("写代码", tool_sequence=["write_file", "edit_file", "exec"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "create"
+        assert rep is False
+
+    def test_chat_not_repeatable(self):
+        task = _make_task("聊天", tool_sequence=["message", "message"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "chat"
+        assert rep is False
+
+    def test_admin_not_repeatable(self):
+        task = _make_task("管理定时", tool_sequence=["manage_schedule"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "admin"
+        assert rep is False
+
+    def test_skill_repeatable(self):
+        task = _make_task("运行技能", tool_sequence=["run_skill", "message"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "skill"
+        assert rep is True
+
+    def test_no_tool_sequence(self):
+        task = _make_task("旧任务")
+        intent, rep = classify_task_intent(task)
+        assert intent == "unknown"
+        assert rep is False
+
+    def test_mixed_search_exec_repeatable(self):
+        task = _make_task("搜索并执行",
+                          tool_sequence=["web_search", "web_search", "exec", "message"])
+        intent, rep = classify_task_intent(task)
+        assert intent == "search"
+        assert rep is True
+
+    def test_metadata_as_json_string(self):
+        task = _make_task("搜索")
+        task["metadata"] = json.dumps({"tool_sequence": ["web_search", "message"]})
+        intent, rep = classify_task_intent(task)
+        assert intent == "search"
+        assert rep is True
+
+
+# ---------------------------------------------------------------------------
+# _tool_profile
+# ---------------------------------------------------------------------------
+
+class TestToolProfile:
+    def test_basic_frequency(self):
+        task = _make_task("x", tool_sequence=["web_search", "web_search", "web_fetch", "message"])
+        profile = _tool_profile(task)
+        assert profile["web_search"] == pytest.approx(0.5)
+        assert profile["web_fetch"] == pytest.approx(0.25)
+        assert profile["message"] == pytest.approx(0.25)
+
+    def test_empty_sequence(self):
+        task = _make_task("x")
+        assert _tool_profile(task) == {}
+
+    def test_single_tool(self):
+        task = _make_task("x", tool_sequence=["web_search"])
+        profile = _tool_profile(task)
+        assert profile == {"web_search": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# _tool_profile_cosine
+# ---------------------------------------------------------------------------
+
+class TestToolProfileCosine:
+    def test_identical(self):
+        p = {"web_search": 0.5, "message": 0.5}
+        assert _tool_profile_cosine(p, p) == pytest.approx(1.0)
+
+    def test_disjoint(self):
+        a = {"web_search": 1.0}
+        b = {"write_file": 1.0}
+        assert _tool_profile_cosine(a, b) == pytest.approx(0.0)
+
+    def test_similar_profiles(self):
+        a = {"web_search": 0.5, "web_fetch": 0.3, "message": 0.2}
+        b = {"web_search": 0.6, "web_fetch": 0.2, "message": 0.2}
+        sim = _tool_profile_cosine(a, b)
+        assert sim > 0.9
+
+    def test_empty(self):
+        assert _tool_profile_cosine({}, {"a": 1.0}) == pytest.approx(0.0)
+        assert _tool_profile_cosine({}, {}) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +625,7 @@ class TestEdgeCases:
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem, templates=[])
         patterns = detector.detect()
-        # L2 also won't fire (not enough tasks, no LLM)
+        # L2 also won't fire (no tool_sequence in tasks)
         assert patterns == []
 
 

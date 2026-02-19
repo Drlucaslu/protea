@@ -3,9 +3,8 @@
 Layer 1: Template matching — match tasks against predefined templates with
 keywords and regex patterns.  Low threshold, high precision.
 
-Layer 2: High-threshold repetitive detection — cluster tasks by keyword overlap
-(Jaccard), require more occurrences and time spread, plus optional LLM
-assessment.
+Layer 2: Tool-sequence + intent detection — cluster tasks by tool-call profile
+similarity, filtered by intent repeatability.  No LLM required.
 
 Pure stdlib — no external dependencies (LLM client is optional).
 """
@@ -14,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from collections import Counter
@@ -42,21 +42,102 @@ def _strip_context_prefix(text: str) -> str:
 _PROPOSE_COOLDOWN_SEC = 24 * 3600  # 24 hours
 
 # Layer 2 defaults
-_L2_MIN_OCCURRENCES = 5
-_L2_MIN_DAYS = 3
+_L2_MIN_OCCURRENCES = 3
+_L2_MIN_DAYS = 2
 _L2_WINDOW_HOURS = 72
-_JACCARD_THRESHOLD = 0.5
+_JACCARD_THRESHOLD = 0.5  # kept for backward compat (tests may reference)
 
 # Fraction of tasks in same 2h window to suggest a cron time.
 _TIME_CONCENTRATION_THRESHOLD = 0.6
 
-_LLM_ASSESS_PROMPT = """\
-The user has performed the following task multiple times:
-{sample_tasks}
+# Tool → (intent_category, repeatability_weight)
+_TOOL_INTENT_MAP: dict[str, tuple[str, float]] = {
+    "web_search":      ("search",  1.0),
+    "web_fetch":       ("search",  0.8),
+    "run_skill":       ("skill",   1.0),
+    "exec":            ("process", 0.5),
+    "read_file":       ("process", 0.3),
+    "list_dir":        ("process", 0.2),
+    "spawn":           ("process", 0.3),
+    "view_skill":      ("skill",   0.3),
+    "write_file":      ("create", -0.5),
+    "edit_file":       ("create", -0.5),
+    "edit_skill":      ("create", -0.3),
+    "generate_pdf":    ("create", -0.3),
+    "message":         ("chat",    0.0),
+    "send_file":       ("create",  0.0),
+    "manage_schedule": ("admin",  -1.0),
+}
 
-Question: Is this a pattern worth automating as a scheduled/recurring task?
-Consider: Is it genuinely repetitive? Would automation save the user effort?
-Answer YES or NO (one word first, then brief reasoning)."""
+
+def _get_tool_sequence(task: dict) -> list[str]:
+    """Extract tool_sequence from task metadata, handling JSON strings."""
+    meta = task.get("metadata", {})
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    seq = meta.get("tool_sequence", [])
+    if isinstance(seq, str):
+        try:
+            seq = json.loads(seq)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return seq if isinstance(seq, list) else []
+
+
+def classify_task_intent(task: dict) -> tuple[str, bool]:
+    """Classify task intent and repeatability from tool_sequence metadata.
+
+    Returns (intent_category, is_repeatable).
+    """
+    seq = _get_tool_sequence(task)
+    if not seq:
+        return ("unknown", False)
+
+    counts: Counter[str] = Counter(seq)
+    total = sum(counts.values())
+
+    # Weighted repeatability score
+    score = 0.0
+    for tool, count in counts.items():
+        _, weight = _TOOL_INTENT_MAP.get(tool, ("unknown", 0.0))
+        score += weight * count
+
+    is_repeatable = (score / total) > 0.2
+
+    # Intent category by majority vote
+    intent_votes: Counter[str] = Counter()
+    for tool, count in counts.items():
+        cat, _ = _TOOL_INTENT_MAP.get(tool, ("unknown", 0.0))
+        intent_votes[cat] += count
+
+    intent = intent_votes.most_common(1)[0][0] if intent_votes else "unknown"
+    return (intent, is_repeatable)
+
+
+def _tool_profile(task: dict) -> dict[str, float]:
+    """Normalized tool frequency profile from tool_sequence."""
+    seq = _get_tool_sequence(task)
+    if not seq:
+        return {}
+    counts = Counter(seq)
+    total = sum(counts.values())
+    return {tool: cnt / total for tool, cnt in counts.items()}
+
+
+def _tool_profile_cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    """Cosine similarity between two sparse tool-profile dicts."""
+    if not a or not b:
+        return 0.0
+    keys = set(a) | set(b)
+    dot = sum(a.get(k, 0.0) * b.get(k, 0.0) for k in keys)
+    mag_a = math.sqrt(sum(v * v for v in a.values()))
+    mag_b = math.sqrt(sum(v * v for v in b.values()))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
 
 
 def load_templates(path) -> list[dict]:
@@ -270,84 +351,92 @@ class HabitDetector:
         return patterns
 
     # ------------------------------------------------------------------
-    # Layer 2: High-threshold repetitive detection
+    # Layer 2: Tool-sequence + intent detection
     # ------------------------------------------------------------------
 
     def _detect_repetitive_patterns(
         self, tasks: list[dict], existing_scheduled: set[str],
     ) -> list[HabitPattern]:
-        """Find groups of tasks with high keyword overlap, strict thresholds."""
-        clusters = self._cluster_by_keywords(tasks)
-        patterns: list[HabitPattern] = []
+        """Find groups of tasks with similar tool-call profiles.
 
+        Only considers tasks that have a tool_sequence and whose intent
+        is classified as repeatable.
+        """
+        # Step 1: Filter — repeatable tasks with tool_sequence
+        candidates: list[tuple[dict, dict[str, float], str]] = []
+        for task in tasks:
+            seq = _get_tool_sequence(task)
+            if not seq:
+                continue
+            intent, repeatable = classify_task_intent(task)
+            if not repeatable:
+                continue
+            profile = _tool_profile(task)
+            candidates.append((task, profile, intent))
+
+        if not candidates:
+            return []
+
+        # Step 2: Single-pass clustering by tool profile cosine >= 0.7
+        clusters: list[list[tuple[dict, dict[str, float], str]]] = []
+        for item in candidates:
+            task, profile, intent = item
+            placed = False
+            for cluster in clusters:
+                rep_task, rep_profile, rep_intent = cluster[0]
+                tool_sim = _tool_profile_cosine(profile, rep_profile)
+                if tool_sim >= 0.7:
+                    content_sim = self._content_similarity(task, rep_task)
+                    combined = tool_sim * 0.6 + content_sim * 0.4
+                    if combined >= 0.6:
+                        cluster.append(item)
+                        placed = True
+                        break
+            if not placed:
+                clusters.append([item])
+
+        # Step 3 & 4: Filter and generate patterns
+        patterns: list[HabitPattern] = []
         for cluster in clusters:
             if len(cluster) < self._l2_min_occurrences:
                 continue
 
-            # Check time spread: need tasks across multiple days.
-            if not self._check_time_spread(cluster, self._l2_min_days):
+            cluster_tasks = [t for t, _, _ in cluster]
+            if not self._check_time_spread(cluster_tasks, self._l2_min_days):
                 continue
 
-            # Build cluster key from shared keywords.
-            kw_sets = [self._simple_keywords(t.get("content", "")) for t in cluster]
-            shared_kw = set.intersection(*kw_sets) if kw_sets else set()
-            if not shared_kw:
-                all_kw: Counter[str] = Counter()
-                for kw_set in kw_sets:
-                    all_kw.update(kw_set)
-                shared_kw = {w for w, _ in all_kw.most_common(3)}
+            # Build pattern key from intent + top tools
+            intent_votes: Counter[str] = Counter()
+            tool_counts: Counter[str] = Counter()
+            for _, profile, intent in cluster:
+                intent_votes[intent] += 1
+                for tool in profile:
+                    tool_counts[tool] += 1
+            main_intent = intent_votes.most_common(1)[0][0]
+            top_tools = "+".join(t for t, _ in tool_counts.most_common(2))
+            pattern_key = f"tool_pattern:{main_intent}:{top_tools}"
 
-            key_label = "+".join(sorted(shared_kw)[:3])
-            pattern_key = f"repetitive:{key_label}"
-
-            # Skip if already scheduled.
-            if any(key_label in s for s in existing_scheduled):
+            # Skip if already scheduled
+            if any(top_tools in s for s in existing_scheduled):
                 continue
 
-            # LLM assessment (optional)
-            if not self._llm_assess_pattern(cluster):
-                continue
-
-            sample = cluster[0].get("content", "")[:100]
-            cron = self._detect_time_pattern(cluster)
+            sample = cluster_tasks[0].get("content", "")[:100]
+            cron = self._detect_time_pattern(cluster_tasks)
 
             patterns.append(HabitPattern(
                 pattern_type="repetitive",
                 pattern_key=pattern_key,
                 count=len(cluster),
-                task_summary=f"执行{key_label}相关任务",
+                task_summary=f"执行{main_intent}类任务({top_tools})",
                 suggested_cron=cron,
                 sample_task=sample,
+                all_samples=[
+                    _strip_context_prefix(t.get("content", ""))[:80]
+                    for t in cluster_tasks[:5]
+                ],
             ))
 
         return patterns
-
-    def _cluster_by_keywords(self, tasks: list[dict]) -> list[list[dict]]:
-        """Single-pass Jaccard clustering of tasks by keyword sets."""
-        task_kw: list[tuple[dict, set[str]]] = []
-        for task in tasks:
-            kw_str = task.get("keywords", "")
-            if kw_str:
-                kw_set = set(kw_str.lower().split())
-            else:
-                kw_set = self._simple_keywords(task.get("content", ""))
-            if len(kw_set) >= 2:
-                task_kw.append((task, kw_set))
-
-        clusters: list[list[tuple[dict, set[str]]]] = []
-        for item in task_kw:
-            _, kw = item
-            placed = False
-            for cluster in clusters:
-                _, rep_kw = cluster[0]
-                if self._jaccard(kw, rep_kw) >= _JACCARD_THRESHOLD:
-                    cluster.append(item)
-                    placed = True
-                    break
-            if not placed:
-                clusters.append([item])
-
-        return [[t for t, _ in cluster] for cluster in clusters]
 
     def _check_time_spread(self, tasks: list[dict], min_days: int) -> bool:
         """Check if tasks span at least *min_days* distinct calendar days."""
@@ -363,27 +452,20 @@ class HabitDetector:
                 pass
         return len(days) >= min_days
 
-    def _llm_assess_pattern(self, tasks: list[dict]) -> bool:
-        """Use LLM to judge if a cluster is worth automating.
-
-        Returns False (conservative) if no LLM client or on error.
-        """
-        if not self._llm_client:
-            return False
-
-        sample_texts = "\n".join(
-            f"- {t.get('content', '')[:100]}" for t in tasks[:5]
-        )
-        prompt = _LLM_ASSESS_PROMPT.format(sample_tasks=sample_texts)
-
-        try:
-            response = self._llm_client.send_message(
-                "You are a task pattern analyst.", prompt,
-            )
-            return response.strip().upper().startswith("YES")
-        except Exception:
-            log.debug("LLM assess pattern failed", exc_info=True)
-            return False
+    def _content_similarity(self, task_a: dict, task_b: dict) -> float:
+        """Content similarity: prefer embedding cosine, fallback to Jaccard."""
+        emb_a = task_a.get("embedding")
+        emb_b = task_b.get("embedding")
+        if emb_a and emb_b and isinstance(emb_a, list) and isinstance(emb_b, list):
+            dot = sum(a * b for a, b in zip(emb_a, emb_b))
+            mag_a = math.sqrt(sum(a * a for a in emb_a))
+            mag_b = math.sqrt(sum(b * b for b in emb_b))
+            if mag_a > 0 and mag_b > 0:
+                return dot / (mag_a * mag_b)
+        # Fallback: keyword Jaccard
+        kw_a = self._simple_keywords(task_a.get("content", ""))
+        kw_b = self._simple_keywords(task_b.get("content", ""))
+        return self._jaccard(kw_a, kw_b)
 
     # ------------------------------------------------------------------
     # Time pattern detection
