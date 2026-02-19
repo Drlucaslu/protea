@@ -37,7 +37,7 @@ class CommitWatcher:
         self._interval = interval
         self._fetch_interval = fetch_interval
         self._stop_event = threading.Event()
-        self._last_fetch_time: float = 0.0
+        self._last_fetch_time: float = -float('inf')
         self._failed_hash: str | None = None
         self._state_path = self._root_path / STATE_FILE
         self._last_synced_hash = self._load_state()
