@@ -357,6 +357,7 @@ class TaskExecutor:
         user_profiler=None,
         embedding_provider=None,
         prefer_local_skills: bool = True,
+        scheduled_store=None,
     ) -> None:
         """
         Args:
@@ -391,9 +392,16 @@ class TaskExecutor:
         self.user_profiler = user_profiler
         self.embedding_provider = embedding_provider
         self.prefer_local_skills = prefer_local_skills
+        self.scheduled_store = scheduled_store
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
+        self._last_habit_check: float = 0.0
+        # Habit detector — reuses memory_store + scheduled_store.
+        self.habit_detector = None
+        if memory_store:
+            from ring1.habit_detector import HabitDetector
+            self.habit_detector = HabitDetector(memory_store, scheduled_store)
         # Conversation history: list of (timestamp, user_text, response_text)
         self._chat_history: list[tuple[float, str, str]] = []
         self._chat_history_max = 5
@@ -628,12 +636,69 @@ class TaskExecutor:
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
 
+    def _propose_habit(self, pattern) -> None:
+        """Push a habit proposal to state.habit_proposals for the bot to send."""
+        if not self.habit_detector:
+            return
+        self.habit_detector.mark_proposed(pattern.pattern_key)
+
+        text = (
+            f"*发现重复模式*\n\n"
+            f"你最近 {pattern.count} 次执行了类似任务：\n"
+            f"「{pattern.sample_task}」\n\n"
+            f"建议创建定时任务自动执行。"
+        )
+
+        buttons = []
+        if pattern.suggested_cron:
+            try:
+                from ring0.cron import describe
+                desc = describe(pattern.suggested_cron)
+            except Exception:
+                desc = pattern.suggested_cron
+            buttons.append([{
+                "text": f"自动执行 ({desc})",
+                "callback_data": f"habit:schedule:{pattern.pattern_key}:{pattern.suggested_cron}",
+            }])
+        else:
+            # Default: daily at 9am
+            buttons.append([{
+                "text": "每天 09:00 自动执行",
+                "callback_data": f"habit:schedule:{pattern.pattern_key}:0 9 * * *",
+            }])
+        buttons.append([{
+            "text": "不需要",
+            "callback_data": f"habit:dismiss:{pattern.pattern_key}",
+        }])
+
+        # Put into state queue for bot to consume.
+        habit_q = getattr(self.state, "habit_proposals", None)
+        if habit_q is not None:
+            habit_q.put((text, buttons))
+        else:
+            # Fallback: send directly via reply_fn (no keyboard).
+            if self.reply_fn:
+                try:
+                    self.reply_fn(text)
+                except Exception:
+                    log.debug("Failed to send habit proposal", exc_info=True)
+
     def _check_p1_opportunity(self) -> None:
         """Check if we should trigger a P1 autonomous task."""
         if not self.p1_enabled:
             return
 
         now = time.time()
+
+        # Habit detection — runs at most once per hour.
+        if self.habit_detector and now - self._last_habit_check >= 3600:
+            self._last_habit_check = now
+            try:
+                patterns = self.habit_detector.detect()
+                for p in patterns[:2]:  # max 2 proposals at a time
+                    self._propose_habit(p)
+            except Exception:
+                log.debug("Habit detection failed", exc_info=True)
         # Check idle threshold
         if now - self._last_p0_time < self.p1_idle_threshold_sec:
             return
@@ -888,6 +953,7 @@ def create_executor(
         user_profiler=user_profiler,
         embedding_provider=embedding_provider,
         prefer_local_skills=prefer_local_skills,
+        scheduled_store=scheduled_store,
     )
     executor.subagent_manager = subagent_mgr
     return executor

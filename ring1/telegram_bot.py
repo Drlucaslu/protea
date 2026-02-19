@@ -48,6 +48,8 @@ class SentinelState:
         "memory_store", "skill_store", "task_store", "scheduled_store",
         # Service references
         "notifier", "skill_runner", "registry_client", "subagent_manager",
+        # Habit detection
+        "habit_proposals", "_habit_dismissed",
     )
 
     def __init__(self) -> None:
@@ -82,6 +84,9 @@ class SentinelState:
         self.skill_runner = None
         self.registry_client = None
         self.subagent_manager = None
+        # Habit detection
+        self.habit_proposals: queue.Queue = queue.Queue()
+        self._habit_dismissed: set[str] = set()
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -1026,9 +1031,60 @@ class TelegramBot:
     def _handle_callback(self, data: str) -> str:
         """Handle an inline keyboard callback by prefix.
 
-        ``data`` format: ``run:<name>`` or ``skill:<name>``.
+        ``data`` format: ``run:<name>``, ``skill:<name>``, or ``habit:…``.
         Returns a text reply.
         """
+        # --- habit callbacks ---
+        if data.startswith("habit:schedule:"):
+            # format: habit:schedule:<pattern_key>:<cron_expr>
+            # pattern_key may contain colons (e.g. "skill:news_summary")
+            rest = data[len("habit:schedule:"):]
+            # Split from the right: last segment is cron (5 space-separated fields)
+            # But cron is after the last colon that separates it from pattern_key.
+            # pattern_key formats: "skill:X" or "cluster:X+Y+Z"
+            # So we need at least 2 parts after splitting by ":"
+            parts = rest.split(":")
+            if len(parts) >= 3:
+                # parts[0] = "skill" or "cluster", parts[1] = name, parts[2] = cron
+                pattern_key = f"{parts[0]}:{parts[1]}"
+                cron_expr = ":".join(parts[2:])  # cron doesn't contain colons
+            elif len(parts) == 2:
+                pattern_key = parts[0]
+                cron_expr = parts[1]
+            else:
+                return "格式错误。"
+
+            # Derive task name and text from pattern_key.
+            safe_name = pattern_key.replace(":", "_")
+            if pattern_key.startswith("skill:"):
+                skill_name = pattern_key.split(":", 1)[1]
+                task_text = f"run_skill {skill_name}"
+            else:
+                task_text = pattern_key.split(":", 1)[1].replace("+", " ") + " 相关任务"
+
+            ss = self.state.scheduled_store
+            if not ss:
+                return "定时任务模块不可用。"
+
+            sched_id = ss.add(
+                name=f"auto_{safe_name}",
+                task_text=task_text,
+                cron_expr=cron_expr,
+                schedule_type="cron",
+                chat_id=str(self.chat_id),
+            )
+            try:
+                from ring0.cron import describe
+                desc = describe(cron_expr)
+            except Exception:
+                desc = cron_expr
+            return f"已创建定时任务: {desc}\n(ID: {sched_id})"
+
+        if data.startswith("habit:dismiss:"):
+            pattern_key = data[len("habit:dismiss:"):]
+            self.state._habit_dismissed.add(pattern_key)
+            return "好的，不再提醒这个模式。"
+
         if data.startswith("run:"):
             name = data[4:]
             sr = self.state.skill_runner
@@ -1216,6 +1272,17 @@ class TelegramBot:
                             self._send_reply(reply)
                     except Exception:
                         log.debug("Error handling update", exc_info=True)
+
+                # Consume habit proposals from the executor.
+                while not self.state.habit_proposals.empty():
+                    try:
+                        text, buttons = self.state.habit_proposals.get_nowait()
+                        self._send_message_with_keyboard(text, buttons)
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        log.debug("Error sending habit proposal", exc_info=True)
+                        break
             except Exception:
                 log.debug("Error in polling loop", exc_info=True)
                 # Back off on repeated errors.
