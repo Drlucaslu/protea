@@ -47,11 +47,12 @@ def _make_remote(tmp_path):
     )
     _git(local, "config", "user.email", "test@test.com")
     _git(local, "config", "user.name", "Test")
-    # Initial commit.
+    # Initial commit — ensure branch is named "main" regardless of git defaults.
     (local / "README.md").write_text("hello")
     _git(local, "add", "README.md")
     _git(local, "commit", "-m", "init")
-    _git(local, "push", "origin", "main")
+    _git(local, "branch", "-M", "main")
+    _git(local, "push", "-u", "origin", "main")
     return local, remote
 
 
