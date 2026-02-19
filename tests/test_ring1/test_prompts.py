@@ -237,9 +237,37 @@ class TestBuildEvolutionPrompt:
             survived=True,
             task_history=task_history,
         )
-        assert "Recent User Tasks" in user
+        assert "User Tasks" in user
         assert "What is the weather?" in user
         assert "Summarize this article" in user
+
+    def test_task_history_limit_5(self):
+        task_history = [{"content": f"task {i}"} for i in range(8)]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            task_history=task_history,
+        )
+        assert "task 4" in user
+        assert "task 5" not in user
+
+    def test_task_history_truncates_at_100(self):
+        task_history = [{"content": "x" * 150}]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+            task_history=task_history,
+        )
+        assert "x" * 100 + "..." in user
+        assert "x" * 101 not in user
 
     def test_no_task_history_no_section(self):
         _, user = build_evolution_prompt(
@@ -251,7 +279,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             task_history=None,
         )
-        assert "Recent User Tasks" not in user
+        assert "User Tasks" not in user
 
     def test_empty_task_history_no_section(self):
         _, user = build_evolution_prompt(
@@ -263,7 +291,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             task_history=[],
         )
-        assert "Recent User Tasks" not in user
+        assert "User Tasks" not in user
 
     def test_skills_included(self):
         skills = [
@@ -279,13 +307,11 @@ class TestBuildEvolutionPrompt:
             survived=True,
             skills=skills,
         )
-        assert "Existing Skills" in user
-        # Used skills shown with usage count.
-        assert "translate" in user
-        assert "used 3x" in user
-        # Unused skills listed in "Never used" section.
-        assert "summarize" in user
-        assert "Never used" in user
+        assert "## Skills" in user
+        # Used skills shown in compact format.
+        assert "translate(3x)" in user
+        # Unused skills shown as count.
+        assert "Unused: 1 skills" in user
 
     def test_no_skills_no_section(self):
         _, user = build_evolution_prompt(
@@ -297,7 +323,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             skills=None,
         )
-        assert "Existing Skills" not in user
+        assert "## Skills" not in user
 
     def test_empty_skills_no_section(self):
         _, user = build_evolution_prompt(
@@ -309,7 +335,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
             skills=[],
         )
-        assert "Existing Skills" not in user
+        assert "## Skills" not in user
 
     def test_system_prompt_has_evolution_strategy(self):
         system, _ = build_evolution_prompt(
@@ -323,7 +349,7 @@ class TestBuildEvolutionPrompt:
         assert "Evolution Strategy" in system
         assert "user" in system.lower()
 
-    def test_crash_logs_included(self):
+    def test_crash_logs_included_when_died(self):
         crash_logs = [
             {"generation": 2, "content": "Gen 2 died after 5s.\nReason: exit code 1\n\n--- Last output ---\nKeyError: 'foo'"},
             {"generation": 1, "content": "Gen 1 died after 3s.\nReason: killed by signal SIGKILL"},
@@ -343,6 +369,39 @@ class TestBuildEvolutionPrompt:
         assert "Gen 1" in user
         assert "SIGKILL" in user
 
+    def test_crash_logs_included_on_repair_intent(self):
+        """Crash logs shown when intent=repair even if survived."""
+        crash_logs = [
+            {"generation": 2, "content": "Gen 2 died after 5s."},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=3,
+            survived=True,
+            crash_logs=crash_logs,
+            evolution_intent={"intent": "repair", "signals": ["TypeError"]},
+        )
+        assert "Recent Crashes" in user
+
+    def test_crash_logs_omitted_when_survived(self):
+        """Crash logs suppressed when survived and not repair intent."""
+        crash_logs = [
+            {"generation": 2, "content": "Gen 2 died after 5s."},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=3,
+            survived=True,
+            crash_logs=crash_logs,
+        )
+        assert "Recent Crashes" not in user
+
     def test_no_crash_logs_no_section(self):
         _, user = build_evolution_prompt(
             current_source="x=1",
@@ -350,7 +409,7 @@ class TestBuildEvolutionPrompt:
             best_performers=[],
             params={},
             generation=0,
-            survived=True,
+            survived=False,
             crash_logs=None,
         )
         assert "Recent Crashes" not in user
@@ -362,7 +421,7 @@ class TestBuildEvolutionPrompt:
             best_performers=[],
             params={},
             generation=0,
-            survived=True,
+            survived=False,
             crash_logs=[],
         )
         assert "Recent Crashes" not in user
@@ -453,6 +512,22 @@ class TestBuildEvolutionPrompt:
             gene_pool=[],
         )
         assert "Inherited Patterns" not in user
+
+    def test_gene_pool_summary_truncated_at_150(self):
+        gene_pool = [
+            {"generation": 1, "score": 0.80, "gene_summary": "x" * 200},
+        ]
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=2,
+            survived=True,
+            gene_pool=gene_pool,
+        )
+        assert "x" * 147 + "..." in user
+        assert "x" * 148 not in user
 
     def test_gene_pool_before_instructions(self):
         gene_pool = [
@@ -788,7 +863,20 @@ class TestUserProfileInEvolution:
         )
         assert "## User Profile" in user
         assert "coding (45%)" in user
-        assert "Align evolution" in user
+
+    def test_profile_truncated_at_200(self):
+        summary = "x" * 300
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            user_profile_summary=summary,
+        )
+        assert "x" * 200 + "..." in user
+        assert "x" * 201 not in user
 
     def test_empty_profile_no_section(self):
         _, user = build_evolution_prompt(
@@ -827,9 +915,9 @@ class TestUserProfileInEvolution:
             skills=skills,
             user_profile_summary="User interests: coding (100%)",
         )
-        task_pos = user.index("Recent User Tasks")
+        task_pos = user.index("User Tasks")
         profile_pos = user.index("User Profile")
-        skills_pos = user.index("Existing Skills")
+        skills_pos = user.index("## Skills")
         assert task_pos < profile_pos < skills_pos
 
 
@@ -982,7 +1070,7 @@ class TestSkillHitSummary:
             skills=skills,
         )
         coverage_pos = user.index("Skill Coverage")
-        skills_pos = user.index("Existing Skills")
+        skills_pos = user.index("## Skills")
         assert coverage_pos < skills_pos
 
 
@@ -1029,11 +1117,9 @@ class TestCapabilityEvolutionInPrompt:
             survived=True,
             permanent_capabilities=caps,
         )
-        assert "## Evolved Capabilities (permanent DNA)" in user
-        assert "browser_auto" in user
-        assert "playwright" in user
-        assert "used 5x" in user
-        assert "do NOT duplicate" in user
+        assert "## Capabilities (do NOT duplicate)" in user
+        assert "browser_auto(5x)" in user
+        assert "email_check(2x)" in user
 
     def test_no_permanent_capabilities_no_section(self):
         _, user = build_evolution_prompt(
@@ -1045,7 +1131,7 @@ class TestCapabilityEvolutionInPrompt:
             survived=True,
             permanent_capabilities=None,
         )
-        assert "Evolved Capabilities" not in user
+        assert "Capabilities" not in user
 
     def test_allowed_packages_included(self):
         _, user = build_evolution_prompt(

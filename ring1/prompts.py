@@ -180,23 +180,23 @@ def build_evolution_prompt(
             parts.append(f"- [Gen {gen}] {content}")
         parts.append("")
 
-    # Recent user tasks — PRIMARY evolution signal
+    # Recent user tasks — PRIMARY evolution signal (compact)
     if task_history:
-        parts.append("## Recent User Tasks (HIGHEST PRIORITY — shape your evolution!)")
-        parts.append("These are REAL user requests. Your evolution MUST prioritize "
-                      "building capabilities that serve these needs:")
-        for task in task_history[:8]:
+        parts.append("## User Tasks (PRIORITY)")
+        for task in task_history[:5]:
             content = task.get("content", "")
-            if len(content) > 200:
-                content = content[:200] + "..."
+            if len(content) > 100:
+                content = content[:100] + "..."
             parts.append(f"- {content}")
         parts.append("")
 
-    # User profile — aggregated interests and directions
+    # User profile — aggregated interests and directions (compact)
     if user_profile_summary:
         parts.append("## User Profile")
-        parts.append(user_profile_summary)
-        parts.append("Align evolution with the user's primary interests and active domains.")
+        profile_text = user_profile_summary
+        if len(profile_text) > 200:
+            profile_text = profile_text[:200] + "..."
+        parts.append(profile_text)
         parts.append("")
 
     # Available tools/capabilities (so LLM knows what already exists)
@@ -206,17 +206,15 @@ def build_evolution_prompt(
             parts.append(f"- {name}")
         parts.append("")
 
-    # Evolved capabilities (permanent skills — highest priority DNA)
+    # Evolved capabilities (permanent skills — compact one-line list)
     if permanent_capabilities:
-        parts.append("## Evolved Capabilities (permanent DNA)")
-        parts.append("These capabilities were evolved and proven useful. "
-                      "Build upon them, do NOT duplicate them.")
+        parts.append("## Capabilities (do NOT duplicate)")
+        cap_items = []
         for cap in permanent_capabilities:
             name = cap.get("name", "?")
-            desc = cap.get("description", "")
-            deps = cap.get("dependencies", [])
             usage = cap.get("usage_count", 0)
-            parts.append(f"- {name}: {desc} (deps: {', '.join(deps)}, used {usage}x)")
+            cap_items.append(f"{name}({usage}x)")
+        parts.append(", ".join(cap_items))
         parts.append("")
 
     # Allowed packages for capability proposals
@@ -249,43 +247,40 @@ def build_evolution_prompt(
             )
         parts.append("")
 
-    # Existing skills — avoid duplication + highlight unused ones
+    # Existing skills — compact format
     if skills:
-        parts.append("## Existing Skills")
-        used_skills = []
-        unused_skills = []
+        parts.append("## Skills")
+        used_items = []
+        unused_count = 0
         for skill in skills[:15]:
             name = skill.get("name", "?")
-            desc = skill.get("description", "")
             usage = skill.get("usage_count", 0)
             if usage > 0:
-                used_skills.append(f"- {name}: {desc} (used {usage}x)")
+                used_items.append(f"{name}({usage}x)")
             else:
-                unused_skills.append(name)
+                unused_count += 1
 
-        if used_skills:
-            parts.append("### Popular (avoid duplicating):")
-            parts.extend(used_skills)
-        if unused_skills:
-            parts.append(f"### Never used: {', '.join(unused_skills)}")
-            parts.append("Consider exploring DIFFERENT directions from these unused skills.")
+        if used_items:
+            parts.append(f"Used: {', '.join(used_items)}")
+        if unused_count > 0:
+            parts.append(f"Unused: {unused_count} skills — evolve toward uncovered domains.")
         parts.append("")
 
-    # Inherited gene patterns from best past generations.
+    # Inherited gene patterns from best past generations (compact).
     if gene_pool:
-        parts.append("## Inherited Patterns (matched to current context)")
-        parts.append("Reuse or build upon these proven code patterns:")
+        parts.append("## Inherited Patterns")
         for gene in gene_pool[:3]:
             gen = gene.get("generation", "?")
             score = gene.get("score", 0)
             summary = gene.get("gene_summary", "")
-            if len(summary) > 300:
-                summary = summary[:297] + "..."
+            if len(summary) > 150:
+                summary = summary[:147] + "..."
             parts.append(f"- [Gen {gen}, score={score:.2f}] {summary}")
         parts.append("")
 
-    # Recent crash logs (compact)
-    if crash_logs:
+    # Recent crash logs — only on failure path or repair intent
+    _is_repair = (evolution_intent or {}).get("intent") == "repair"
+    if crash_logs and (not survived or _is_repair):
         parts.append("## Recent Crashes")
         for log_entry in crash_logs[:2]:
             gen = log_entry.get("generation", "?")
