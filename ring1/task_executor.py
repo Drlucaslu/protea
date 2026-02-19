@@ -416,11 +416,8 @@ class TaskExecutor:
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
         self._last_habit_check: float = 0.0
-        # Habit detector — reuses memory_store + scheduled_store.
+        # Habit detector — initialized later in create_executor() with templates.
         self.habit_detector = None
-        if memory_store:
-            from ring1.habit_detector import HabitDetector
-            self.habit_detector = HabitDetector(memory_store, scheduled_store)
         # Conversation history: list of (timestamp, user_text, response_text)
         self._chat_history: list[tuple[float, str, str]] = []
         self._chat_history_max = 5
@@ -690,30 +687,43 @@ class TaskExecutor:
             return
         self.habit_detector.mark_proposed(pattern.pattern_key)
 
-        text = (
-            f"*发现重复模式*\n\n"
-            f"你最近 {pattern.count} 次执行了类似任务：\n"
-            f"「{pattern.sample_task}」\n\n"
-            f"建议创建定时任务自动执行。"
-        )
+        # Build message text depending on pattern type.
+        if pattern.pattern_type == "template":
+            label = pattern.task_summary or pattern.template_name
+            text = (
+                f"*发现重复模式*\n\n"
+                f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
+                f"「{pattern.sample_task}」\n\n"
+                f"建议创建定时任务自动执行。"
+            )
+        else:
+            text = (
+                f"*发现重复模式*\n\n"
+                f"你最近 {pattern.count} 次执行了类似任务：\n"
+                f"「{pattern.sample_task}」\n\n"
+                f"建议创建定时任务自动执行。"
+            )
 
         buttons = []
-        if pattern.suggested_cron:
-            try:
-                from ring0.cron import describe
-                desc = describe(pattern.suggested_cron)
-            except Exception:
-                desc = pattern.suggested_cron
-            buttons.append([{
-                "text": f"自动执行 ({desc})",
-                "callback_data": f"habit:schedule:{pattern.pattern_key}:{pattern.suggested_cron}",
-            }])
-        else:
-            # Default: daily at 9am
-            buttons.append([{
-                "text": "每天 09:00 自动执行",
-                "callback_data": f"habit:schedule:{pattern.pattern_key}:0 9 * * *",
-            }])
+        cron = pattern.suggested_cron or "0 9 * * *"
+        try:
+            from ring0.cron import describe
+            desc = describe(cron)
+        except Exception:
+            desc = cron
+
+        # Encode auto_stop_hours into callback_data after "|"
+        auto_stop = getattr(pattern, "auto_stop_hours", 0) or 0
+        cb_suffix = f"|{auto_stop}" if auto_stop else ""
+
+        btn_text = f"自动执行 ({desc})"
+        if auto_stop:
+            btn_text = f"自动执行 ({desc}, {auto_stop}小时后自动停止)"
+
+        buttons.append([{
+            "text": btn_text,
+            "callback_data": f"habit:schedule:{pattern.pattern_key}:{cron}{cb_suffix}",
+        }])
         buttons.append([{
             "text": "不需要",
             "callback_data": f"habit:dismiss:{pattern.pattern_key}",
@@ -738,15 +748,15 @@ class TaskExecutor:
 
         now = time.time()
 
-        # Habit detection — DISABLED due to high false positive rate
-        # if self.habit_detector and now - self._last_habit_check >= 3600:
-        #     self._last_habit_check = now
-        #     try:
-        #         patterns = self.habit_detector.detect()
-        #         for p in patterns[:2]:  # max 2 proposals at a time
-        #             self._propose_habit(p)
-        #     except Exception:
-        #         log.debug("Habit detection failed", exc_info=True)
+        # Habit detection — two-layer: template + high-threshold repetitive
+        if self.habit_detector and now - self._last_habit_check >= 3600:
+            self._last_habit_check = now
+            try:
+                patterns = self.habit_detector.detect()
+                if patterns:
+                    self._propose_habit(patterns[0])  # max 1 proposal at a time
+            except Exception:
+                log.debug("Habit detection failed", exc_info=True)
         # Check idle threshold
         if now - self._last_p0_time < self.p1_idle_threshold_sec:
             return
@@ -1012,6 +1022,19 @@ def create_executor(
         scheduled_store=scheduled_store,
     )
     executor.subagent_manager = subagent_mgr
+
+    # Initialize habit detector with templates and LLM client.
+    if memory_store:
+        from ring1.habit_detector import HabitDetector, load_templates
+        project_root = pathlib.Path(ring2_path).parent
+        templates = load_templates(project_root / "config" / "task_templates.json")
+        executor.habit_detector = HabitDetector(
+            memory_store,
+            scheduled_store,
+            templates=templates,
+            llm_client=client,
+        )
+
     return executor
 
 

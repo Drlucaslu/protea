@@ -238,6 +238,98 @@ class TestGetById:
 
 
 # ---------------------------------------------------------------------------
+# TestExpiry
+# ---------------------------------------------------------------------------
+
+class TestExpiry:
+    def test_add_with_expires_at(self, store):
+        expires = time.time() + 7200
+        sid = store.add("expiring", "task", "*/10 * * * *", expires_at=expires)
+        task = store.get_by_id(sid)
+        assert task["expires_at"] is not None
+        assert abs(task["expires_at"] - expires) < 1.0
+
+    def test_get_due_filters_expired(self, store):
+        """Expired tasks should not be returned by get_due."""
+        past_expire = time.time() - 100
+        sid = store.add("expired", "task", "* * * * *", expires_at=past_expire)
+        # Set next_run_at to the past so it would be due
+        with store._connect() as con:
+            con.execute(
+                "UPDATE scheduled_tasks SET next_run_at = ? WHERE schedule_id = ?",
+                (time.time() - 60, sid),
+            )
+        due = store.get_due()
+        assert len(due) == 0
+
+    def test_no_expiry_always_fires(self, store):
+        """Tasks without expires_at are always eligible."""
+        sid = store.add("no-expire", "task", "* * * * *")
+        with store._connect() as con:
+            con.execute(
+                "UPDATE scheduled_tasks SET next_run_at = ? WHERE schedule_id = ?",
+                (time.time() - 60, sid),
+            )
+        due = store.get_due()
+        assert len(due) == 1
+        assert due[0]["name"] == "no-expire"
+
+    def test_future_expiry_still_fires(self, store):
+        """Tasks with future expires_at are still eligible."""
+        future_expire = time.time() + 7200
+        sid = store.add("future-expire", "task", "* * * * *", expires_at=future_expire)
+        with store._connect() as con:
+            con.execute(
+                "UPDATE scheduled_tasks SET next_run_at = ? WHERE schedule_id = ?",
+                (time.time() - 60, sid),
+            )
+        due = store.get_due()
+        assert len(due) == 1
+        assert due[0]["name"] == "future-expire"
+
+    def test_migration_adds_column(self, tmp_path):
+        """Opening a DB created without expires_at should auto-migrate."""
+        db = tmp_path / "old.db"
+        # Create a v1 schema without expires_at
+        import sqlite3
+        con = sqlite3.connect(str(db))
+        con.execute("""\
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id            INTEGER PRIMARY KEY,
+            schedule_id   TEXT    NOT NULL UNIQUE,
+            name          TEXT    NOT NULL,
+            task_text     TEXT    NOT NULL,
+            chat_id       TEXT    NOT NULL DEFAULT '',
+            cron_expr     TEXT    NOT NULL,
+            schedule_type TEXT    NOT NULL DEFAULT 'cron',
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            created_at    REAL    NOT NULL,
+            last_run_at   REAL    DEFAULT NULL,
+            next_run_at   REAL    DEFAULT NULL,
+            run_count     INTEGER NOT NULL DEFAULT 0
+        )""")
+        con.execute(
+            "INSERT INTO scheduled_tasks "
+            "(schedule_id, name, task_text, chat_id, cron_expr, schedule_type, enabled, created_at, next_run_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            ("sched-old", "old-task", "hello", "", "* * * * *", "cron", time.time(), time.time() - 60),
+        )
+        con.commit()
+        con.close()
+
+        # Open with the new store — should auto-migrate
+        store = ScheduledTaskStore(db)
+        task = store.get_by_name("old-task")
+        assert task is not None
+        assert task.get("expires_at") is None  # migrated column, default NULL
+
+        # Can now add with expires_at
+        sid = store.add("new", "task", "* * * * *", expires_at=time.time() + 3600)
+        task2 = store.get_by_id(sid)
+        assert task2["expires_at"] is not None
+
+
+# ---------------------------------------------------------------------------
 # TestClear
 # ---------------------------------------------------------------------------
 

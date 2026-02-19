@@ -82,6 +82,11 @@ enabled = true
 interval_sec = 7200          # 2 hours between sync cycles
 max_discover_per_sync = 5    # max skills to download per cycle
 
+[ring1.habit_detection]
+enabled = true
+check_interval_sec = 3600
+template_file = "config/task_templates.json"
+
 [ring1.telegram]
 enabled = true
 

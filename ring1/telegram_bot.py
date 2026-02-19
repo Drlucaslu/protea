@@ -1056,28 +1056,38 @@ class TelegramBot:
         # --- habit callbacks ---
         if data.startswith("habit:schedule:"):
             # format: habit:schedule:<pattern_key>:<cron_expr>
-            # pattern_key may contain colons (e.g. "skill:news_summary")
+            # or:     habit:schedule:<pattern_key>:<cron_expr>|<auto_stop_hours>
+            # pattern_key formats: "template:X", "repetitive:X+Y+Z"
             rest = data[len("habit:schedule:"):]
-            # Split from the right: last segment is cron (5 space-separated fields)
-            # But cron is after the last colon that separates it from pattern_key.
-            # pattern_key formats: "skill:X" or "cluster:X+Y+Z"
-            # So we need at least 2 parts after splitting by ":"
             parts = rest.split(":")
             if len(parts) >= 3:
-                # parts[0] = "skill" or "cluster", parts[1] = name, parts[2] = cron
                 pattern_key = f"{parts[0]}:{parts[1]}"
-                cron_expr = ":".join(parts[2:])  # cron doesn't contain colons
+                cron_and_stop = ":".join(parts[2:])
             elif len(parts) == 2:
                 pattern_key = parts[0]
-                cron_expr = parts[1]
+                cron_and_stop = parts[1]
             else:
                 return "格式错误。"
 
+            # Parse optional auto_stop_hours from "|" suffix.
+            auto_stop_hours = 0
+            if "|" in cron_and_stop:
+                cron_expr, auto_stop_str = cron_and_stop.rsplit("|", 1)
+                try:
+                    auto_stop_hours = int(auto_stop_str)
+                except ValueError:
+                    auto_stop_hours = 0
+            else:
+                cron_expr = cron_and_stop
+
             # Derive task name and text from pattern_key.
             safe_name = pattern_key.replace(":", "_")
-            if pattern_key.startswith("skill:"):
-                skill_name = pattern_key.split(":", 1)[1]
-                task_text = f"run_skill {skill_name}"
+            if pattern_key.startswith("template:"):
+                tmpl_id = pattern_key.split(":", 1)[1]
+                task_text = f"{tmpl_id} 相关任务"
+            elif pattern_key.startswith("repetitive:"):
+                label = pattern_key.split(":", 1)[1].replace("+", " ")
+                task_text = f"{label} 相关任务"
             else:
                 task_text = pattern_key.split(":", 1)[1].replace("+", " ") + " 相关任务"
 
@@ -1085,19 +1095,28 @@ class TelegramBot:
             if not ss:
                 return "定时任务模块不可用。"
 
+            # Calculate expires_at for auto-stop tasks.
+            expires_at = None
+            if auto_stop_hours > 0:
+                expires_at = time.time() + auto_stop_hours * 3600
+
             sched_id = ss.add(
                 name=f"auto_{safe_name}",
                 task_text=task_text,
                 cron_expr=cron_expr,
                 schedule_type="cron",
                 chat_id=str(self.chat_id),
+                expires_at=expires_at,
             )
             try:
                 from ring0.cron import describe
                 desc = describe(cron_expr)
             except Exception:
                 desc = cron_expr
-            return f"已创建定时任务: {desc}\n(ID: {sched_id})"
+            reply_text = f"已创建定时任务: {desc}\n(ID: {sched_id})"
+            if auto_stop_hours > 0:
+                reply_text += f"\n将在 {auto_stop_hours} 小时后自动停止"
+            return reply_text
 
         if data.startswith("habit:dismiss:"):
             pattern_key = data[len("habit:dismiss:"):]

@@ -1,0 +1,101 @@
+{
+  "version": "1.0",
+  "templates": [
+    {
+      "id": "flight_price_tracker",
+      "name": "航班价格追踪",
+      "category": "price_monitoring",
+      "keywords": ["航班", "机票", "flight", "票价", "飞", "航空"],
+      "regex_patterns": ["(从|自).+(到|飞).+", "(新加坡|成都|北京|上海).+(航班|机票)", "flight.+from.+to"],
+      "task_type": "realtime",
+      "default_cron": "*/10 * * * *",
+      "auto_stop_hours": 2,
+      "min_hits": 2,
+      "window_hours": 4
+    },
+    {
+      "id": "daily_news_digest",
+      "name": "每日新闻摘要",
+      "category": "news_information",
+      "keywords": ["新闻", "头条", "news", "今天发生", "时事", "资讯", "摘要"],
+      "regex_patterns": ["今天.*新闻", "有什么.*头条", "latest.*news"],
+      "task_type": "periodic",
+      "default_cron": "0 7 * * *",
+      "auto_stop_hours": 0,
+      "min_hits": 2,
+      "window_hours": 72
+    },
+    {
+      "id": "weather_forecast",
+      "name": "天气预报",
+      "category": "life_services",
+      "keywords": ["天气", "weather", "温度", "下雨", "气温", "预报"],
+      "regex_patterns": [".+天气", "weather.*in", "会下雨吗", "温度.*多少"],
+      "task_type": "periodic",
+      "default_cron": "0 6,20 * * *",
+      "auto_stop_hours": 0,
+      "min_hits": 2,
+      "window_hours": 72
+    },
+    {
+      "id": "stock_price_alert",
+      "name": "股票价格预警",
+      "category": "price_monitoring",
+      "keywords": ["股票", "股价", "stock", "ticker", "涨跌", "行情", "大盘"],
+      "regex_patterns": ["(涨|跌).+[0-9]+", "stock.*price"],
+      "task_type": "realtime",
+      "default_cron": "*/5 9-16 * * 1-5",
+      "auto_stop_hours": 2,
+      "min_hits": 2,
+      "window_hours": 4
+    },
+    {
+      "id": "crypto_tracker",
+      "name": "加密货币追踪",
+      "category": "price_monitoring",
+      "keywords": ["比特币", "crypto", "BTC", "ETH", "以太坊", "币价"],
+      "regex_patterns": ["(BTC|ETH|USDT).*(价格|行情)", "crypto.*price", "比特币.*多少"],
+      "task_type": "realtime",
+      "default_cron": "*/3 * * * *",
+      "auto_stop_hours": 2,
+      "min_hits": 2,
+      "window_hours": 4
+    },
+    {
+      "id": "system_health_check",
+      "name": "系统健康检查",
+      "category": "system_operations",
+      "keywords": ["系统", "状态", "health", "status", "监控"],
+      "regex_patterns": ["系统.*状态", "health.*check", "运行.*正常"],
+      "task_type": "periodic",
+      "default_cron": "*/30 * * * *",
+      "auto_stop_hours": 0,
+      "min_hits": 3,
+      "window_hours": 72
+    },
+    {
+      "id": "academic_paper_alert",
+      "name": "学术论文监控",
+      "category": "research_discovery",
+      "keywords": ["论文", "paper", "research", "arxiv", "研究", "学术"],
+      "regex_patterns": ["最新.*研究", "academic.*paper", "arxiv.*"],
+      "task_type": "periodic",
+      "default_cron": "0 8 * * *",
+      "auto_stop_hours": 0,
+      "min_hits": 2,
+      "window_hours": 168
+    },
+    {
+      "id": "meeting_summary",
+      "name": "会议纪要生成",
+      "category": "communication",
+      "keywords": ["会议", "meeting", "纪要", "总结", "记录"],
+      "regex_patterns": ["会议.*总结", "meeting.*notes", "整理.*纪要"],
+      "task_type": "on_demand",
+      "default_cron": "",
+      "auto_stop_hours": 0,
+      "min_hits": 3,
+      "window_hours": 168
+    }
+  ]
+}

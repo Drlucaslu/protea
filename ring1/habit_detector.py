@@ -1,54 +1,95 @@
-"""Habit Detector — detects repeated task patterns and proposes automation.
+"""Habit Detector — two-layer system for detecting task patterns.
 
-Scans task history from MemoryStore, identifies recurring patterns (skill reuse,
-keyword clusters, time regularity), and generates proposals for scheduled tasks
-or skill consolidation.
+Layer 1: Template matching — match tasks against predefined templates with
+keywords and regex patterns.  Low threshold, high precision.
 
-Pure stdlib — no external dependencies.
+Layer 2: High-threshold repetitive detection — cluster tasks by keyword overlap
+(Jaccard), require more occurrences and time spread, plus optional LLM
+assessment.
+
+Pure stdlib — no external dependencies (LLM client is optional).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 
 log = logging.getLogger("protea.habit_detector")
 
 # Cooldown: do not re-propose the same pattern within this window.
 _PROPOSE_COOLDOWN_SEC = 24 * 3600  # 24 hours
 
-# Minimum number of occurrences to qualify as a habit.
-_MIN_OCCURRENCES = 3
-
-# Jaccard similarity threshold for keyword clustering.
-_JACCARD_THRESHOLD = 0.4
+# Layer 2 defaults
+_L2_MIN_OCCURRENCES = 5
+_L2_MIN_DAYS = 3
+_L2_WINDOW_HOURS = 72
+_JACCARD_THRESHOLD = 0.5
 
 # Fraction of tasks in same 2h window to suggest a cron time.
 _TIME_CONCENTRATION_THRESHOLD = 0.6
+
+_LLM_ASSESS_PROMPT = """\
+The user has performed the following task multiple times:
+{sample_tasks}
+
+Question: Is this a pattern worth automating as a scheduled/recurring task?
+Consider: Is it genuinely repetitive? Would automation save the user effort?
+Answer YES or NO (one word first, then brief reasoning)."""
+
+
+def load_templates(path) -> list[dict]:
+    """Load task templates from a JSON file.  Returns [] on any error."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("templates", [])
+    except Exception:
+        log.debug("Failed to load templates from %s", path, exc_info=True)
+        return []
 
 
 @dataclass
 class HabitPattern:
     """A detected recurring pattern in user tasks."""
 
-    pattern_type: str    # "skill_reuse" | "content_cluster"
-    pattern_key: str     # unique id, e.g. "skill:news_summary"
+    pattern_type: str    # "template" | "repetitive"
+    pattern_key: str     # unique id, e.g. "template:flight_price_tracker"
     count: int           # number of occurrences
     task_summary: str    # human-readable description
     suggested_cron: str  # suggested cron expression, "" if no time pattern
     sample_task: str     # representative task content for display
+    template_name: str = ""     # template id (Layer 1)
+    auto_stop_hours: int = 0    # realtime template auto-stop time
 
 
 class HabitDetector:
-    """Analyse task history to find recurring patterns."""
+    """Analyse task history to find recurring patterns (two-layer)."""
 
-    def __init__(self, memory_store, scheduled_store=None):
+    def __init__(
+        self,
+        memory_store,
+        scheduled_store=None,
+        templates: list[dict] | None = None,
+        llm_client=None,
+        layer2_config: dict | None = None,
+    ):
         self._memory = memory_store
         self._scheduled = scheduled_store
+        self._templates = templates or []
+        self._llm_client = llm_client
         self._proposed: dict[str, float] = {}   # pattern_key -> timestamp
         self._dismissed: set[str] = set()       # user-rejected patterns
+
+        l2 = layer2_config or {}
+        self._l2_min_occurrences = l2.get("min_occurrences", _L2_MIN_OCCURRENCES)
+        self._l2_min_days = l2.get("min_days", _L2_MIN_DAYS)
+        self._l2_window_hours = l2.get("window_hours", _L2_WINDOW_HOURS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,16 +101,14 @@ class HabitDetector:
         if not tasks:
             return []
 
-        # Collect existing scheduled task names for exclusion.
         existing_scheduled = self._get_existing_scheduled_names()
 
-        patterns: list[HabitPattern] = []
+        # Layer 1: Template matching
+        patterns = self._detect_template_matches(tasks, existing_scheduled)
 
-        # Pattern 1: Skill reuse
-        patterns.extend(self._detect_skill_reuse(tasks, existing_scheduled))
-
-        # Pattern 2: Content keyword clusters
-        patterns.extend(self._detect_content_clusters(tasks, existing_scheduled))
+        # Layer 2: High-threshold repetitive detection (only if L1 found nothing)
+        if not patterns:
+            patterns = self._detect_repetitive_patterns(tasks, existing_scheduled)
 
         # Filter out proposed/dismissed
         patterns = [p for p in patterns if self._should_propose(p.pattern_key)]
@@ -92,8 +131,7 @@ class HabitDetector:
         """Fetch recent task entries from memory.
 
         Only keeps tasks with importance >= 0.5, filtering out operational
-        commands (e.g. "/calendar 取消") and session follow-up corrections
-        that should not count as independent repeated patterns.
+        commands that should not count as independent repeated patterns.
         """
         try:
             tasks = self._memory.get_by_type("task", limit=limit)
@@ -126,122 +164,130 @@ class HabitDetector:
         return True
 
     # ------------------------------------------------------------------
-    # Pattern 1: Skill reuse
+    # Layer 1: Template matching
     # ------------------------------------------------------------------
 
-    def _detect_skill_reuse(
+    def _detect_template_matches(
         self, tasks: list[dict], existing_scheduled: set[str],
     ) -> list[HabitPattern]:
-        """Find skills used >= _MIN_OCCURRENCES times."""
-        skill_counter: Counter[str] = Counter()
-        skill_tasks: dict[str, list[dict]] = {}
+        """Match tasks against predefined templates (keyword + regex)."""
+        if not self._templates:
+            return []
 
-        for task in tasks:
-            meta = task.get("metadata", {})
-            if isinstance(meta, str):
-                import json
-                try:
-                    meta = json.loads(meta)
-                except (json.JSONDecodeError, TypeError):
-                    meta = {}
-            skills_used = meta.get("skills_used", [])
-            for skill in skills_used:
-                skill_counter[skill] += 1
-                skill_tasks.setdefault(skill, []).append(task)
-
+        now = time.time()
         patterns: list[HabitPattern] = []
-        for skill_name, count in skill_counter.most_common():
-            if count < _MIN_OCCURRENCES:
-                break
 
-            pattern_key = f"skill:{skill_name}"
+        for template in self._templates:
+            tmpl_id = template.get("id", "")
+            keywords = template.get("keywords", [])
+            regex_patterns = template.get("regex_patterns", [])
+            window_hours = template.get("window_hours", 72)
+            min_hits = template.get("min_hits", 2)
+            task_type = template.get("task_type", "periodic")
+            default_cron = template.get("default_cron", "")
+            auto_stop_hours = template.get("auto_stop_hours", 0)
+            tmpl_name = template.get("name", tmpl_id)
 
-            # Skip if already covered by a scheduled task.
-            if any(skill_name in s for s in existing_scheduled):
+            # Skip if already scheduled with this template name
+            auto_name = f"auto_template_{tmpl_id}"
+            if any(auto_name in s or tmpl_name in s for s in existing_scheduled):
                 continue
 
-            related = skill_tasks[skill_name]
-            sample = related[0].get("content", skill_name)[:100]
-            cron = self._detect_time_pattern(related)
+            # Count matching tasks within time window
+            hits: list[dict] = []
+            for task in tasks:
+                content = task.get("content", "")
+                if not content:
+                    continue
 
-            patterns.append(HabitPattern(
-                pattern_type="skill_reuse",
-                pattern_key=pattern_key,
-                count=count,
-                task_summary=f"run_skill {skill_name}",
-                suggested_cron=cron,
-                sample_task=sample,
-            ))
+                # Check time window
+                ts_str = task.get("timestamp", "")
+                if ts_str:
+                    try:
+                        task_time = datetime.fromisoformat(ts_str).timestamp()
+                        if (now - task_time) > window_hours * 3600:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                # Keyword match
+                content_lower = content.lower()
+                kw_match = any(kw.lower() in content_lower for kw in keywords)
+
+                # Regex match
+                rx_match = False
+                for pat in regex_patterns:
+                    try:
+                        if re.search(pat, content):
+                            rx_match = True
+                            break
+                    except re.error:
+                        pass
+
+                if kw_match or rx_match:
+                    hits.append(task)
+
+            if len(hits) >= min_hits and task_type != "on_demand":
+                sample = hits[0].get("content", "")[:100]
+                cron = default_cron or self._detect_time_pattern(hits)
+
+                patterns.append(HabitPattern(
+                    pattern_type="template",
+                    pattern_key=f"template:{tmpl_id}",
+                    count=len(hits),
+                    task_summary=tmpl_name,
+                    suggested_cron=cron,
+                    sample_task=sample,
+                    template_name=tmpl_id,
+                    auto_stop_hours=auto_stop_hours,
+                ))
 
         return patterns
 
     # ------------------------------------------------------------------
-    # Pattern 2: Content keyword clusters
+    # Layer 2: High-threshold repetitive detection
     # ------------------------------------------------------------------
 
-    def _detect_content_clusters(
+    def _detect_repetitive_patterns(
         self, tasks: list[dict], existing_scheduled: set[str],
     ) -> list[HabitPattern]:
-        """Find groups of tasks with high keyword overlap (Jaccard > threshold)."""
-        # Extract keyword sets per task.
-        task_kw: list[tuple[dict, set[str]]] = []
-        for task in tasks:
-            kw_str = task.get("keywords", "")
-            if not kw_str:
-                # Fallback: extract from content.
-                content = task.get("content", "")
-                kw_set = self._simple_keywords(content)
-            else:
-                kw_set = set(kw_str.lower().split())
-            if len(kw_set) >= 2:  # Need at least 2 keywords to cluster.
-                task_kw.append((task, kw_set))
-
-        if len(task_kw) < _MIN_OCCURRENCES:
-            return []
-
-        # Simple single-pass clustering: assign each task to the first
-        # cluster it matches (Jaccard >= threshold), or create a new one.
-        clusters: list[list[tuple[dict, set[str]]]] = []
-        for item in task_kw:
-            _, kw = item
-            placed = False
-            for cluster in clusters:
-                # Compare against the cluster's "representative" (first entry).
-                _, rep_kw = cluster[0]
-                if self._jaccard(kw, rep_kw) >= _JACCARD_THRESHOLD:
-                    cluster.append(item)
-                    placed = True
-                    break
-            if not placed:
-                clusters.append([item])
-
+        """Find groups of tasks with high keyword overlap, strict thresholds."""
+        clusters = self._cluster_by_keywords(tasks)
         patterns: list[HabitPattern] = []
+
         for cluster in clusters:
-            if len(cluster) < _MIN_OCCURRENCES:
+            if len(cluster) < self._l2_min_occurrences:
+                continue
+
+            # Check time spread: need tasks across multiple days.
+            if not self._check_time_spread(cluster, self._l2_min_days):
                 continue
 
             # Build cluster key from shared keywords.
-            shared_kw = set.intersection(*(kw for _, kw in cluster))
+            kw_sets = [self._simple_keywords(t.get("content", "")) for t in cluster]
+            shared_kw = set.intersection(*kw_sets) if kw_sets else set()
             if not shared_kw:
-                # Use the most common keywords across the cluster.
                 all_kw: Counter[str] = Counter()
-                for _, kw in cluster:
-                    all_kw.update(kw)
+                for kw_set in kw_sets:
+                    all_kw.update(kw_set)
                 shared_kw = {w for w, _ in all_kw.most_common(3)}
 
             key_label = "+".join(sorted(shared_kw)[:3])
-            pattern_key = f"cluster:{key_label}"
+            pattern_key = f"repetitive:{key_label}"
 
             # Skip if already scheduled.
             if any(key_label in s for s in existing_scheduled):
                 continue
 
-            sample = cluster[0][0].get("content", "")[:100]
-            related_tasks = [t for t, _ in cluster]
-            cron = self._detect_time_pattern(related_tasks)
+            # LLM assessment (optional)
+            if not self._llm_assess_pattern(cluster):
+                continue
+
+            sample = cluster[0].get("content", "")[:100]
+            cron = self._detect_time_pattern(cluster)
 
             patterns.append(HabitPattern(
-                pattern_type="content_cluster",
+                pattern_type="repetitive",
                 pattern_key=pattern_key,
                 count=len(cluster),
                 task_summary=f"执行{key_label}相关任务",
@@ -251,13 +297,76 @@ class HabitDetector:
 
         return patterns
 
+    def _cluster_by_keywords(self, tasks: list[dict]) -> list[list[dict]]:
+        """Single-pass Jaccard clustering of tasks by keyword sets."""
+        task_kw: list[tuple[dict, set[str]]] = []
+        for task in tasks:
+            kw_str = task.get("keywords", "")
+            if kw_str:
+                kw_set = set(kw_str.lower().split())
+            else:
+                kw_set = self._simple_keywords(task.get("content", ""))
+            if len(kw_set) >= 2:
+                task_kw.append((task, kw_set))
+
+        clusters: list[list[tuple[dict, set[str]]]] = []
+        for item in task_kw:
+            _, kw = item
+            placed = False
+            for cluster in clusters:
+                _, rep_kw = cluster[0]
+                if self._jaccard(kw, rep_kw) >= _JACCARD_THRESHOLD:
+                    cluster.append(item)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([item])
+
+        return [[t for t, _ in cluster] for cluster in clusters]
+
+    def _check_time_spread(self, tasks: list[dict], min_days: int) -> bool:
+        """Check if tasks span at least *min_days* distinct calendar days."""
+        days: set[str] = set()
+        for task in tasks:
+            ts_str = task.get("timestamp", "")
+            if not ts_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                days.add(dt.strftime("%Y-%m-%d"))
+            except (ValueError, TypeError):
+                pass
+        return len(days) >= min_days
+
+    def _llm_assess_pattern(self, tasks: list[dict]) -> bool:
+        """Use LLM to judge if a cluster is worth automating.
+
+        Returns False (conservative) if no LLM client or on error.
+        """
+        if not self._llm_client:
+            return False
+
+        sample_texts = "\n".join(
+            f"- {t.get('content', '')[:100]}" for t in tasks[:5]
+        )
+        prompt = _LLM_ASSESS_PROMPT.format(sample_tasks=sample_texts)
+
+        try:
+            response = self._llm_client.send_message(
+                "You are a task pattern analyst.", prompt,
+            )
+            return response.strip().upper().startswith("YES")
+        except Exception:
+            log.debug("LLM assess pattern failed", exc_info=True)
+            return False
+
     # ------------------------------------------------------------------
     # Time pattern detection
     # ------------------------------------------------------------------
 
     def _detect_time_pattern(self, tasks: list[dict]) -> str:
         """If >= 60% of tasks fall in the same 2h window, suggest a cron."""
-        if len(tasks) < _MIN_OCCURRENCES:
+        if len(tasks) < 2:
             return ""
 
         hours: list[int] = []
@@ -267,7 +376,7 @@ class HabitDetector:
             if h is not None:
                 hours.append(h)
 
-        if len(hours) < _MIN_OCCURRENCES:
+        if len(hours) < 2:
             return ""
 
         # Check each 2h window.
@@ -294,7 +403,6 @@ class HabitDetector:
         if not timestamp_str:
             return None
         try:
-            from datetime import datetime
             dt = datetime.fromisoformat(timestamp_str)
             return dt.hour
         except (ValueError, TypeError):
@@ -306,12 +414,10 @@ class HabitDetector:
 
         English: words of 3+ chars.  Chinese: bigrams (2-char segments).
         """
-        import re
         raw = re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", text.lower())
         tokens: set[str] = set()
         for t in raw:
             if t[0] >= "\u4e00":
-                # Chinese: generate bigrams.
                 for i in range(len(t) - 1):
                     tokens.add(t[i : i + 2])
             elif len(t) >= 3:

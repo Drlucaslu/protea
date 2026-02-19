@@ -33,8 +33,15 @@ class ScheduledTaskStore(SQLiteStore):
         created_at    REAL    NOT NULL,
         last_run_at   REAL    DEFAULT NULL,
         next_run_at   REAL    DEFAULT NULL,
-        run_count     INTEGER NOT NULL DEFAULT 0
+        run_count     INTEGER NOT NULL DEFAULT 0,
+        expires_at    REAL    DEFAULT NULL
     )"""
+
+    def _migrate(self, con) -> None:
+        """Add expires_at column if missing (schema v2)."""
+        cols = {row[1] for row in con.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
+        if "expires_at" not in cols:
+            con.execute("ALTER TABLE scheduled_tasks ADD COLUMN expires_at REAL DEFAULT NULL")
 
     def add(
         self,
@@ -43,6 +50,7 @@ class ScheduledTaskStore(SQLiteStore):
         cron_expr: str,
         schedule_type: str = "cron",
         chat_id: str = "",
+        expires_at: float | None = None,
     ) -> str:
         """Insert a new scheduled task and return its schedule_id."""
         schedule_id = f"sched-{uuid.uuid4().hex[:8]}"
@@ -54,9 +62,9 @@ class ScheduledTaskStore(SQLiteStore):
         with self._connect() as con:
             con.execute(
                 "INSERT INTO scheduled_tasks "
-                "(schedule_id, name, task_text, chat_id, cron_expr, schedule_type, enabled, created_at, next_run_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
-                (schedule_id, name, task_text, chat_id, cron_expr, schedule_type, now, next_at),
+                "(schedule_id, name, task_text, chat_id, cron_expr, schedule_type, enabled, created_at, next_run_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                (schedule_id, name, task_text, chat_id, cron_expr, schedule_type, now, next_at, expires_at),
             )
         return schedule_id
 
@@ -77,13 +85,15 @@ class ScheduledTaskStore(SQLiteStore):
             return [self._row_to_dict(r) for r in rows]
 
     def get_due(self, now: float | None = None) -> list[dict]:
-        """Return enabled tasks whose next_run_at <= now."""
+        """Return enabled tasks whose next_run_at <= now and not expired."""
         if now is None:
             now = time.time()
         with self._connect() as con:
             rows = con.execute(
-                "SELECT * FROM scheduled_tasks WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?",
-                (now,),
+                "SELECT * FROM scheduled_tasks WHERE enabled = 1 "
+                "AND next_run_at IS NOT NULL AND next_run_at <= ? "
+                "AND (expires_at IS NULL OR expires_at > ?)",
+                (now, now),
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
