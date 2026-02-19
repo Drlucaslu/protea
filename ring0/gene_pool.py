@@ -126,7 +126,7 @@ class GenePool(SQLiteStore):
                     existing_tags = set(row["tags"].split())
                     intersection = len(new_tags & existing_tags)
                     union = len(new_tags | existing_tags)
-                    if union > 0 and intersection / union > 0.8:
+                    if union > 0 and intersection / union > 0.75:
                         if score > row["score"]:
                             # Better variant — replace, preserve hit_count.
                             con.execute(
