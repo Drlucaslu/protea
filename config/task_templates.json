@@ -12,7 +12,8 @@
       "default_task_text": "搜索最新航班价格信息并汇报变动",
       "auto_stop_hours": 2,
       "min_hits": 2,
-      "window_hours": 4
+      "window_hours": 4,
+      "clarification_prompt": "请告诉我你想追踪哪条航线？\n例如：北京→新加坡"
     },
     {
       "id": "daily_news_digest",
@@ -25,7 +26,8 @@
       "default_task_text": "搜索今日重要新闻，生成简要中文摘要",
       "auto_stop_hours": 0,
       "min_hits": 2,
-      "window_hours": 72
+      "window_hours": 72,
+      "clarification_prompt": "请告诉我你关注哪类新闻？\n例如：科技、财经、国际"
     },
     {
       "id": "weather_forecast",
@@ -38,7 +40,8 @@
       "default_task_text": "查询当地天气预报，包括温度、降水概率和穿衣建议",
       "auto_stop_hours": 0,
       "min_hits": 2,
-      "window_hours": 72
+      "window_hours": 72,
+      "clarification_prompt": "请告诉我你想查询哪个城市的天气？"
     },
     {
       "id": "stock_price_alert",
@@ -51,7 +54,8 @@
       "default_task_text": "查询关注的股票最新价格和涨跌幅",
       "auto_stop_hours": 2,
       "min_hits": 2,
-      "window_hours": 4
+      "window_hours": 4,
+      "clarification_prompt": "请告诉我你想监控哪些股票？\n例如：TSLA, AAPL"
     },
     {
       "id": "crypto_tracker",
@@ -64,7 +68,8 @@
       "default_task_text": "查询BTC、ETH等主要加密货币最新价格",
       "auto_stop_hours": 2,
       "min_hits": 2,
-      "window_hours": 4
+      "window_hours": 4,
+      "clarification_prompt": "请告诉我你想追踪哪些币种？\n例如：BTC, ETH"
     },
     {
       "id": "system_health_check",
@@ -77,7 +82,9 @@
       "default_task_text": "检查系统CPU、内存、磁盘使用率，报告异常",
       "auto_stop_hours": 0,
       "min_hits": 3,
-      "window_hours": 72
+      "min_keyword_hits": 2,
+      "window_hours": 72,
+      "clarification_prompt": "请告诉我需要检查哪些系统指标？"
     },
     {
       "id": "academic_paper_alert",
@@ -90,7 +97,8 @@
       "default_task_text": "搜索关注领域的最新学术论文并生成摘要",
       "auto_stop_hours": 0,
       "min_hits": 2,
-      "window_hours": 168
+      "window_hours": 168,
+      "clarification_prompt": "请告诉我你想监控哪个研究领域？\n例如：AI、机器人、量子计算"
     },
     {
       "id": "meeting_summary",
@@ -103,7 +111,8 @@
       "default_task_text": "整理最近的会议内容，生成结构化纪要",
       "auto_stop_hours": 0,
       "min_hits": 3,
-      "window_hours": 168
+      "window_hours": 168,
+      "clarification_prompt": "请告诉我需要整理哪次会议的内容？"
     }
   ]
 }

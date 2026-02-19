@@ -66,6 +66,7 @@ class HabitPattern:
     sample_task: str     # representative task content for display
     template_name: str = ""     # template id (Layer 1)
     auto_stop_hours: int = 0    # realtime template auto-stop time
+    all_samples: list[str] = field(default_factory=list)  # hit task contents
 
 
 class HabitDetector:
@@ -210,9 +211,11 @@ class HabitDetector:
                     except (ValueError, TypeError):
                         pass
 
-                # Keyword match
+                # Keyword match (count mode: require min_keyword_hits)
                 content_lower = content.lower()
-                kw_match = any(kw.lower() in content_lower for kw in keywords)
+                min_kw_hits = template.get("min_keyword_hits", 1)
+                kw_hit_count = sum(1 for kw in keywords if kw.lower() in content_lower)
+                kw_match = kw_hit_count >= min_kw_hits
 
                 # Regex match
                 rx_match = False
@@ -241,6 +244,7 @@ class HabitDetector:
                     sample_task=sample,
                     template_name=tmpl_id,
                     auto_stop_hours=auto_stop_hours,
+                    all_samples=[h.get("content", "")[:80] for h in hits[:5]],
                 ))
 
         return patterns

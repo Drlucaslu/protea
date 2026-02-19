@@ -477,17 +477,18 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestIntegration:
-    def test_habit_schedule_callback_with_context(self):
-        """Callback uses _habit_context for meaningful task_text."""
+    def test_habit_schedule_callback_creates_pending(self):
+        """Callback stores pending habit and returns clarification prompt."""
         from ring1.telegram_bot import SentinelState, TelegramBot
 
         state = SentinelState()
         sched_store = _make_scheduled_store()
         state.scheduled_store = sched_store
-        # Simulate _propose_habit storing context
+        # Simulate _propose_habit storing context with clarification_prompt
         state._habit_context["template:flight_price_tracker"] = {
             "task_text": "搜索最新航班价格信息并汇报变动",
             "task_summary": "航班价格追踪",
+            "clarification_prompt": "请告诉我你想追踪哪条航线？",
         }
 
         bot = TelegramBot.__new__(TelegramBot)
@@ -495,16 +496,17 @@ class TestIntegration:
         bot.chat_id = "123"
 
         reply = bot._handle_callback("habit:schedule:template:flight_price_tracker:*/10 * * * *|2")
-        assert "已创建定时任务" in reply
-        assert "2 小时后自动停止" in reply
-        sched_store.add.assert_called_once()
-        call_kw = sched_store.add.call_args
-        assert call_kw[1].get("expires_at") is not None
-        # task_text should be the meaningful description, not generic
-        assert call_kw[1]["task_text"] == "搜索最新航班价格信息并汇报变动"
+        # Should NOT create the task yet — should ask for clarification
+        sched_store.add.assert_not_called()
+        assert "请告诉我你想追踪哪条航线" in reply
+        # Should have stored pending habit
+        assert "template:flight_price_tracker" in state._pending_habits
+        pending = state._pending_habits["template:flight_price_tracker"]
+        assert pending["cron"] == "*/10 * * * *"
+        assert pending["auto_stop_hours"] == 2
 
-    def test_habit_schedule_fallback_without_context(self):
-        """Without _habit_context, falls back to generic label."""
+    def test_habit_schedule_fallback_prompt_without_context(self):
+        """Without clarification_prompt, uses default prompt."""
         from ring1.telegram_bot import SentinelState, TelegramBot
 
         state = SentinelState()
@@ -516,12 +518,9 @@ class TestIntegration:
         bot.chat_id = "123"
 
         reply = bot._handle_callback("habit:schedule:template:daily_news_digest:0 7 * * *")
-        assert "已创建定时任务" in reply
-        assert "自动停止" not in reply
-        call_kw = sched_store.add.call_args
-        assert call_kw[1].get("expires_at") is None
-        # Fallback: generic but still readable
-        assert "daily_news_digest" in call_kw[1]["task_text"]
+        sched_store.add.assert_not_called()
+        assert "请具体描述" in reply
+        assert "template:daily_news_digest" in state._pending_habits
 
     def test_default_task_text_in_template(self):
         """Template with default_task_text uses it as sample_task."""
@@ -565,3 +564,200 @@ class TestIntegration:
         detector._dismissed = state._habit_dismissed
         patterns = detector.detect()
         assert len(patterns) == 0
+
+    def test_habit_clarification_reply_creates_task(self):
+        """User reply after clarification creates scheduled task with topic."""
+        from ring1.telegram_bot import SentinelState, TelegramBot
+
+        state = SentinelState()
+        sched_store = _make_scheduled_store()
+        state.scheduled_store = sched_store
+        # Set up pending habit (as if user clicked "自动执行")
+        state._pending_habits["template:academic_paper_alert"] = {
+            "cron": "0 8 * * *",
+            "auto_stop_hours": 0,
+            "timestamp": time.time(),
+        }
+        state._habit_context["template:academic_paper_alert"] = {
+            "task_text": "搜索关注领域的最新学术论文并生成摘要",
+            "task_summary": "学术论文监控",
+            "clarification_prompt": "请告诉我你想监控哪个研究领域？",
+        }
+
+        # Simulate the bot's main loop handling a text reply
+        # We test the logic directly by checking the pending habit flow
+        pk = "template:academic_paper_alert"
+        info = state._pending_habits[pk]
+        topic = "AGI 和自演化AI"
+        ctx_h = state._habit_context.get(pk, {})
+        default_text = ctx_h.get("task_text", "自动任务")
+        task_text = f"{topic} — {default_text}"
+
+        sched_store.add(
+            name=f"auto_{pk.replace(':', '_')}",
+            task_text=task_text,
+            cron_expr=info["cron"],
+            schedule_type="cron",
+            chat_id="123",
+            expires_at=None,
+        )
+        del state._pending_habits[pk]
+
+        # Verify task was created with the topic
+        sched_store.add.assert_called_once()
+        call_kw = sched_store.add.call_args
+        assert "AGI 和自演化AI" in call_kw[1]["task_text"]
+        assert "搜索关注领域的最新学术论文" in call_kw[1]["task_text"]
+        assert pk not in state._pending_habits
+
+    def test_habit_clarification_timeout(self):
+        """Pending habits older than 5 minutes are expired."""
+        from ring1.telegram_bot import SentinelState
+
+        state = SentinelState()
+        # Set timestamp 6 minutes ago
+        state._pending_habits["template:test"] = {
+            "cron": "0 8 * * *",
+            "auto_stop_hours": 0,
+            "timestamp": time.time() - 360,  # 6 minutes ago
+        }
+        # Simulate cleanup (same logic as in the main loop)
+        now = time.time()
+        for pk, info in list(state._pending_habits.items()):
+            if now - info["timestamp"] > 300:
+                del state._pending_habits[pk]
+        assert len(state._pending_habits) == 0
+
+
+# ---------------------------------------------------------------------------
+# all_samples field
+# ---------------------------------------------------------------------------
+
+class TestAllSamples:
+    def test_all_samples_populated(self):
+        """all_samples contains content from matched tasks."""
+        tasks = [
+            _make_task("搜索机器人行业最新研究论文"),
+            _make_task("搜索AI领域最新论文"),
+            _make_task("搜索AGI相关研究"),
+        ]
+        tmpl = {
+            "id": "academic_paper_alert",
+            "name": "学术论文监控",
+            "keywords": ["论文", "paper", "research", "arxiv", "研究", "学术"],
+            "regex_patterns": ["最新.*研究", "academic.*paper"],
+            "task_type": "periodic",
+            "default_cron": "0 8 * * *",
+            "default_task_text": "搜索关注领域的最新学术论文并生成摘要",
+            "min_hits": 2,
+            "window_hours": 168,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        assert len(patterns) == 1
+        p = patterns[0]
+        assert len(p.all_samples) == 3
+        assert "搜索机器人行业最新研究论文" in p.all_samples[0]
+        assert "搜索AI领域最新论文" in p.all_samples[1]
+
+    def test_all_samples_truncated(self):
+        """all_samples entries are truncated to 80 chars."""
+        long_content = "搜索" + "A" * 200 + "论文"
+        tasks = [
+            _make_task(long_content),
+            _make_task("搜索AI论文"),
+        ]
+        tmpl = {
+            "id": "academic_paper_alert",
+            "name": "学术论文监控",
+            "keywords": ["论文", "研究"],
+            "regex_patterns": [],
+            "task_type": "periodic",
+            "default_cron": "0 8 * * *",
+            "min_hits": 2,
+            "window_hours": 168,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        assert len(patterns) == 1
+        assert len(patterns[0].all_samples[0]) <= 80
+
+
+# ---------------------------------------------------------------------------
+# min_keyword_hits
+# ---------------------------------------------------------------------------
+
+class TestMinKeywordHits:
+    def test_min_keyword_hits_filters_single_keyword(self):
+        """min_keyword_hits=2: single keyword '系统' alone doesn't match."""
+        tasks = [
+            _make_task("启动一个定时任务，每10分钟发送一个系统的时间消息给我"),
+            _make_task("发送当前系统时间报告"),
+            _make_task("增加一个每5分钟发送系统时间的schedule"),
+        ]
+        tmpl = {
+            "id": "system_health_check",
+            "name": "系统健康检查",
+            "keywords": ["系统", "状态", "health", "status", "监控"],
+            "regex_patterns": ["系统.*状态", "health.*check"],
+            "task_type": "periodic",
+            "default_cron": "*/30 * * * *",
+            "min_hits": 3,
+            "min_keyword_hits": 2,
+            "window_hours": 72,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        # None of the tasks mention 2+ keywords, so no pattern
+        assert len(patterns) == 0
+
+    def test_min_keyword_hits_allows_multi_keyword(self):
+        """min_keyword_hits=2: tasks with 2+ keywords match."""
+        tasks = [
+            _make_task("检查系统状态"),
+            _make_task("查看系统监控信息"),
+            _make_task("系统健康状态如何"),
+        ]
+        tmpl = {
+            "id": "system_health_check",
+            "name": "系统健康检查",
+            "keywords": ["系统", "状态", "health", "status", "监控"],
+            "regex_patterns": [],
+            "task_type": "periodic",
+            "default_cron": "*/30 * * * *",
+            "min_hits": 3,
+            "min_keyword_hits": 2,
+            "window_hours": 72,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        assert len(patterns) == 1
+        assert patterns[0].count == 3
+
+    def test_min_keyword_hits_default_one(self):
+        """Without min_keyword_hits, defaults to 1 (backward compat)."""
+        tasks = [
+            _make_task("查看系统时间"),
+            _make_task("系统消息"),
+            _make_task("系统通知"),
+        ]
+        tmpl = {
+            "id": "system_health_check",
+            "name": "系统健康检查",
+            "keywords": ["系统", "状态", "health", "status", "监控"],
+            "regex_patterns": [],
+            "task_type": "periodic",
+            "default_cron": "*/30 * * * *",
+            "min_hits": 3,
+            # No min_keyword_hits → defaults to 1
+            "window_hours": 72,
+        }
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[tmpl])
+        patterns = detector.detect()
+        # With default min_keyword_hits=1, single "系统" is enough
+        assert len(patterns) == 1

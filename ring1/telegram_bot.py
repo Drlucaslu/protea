@@ -50,6 +50,7 @@ class SentinelState:
         "notifier", "skill_runner", "registry_client", "subagent_manager",
         # Habit detection
         "habit_proposals", "_habit_dismissed", "_habit_context",
+        "_pending_habits",
     )
 
     def __init__(self) -> None:
@@ -88,6 +89,7 @@ class SentinelState:
         self.habit_proposals: queue.Queue = queue.Queue()
         self._habit_dismissed: set[str] = set()
         self._habit_context: dict[str, dict] = {}  # pattern_key -> proposal details
+        self._pending_habits: dict[str, dict] = {}  # pattern_key -> {cron, auto_stop_hours, timestamp}
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -1081,41 +1083,18 @@ class TelegramBot:
             else:
                 cron_expr = cron_and_stop
 
-            # Look up stored proposal context for a meaningful task_text.
-            safe_name = pattern_key.replace(":", "_")
+            # Store as pending — ask user to clarify the topic first.
             ctx = getattr(self.state, "_habit_context", {}).get(pattern_key, {})
-            task_text = ctx.get("task_text", "")
-            if not task_text:
-                # Fallback: generic description from pattern_key.
-                label = pattern_key.split(":", 1)[1].replace("+", " ")
-                task_text = f"{label} 相关任务"
+            prompt = ctx.get("clarification_prompt", "")
+            if not prompt:
+                prompt = "请具体描述你想自动执行的任务内容："
 
-            ss = self.state.scheduled_store
-            if not ss:
-                return "定时任务模块不可用。"
-
-            # Calculate expires_at for auto-stop tasks.
-            expires_at = None
-            if auto_stop_hours > 0:
-                expires_at = time.time() + auto_stop_hours * 3600
-
-            sched_id = ss.add(
-                name=f"auto_{safe_name}",
-                task_text=task_text,
-                cron_expr=cron_expr,
-                schedule_type="cron",
-                chat_id=str(self.chat_id),
-                expires_at=expires_at,
-            )
-            try:
-                from ring0.cron import describe
-                desc = describe(cron_expr)
-            except Exception:
-                desc = cron_expr
-            reply_text = f"已创建定时任务: {desc}\n(ID: {sched_id})"
-            if auto_stop_hours > 0:
-                reply_text += f"\n将在 {auto_stop_hours} 小时后自动停止"
-            return reply_text
+            self.state._pending_habits[pattern_key] = {
+                "cron": cron_expr,
+                "auto_stop_hours": auto_stop_hours,
+                "timestamp": time.time(),
+            }
+            return prompt
 
         if data.startswith("habit:dismiss:"):
             pattern_key = data[len("habit:dismiss:"):]
@@ -1392,7 +1371,51 @@ class TelegramBot:
                         text = msg.get("text", "")
                         if not text:
                             continue
-                        
+
+                        # Check if there's a pending habit awaiting clarification
+                        if (self.state._pending_habits
+                                and text.strip()
+                                and not text.strip().startswith("/")):
+                            now_ph = time.time()
+                            for pk, info in list(self.state._pending_habits.items()):
+                                if now_ph - info["timestamp"] > 300:  # 5min expiry
+                                    del self.state._pending_habits[pk]
+                                    continue
+                                # User's reply is the topic
+                                topic = text.strip()
+                                ctx_h = self.state._habit_context.get(pk, {})
+                                default_text = ctx_h.get("task_text", "自动任务")
+                                task_text = f"{topic} — {default_text}"
+                                # Create the scheduled task
+                                expires_at = None
+                                if info["auto_stop_hours"] > 0:
+                                    expires_at = now_ph + info["auto_stop_hours"] * 3600
+                                ss = self.state.scheduled_store
+                                if ss:
+                                    safe_name = pk.replace(":", "_")
+                                    sched_id = ss.add(
+                                        name=f"auto_{safe_name}",
+                                        task_text=task_text,
+                                        cron_expr=info["cron"],
+                                        schedule_type="cron",
+                                        chat_id=msg_chat_id,
+                                        expires_at=expires_at,
+                                    )
+                                    try:
+                                        from ring0.cron import describe
+                                        desc = describe(info["cron"])
+                                    except Exception:
+                                        desc = info["cron"]
+                                    reply_msg = f"已创建定时任务: {desc}\n任务: {task_text}\n(ID: {sched_id})"
+                                    if info["auto_stop_hours"] > 0:
+                                        reply_msg += f"\n将在 {info['auto_stop_hours']} 小时后自动停止"
+                                    self._send_reply(reply_msg)
+                                del self.state._pending_habits[pk]
+                                handled = True
+                                break
+                            if handled:
+                                continue
+
                         # 上下文增强：检测用户是否在回复 bot 的消息
                         context_info = self._detect_conversation_context(msg)
                         if context_info:

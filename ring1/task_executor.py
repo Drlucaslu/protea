@@ -690,12 +690,21 @@ class TaskExecutor:
         # Build message text depending on pattern type.
         if pattern.pattern_type == "template":
             label = pattern.task_summary or pattern.template_name
-            text = (
-                f"*发现重复模式*\n\n"
-                f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
-                f"「{pattern.sample_task}」\n\n"
-                f"建议创建定时任务自动执行。"
-            )
+            if pattern.all_samples:
+                samples_text = "\n".join(f"• {s}" for s in pattern.all_samples[:5])
+                text = (
+                    f"*发现重复模式*\n\n"
+                    f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
+                    f"{samples_text}\n\n"
+                    f"建议创建定时任务自动执行。"
+                )
+            else:
+                text = (
+                    f"*发现重复模式*\n\n"
+                    f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
+                    f"「{pattern.sample_task}」\n\n"
+                    f"建议创建定时任务自动执行。"
+                )
         else:
             text = (
                 f"*发现重复模式*\n\n"
@@ -732,9 +741,20 @@ class TaskExecutor:
         # Store proposal context so callback can build a proper task_text.
         habit_ctx = getattr(self.state, "_habit_context", None)
         if habit_ctx is not None:
+            # Look up clarification_prompt from template config.
+            clarification_prompt = ""
+            if self.habit_detector and pattern.template_name:
+                for tmpl in self.habit_detector._templates:
+                    if tmpl.get("id") == pattern.template_name:
+                        clarification_prompt = tmpl.get("clarification_prompt", "")
+                        break
             habit_ctx[pattern.pattern_key] = {
                 "task_text": pattern.sample_task,
                 "task_summary": pattern.task_summary,
+                "all_samples": pattern.all_samples,
+                "clarification_prompt": clarification_prompt,
+                "cron_expr": cron,
+                "auto_stop_hours": auto_stop,
             }
 
         # Put into state queue for bot to consume.
