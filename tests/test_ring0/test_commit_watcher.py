@@ -39,6 +39,7 @@ def _make_remote(tmp_path):
     remote = tmp_path / "remote.git"
     remote.mkdir()
     _git(remote, "init", "--bare")
+    _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
 
     local = tmp_path / "local"
     subprocess.run(
