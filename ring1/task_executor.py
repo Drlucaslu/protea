@@ -44,6 +44,34 @@ _CORRECTION_PATTERNS: list[_re.Pattern[str]] = [
     _re.compile(r"(wrong|incorrect|should be|remember|always|never)", _re.IGNORECASE),
 ]
 
+# --- Task content cleaning for memory storage ---
+# Strip code blocks, stack traces, and long URLs to keep only user intent.
+_CODE_BLOCK_RE = _re.compile(r"```[\s\S]*?```")
+_TRACEBACK_RE = _re.compile(
+    r"Traceback \(most recent call last\):[\s\S]*?(?:\n\S+Error:.*)",
+)
+_LONG_URL_RE = _re.compile(r"https?://\S{80,}")
+_MAX_MEMORY_CONTENT_LEN = 200
+
+
+def _clean_for_memory(text: str) -> str:
+    """Strip code blocks, stack traces, and long URLs for memory storage.
+
+    Keeps only the natural-language intent.  Truncates to 200 chars if
+    still long after cleaning.
+    """
+    cleaned = _CODE_BLOCK_RE.sub("", text)
+    cleaned = _TRACEBACK_RE.sub("", cleaned)
+    cleaned = _LONG_URL_RE.sub("", cleaned)
+    # Collapse whitespace left by removals.
+    cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if len(cleaned) > _MAX_MEMORY_CONTENT_LEN:
+        cleaned = cleaned[:_MAX_MEMORY_CONTENT_LEN] + "..."
+    # If cleaning removed everything, fall back to truncated original.
+    if not cleaned:
+        cleaned = text[:_MAX_MEMORY_CONTENT_LEN] + ("..." if len(text) > _MAX_MEMORY_CONTENT_LEN else "")
+    return cleaned
+
 
 def _tokenize_for_matching(text: str) -> set[str]:
     """Extract match tokens from text. Handles both English and Chinese.
@@ -624,6 +652,9 @@ class TaskExecutor:
             # Strip conversation context prefix so only the user's actual
             # text is persisted in memory and used for profile analysis.
             clean_text = _strip_context_prefix(task.text)
+            # Further clean for memory: strip code blocks, stack traces,
+            # long URLs, and truncate — keeps only the user's intent.
+            memory_text = _clean_for_memory(clean_text)
             # Record task in memory (with optional embedding).
             if self.memory_store:
                 try:
@@ -631,7 +662,7 @@ class TaskExecutor:
                     embedding = None
                     if self.embedding_provider:
                         try:
-                            vecs = self.embedding_provider.embed([clean_text])
+                            vecs = self.embedding_provider.embed([memory_text])
                             embedding = vecs[0] if vecs else None
                         except Exception:
                             log.debug("Embedding generation failed", exc_info=True)
@@ -639,7 +670,7 @@ class TaskExecutor:
                         self.memory_store.add_with_embedding(
                             generation=snap.get("generation", 0),
                             entry_type="task",
-                            content=clean_text,
+                            content=memory_text,
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
@@ -651,7 +682,7 @@ class TaskExecutor:
                         self.memory_store.add(
                             generation=snap.get("generation", 0),
                             entry_type="task",
-                            content=clean_text,
+                            content=memory_text,
                             metadata={
                                 "response_summary": response[:200],
                                 "duration_sec": round(duration, 2),
@@ -663,7 +694,7 @@ class TaskExecutor:
             # Update user profile.
             if self.user_profiler:
                 try:
-                    self.user_profiler.update_from_task(clean_text, response[:200])
+                    self.user_profiler.update_from_task(memory_text, response[:200])
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
 

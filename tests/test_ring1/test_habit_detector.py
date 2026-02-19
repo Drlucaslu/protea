@@ -851,3 +851,76 @@ class TestContextPrefixStripping:
         # all_samples should be the clean user text
         assert patterns[0].all_samples[0] == "查一下AI最新论文"
         assert patterns[0].all_samples[1] == "搜索AGI相关研究论文"
+
+    def test_strip_prefix_with_internal_quotes(self):
+        """Regex handles bot messages containing internal quotes."""
+        text = (
+            '[Context: User sent this 26s after your last message]\n'
+            'Your previous message: "答案是"别人的脚""\n'
+            'User now says: 不是，是我的脚'
+        )
+        assert _strip_context_prefix(text) == "不是，是我的脚"
+
+    def test_strip_prefix_with_multiline_bot_message(self):
+        """Regex handles long multi-line bot messages with internal quotes."""
+        text = (
+            '[Context: User sent this 85s after your last message]\n'
+            'Your previous message: "## 总结\n\n'
+            '这不是崩溃！在 `ring2/main.py` 的 `finally` 块中\n'
+            '程序退出前会发送一条"Notification"消息..."'
+            '\n'
+            'User now says: 这个不用调整，保持现状吧'
+        )
+        assert _strip_context_prefix(text) == "这个不用调整，保持现状吧"
+
+
+class TestCleanForMemory:
+    """Tests for _clean_for_memory in task_executor."""
+
+    def test_strip_code_blocks(self):
+        from ring1.task_executor import _clean_for_memory
+        text = '帮我看看这段代码有什么问题：\n```python\ndef foo():\n    pass\n```'
+        result = _clean_for_memory(text)
+        assert "```" not in result
+        assert "def foo" not in result
+        assert "帮我看看这段代码有什么问题" in result
+
+    def test_strip_traceback(self):
+        from ring1.task_executor import _clean_for_memory
+        text = (
+            '运行报错了：\n'
+            'Traceback (most recent call last):\n'
+            '  File "main.py", line 10, in <module>\n'
+            '    foo()\n'
+            'TypeError: foo() missing argument'
+        )
+        result = _clean_for_memory(text)
+        assert "Traceback" not in result
+        assert "运行报错了" in result
+
+    def test_strip_long_urls(self):
+        from ring1.task_executor import _clean_for_memory
+        url = "https://example.com/" + "a" * 100
+        text = f"看看这个链接 {url} 有什么内容"
+        result = _clean_for_memory(text)
+        assert url not in result
+        assert "看看这个链接" in result
+
+    def test_truncate_long_text(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "分析一下这个问题 " + "详细内容" * 100
+        result = _clean_for_memory(text)
+        assert len(result) <= 204  # 200 + "..."
+        assert result.endswith("...")
+
+    def test_short_text_unchanged(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "帮我查一下天气"
+        assert _clean_for_memory(text) == text
+
+    def test_fallback_when_all_stripped(self):
+        from ring1.task_executor import _clean_for_memory
+        text = '```python\ndef foo():\n    pass\n```'
+        result = _clean_for_memory(text)
+        # Should fall back to truncated original, not empty
+        assert len(result) > 0
