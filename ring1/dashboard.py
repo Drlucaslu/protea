@@ -54,6 +54,7 @@ table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 th, td { padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid #1a1f3a; font-size: 0.85rem; }
 th { color: #667eea; font-weight: 600; }
 tr:hover { background: #151a3a; }
+td.content-cell { white-space: pre-wrap; word-break: break-word; max-width: 600px; font-size: 0.8rem; line-height: 1.4; }
 .tier-hot { color: #ff6b6b; }
 .tier-warm { color: #feca57; }
 .tier-cold { color: #48dbfb; }
@@ -270,11 +271,11 @@ def _compute_daily_skill_hit_ratio(memory_store, days: int = 14) -> list[dict]:
     return result
 
 
-def _compute_token_usage_5min(fitness_tracker) -> list[dict]:
-    """Aggregate token usage into 5-minute buckets over the last 24 hours.
+def _compute_token_usage_30min(fitness_tracker) -> list[dict]:
+    """Aggregate token usage into 30-minute buckets over the last 24 hours.
 
     Returns [{slot, input_tokens, output_tokens, total, calls}] where slot
-    is "HH:MM" marking the start of each 5-minute window (288 buckets).
+    is "HH:MM" marking the start of each 30-minute window (48 buckets).
     """
     from datetime import datetime, timedelta, timezone
 
@@ -287,7 +288,7 @@ def _compute_token_usage_5min(fitness_tracker) -> list[dict]:
     except Exception:
         pass
 
-    # Bucket by 5-minute slot
+    # Bucket by 30-minute slot
     buckets: dict[str, dict] = {}
     for r in raw:
         ts_str = r.get("timestamp", "")
@@ -301,8 +302,8 @@ def _compute_token_usage_5min(fitness_tracker) -> list[dict]:
             continue
         if ts < cutoff:
             continue
-        # Round down to 5-minute boundary
-        minute = (ts.minute // 5) * 5
+        # Round down to 30-minute boundary
+        minute = (ts.minute // 30) * 30
         slot_dt = ts.replace(minute=minute, second=0, microsecond=0)
         key = slot_dt.strftime("%Y-%m-%d %H:%M")
         if key not in buckets:
@@ -311,12 +312,12 @@ def _compute_token_usage_5min(fitness_tracker) -> list[dict]:
         buckets[key]["output_tokens"] += r.get("output_tokens", 0)
         buckets[key]["calls"] += 1
 
-    # Generate all 288 slots
-    # Align start to the next 5-minute boundary after cutoff
-    start_minute = (cutoff.minute // 5) * 5
+    # Generate all 48 slots
+    # Align start to the next 30-minute boundary after cutoff
+    start_minute = (cutoff.minute // 30) * 30
     slot = cutoff.replace(minute=start_minute, second=0, microsecond=0)
     if slot < cutoff:
-        slot += timedelta(minutes=5)
+        slot += timedelta(minutes=30)
 
     result = []
     while slot <= now:
@@ -329,12 +330,12 @@ def _compute_token_usage_5min(fitness_tracker) -> list[dict]:
             "total": b["input_tokens"] + b["output_tokens"],
             "calls": b["calls"],
         })
-        slot += timedelta(minutes=5)
+        slot += timedelta(minutes=30)
     return result
 
 
 def _render_token_usage_svg(data: list[dict], width: int = 960, height: int = 220) -> str:
-    """Stacked bar chart SVG for 5-minute token usage buckets (24h rolling)."""
+    """Stacked bar chart SVG for 30-minute token usage buckets (24h rolling)."""
     if not data or all(d["total"] == 0 for d in data):
         return '<p style="color:#777">No token usage data yet.</p>'
 
@@ -368,10 +369,12 @@ def _render_token_usage_svg(data: list[dict], width: int = 960, height: int = 22
     # Bars
     for i, d in enumerate(data):
         x = margin_l + i * bar_w
-        # Hourly grid line + label when slot ends with :00
+        # Grid line + label on the hour
         if d["slot"].endswith(":00"):
             parts.append(f'<line x1="{x:.1f}" y1="{margin_t}" x2="{x:.1f}" y2="{margin_t + plot_h}" stroke="#1a1f3a" stroke-width="0.5"/>')
             parts.append(f'<text x="{x:.1f}" y="{margin_t + plot_h + 14}" fill="#555" font-size="9" text-anchor="middle">{d["slot"][:2]}h</text>')
+        elif d["slot"].endswith(":30"):
+            parts.append(f'<line x1="{x:.1f}" y1="{margin_t}" x2="{x:.1f}" y2="{margin_t + plot_h}" stroke="#1a1f3a" stroke-width="0.3" stroke-dasharray="2"/>')
         if d["total"] == 0:
             continue
         inp_h = d["input_tokens"] / max_total * plot_h
@@ -662,7 +665,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         token_usage_svg = ""
         if self.fitness_tracker:
             try:
-                token_buckets = _compute_token_usage_5min(self.fitness_tracker)
+                token_buckets = _compute_token_usage_30min(self.fitness_tracker)
                 token_usage_svg = _render_token_usage_svg(token_buckets)
             except Exception:
                 pass
@@ -728,7 +731,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             tier_cls = f"tier-{tier}"
             importance = e.get("importance", 0.5)
             bar_w = int(importance * 80)
-            content = _esc(e.get("content", "")[:100])
+            content = _esc(e.get("content", ""))
             ts = e.get("timestamp", "")[:16]
             rows_html.append(
                 f'<tr>'
@@ -737,7 +740,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 f'<td>{_esc(e.get("entry_type", ""))}</td>'
                 f'<td class="{tier_cls}">{tier}</td>'
                 f'<td><span class="importance-bar" style="width:{bar_w}px"></span> {importance:.2f}</td>'
-                f'<td>{content}</td>'
+                f'<td class="content-cell">{content}</td>'
                 f'<td>{ts}</td>'
                 f'</tr>'
             )
@@ -1094,7 +1097,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = []
         if self.fitness_tracker:
             try:
-                data = _compute_token_usage_5min(self.fitness_tracker)
+                data = _compute_token_usage_30min(self.fitness_tracker)
             except Exception:
                 pass
         self._send_json(data)
