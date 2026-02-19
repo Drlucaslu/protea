@@ -192,6 +192,32 @@ class CommitWatcher:
             log.warning("Failed to run tests", exc_info=True)
             return False
 
+    # -- auto-push logic --
+
+    def _try_push_local(self) -> None:
+        """Push local commits to origin if local is ahead of remote."""
+        try:
+            result = self._git("rev-list", "--count", "origin/main..HEAD", timeout=5)
+            if result.returncode != 0:
+                return
+            ahead = int(result.stdout.strip())
+            if ahead == 0:
+                return
+
+            log.info("Local is %d commit(s) ahead, pushing to origin", ahead)
+            push_result = self._git("push", "origin", "main", timeout=60)
+            if push_result.returncode == 0:
+                log.info("Push successful")
+                # Update synced hash so we don't re-pull our own commits.
+                head = self._get_head()
+                if head:
+                    self._last_synced_hash = head
+                    self._save_state(head)
+            else:
+                log.warning("Push failed: %s", push_result.stderr.strip())
+        except Exception:
+            log.warning("Push failed", exc_info=True)
+
     # -- remote sync logic --
 
     def _try_remote_sync(self) -> bool:
@@ -204,6 +230,8 @@ class CommitWatcher:
         if not self._fetch():
             log.warning("git fetch origin failed")
             return False
+
+        self._try_push_local()
 
         remote_head = self._get_remote_head()
         if remote_head is None:

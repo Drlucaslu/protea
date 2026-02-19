@@ -433,3 +433,87 @@ def _create_file(repo_path, rel_path, content):
     full = repo_path / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content)
+
+
+# ---------------------------------------------------------------------------
+# TestAutoPush — auto-push local commits to remote
+# ---------------------------------------------------------------------------
+
+class TestAutoPush:
+    def test_push_when_local_ahead(self, tmp_path):
+        local, remote = _make_remote(tmp_path)
+        watcher = CommitWatcher(local, threading.Event())
+
+        # Make a local commit without pushing.
+        (local / "local_change.txt").write_text("local work")
+        _git(local, "add", "local_change.txt")
+        _git(local, "commit", "-m", "local commit")
+
+        # Verify local is ahead.
+        ahead = _git(local, "rev-list", "--count", "origin/main..HEAD")
+        assert int(ahead.stdout.strip()) == 1
+
+        watcher._try_push_local()
+
+        # Remote should now have the commit.
+        ahead = _git(local, "rev-list", "--count", "origin/main..HEAD")
+        assert int(ahead.stdout.strip()) == 0
+
+        # Verify via a fresh clone.
+        clone = tmp_path / "verify_clone"
+        subprocess.run(
+            ["git", "clone", str(remote), str(clone)],
+            capture_output=True, text=True, check=True,
+        )
+        assert (clone / "local_change.txt").read_text() == "local work"
+
+    def test_no_push_when_in_sync(self, tmp_path):
+        local, remote = _make_remote(tmp_path)
+        watcher = CommitWatcher(local, threading.Event())
+
+        # Already in sync — _try_push_local should be a no-op.
+        with mock.patch.object(watcher, "_git", wraps=watcher._git) as mock_git:
+            watcher._try_push_local()
+            # Should only call rev-list, never push.
+            calls = [c for c in mock_git.call_args_list]
+            assert any("rev-list" in str(c) for c in calls)
+            assert not any("push" in str(c) for c in calls)
+
+    def test_push_failure_no_crash(self, tmp_path):
+        local, remote = _make_remote(tmp_path)
+        watcher = CommitWatcher(local, threading.Event())
+
+        # Make a local commit.
+        (local / "change.txt").write_text("stuff")
+        _git(local, "add", "change.txt")
+        _git(local, "commit", "-m", "local")
+
+        # Mock push to fail.
+        original_git = watcher._git
+        def fake_git(*args, **kwargs):
+            if args and args[0] == "push":
+                return mock.Mock(returncode=1, stderr="rejected")
+            return original_git(*args, **kwargs)
+
+        with mock.patch.object(watcher, "_git", side_effect=fake_git):
+            # Should not raise.
+            watcher._try_push_local()
+
+    def test_push_updates_synced_hash(self, tmp_path):
+        local, remote = _make_remote(tmp_path)
+        watcher = CommitWatcher(local, threading.Event())
+
+        old_hash = watcher._last_synced_hash
+
+        # Make a local commit.
+        (local / "update.txt").write_text("data")
+        _git(local, "add", "update.txt")
+        _git(local, "commit", "-m", "new commit")
+        new_head = _git(local, "rev-parse", "HEAD").stdout.strip()
+
+        watcher._try_push_local()
+
+        assert watcher._last_synced_hash == new_head
+        assert watcher._last_synced_hash != old_hash
+        # State file should also be updated.
+        assert watcher._load_state() == new_head
