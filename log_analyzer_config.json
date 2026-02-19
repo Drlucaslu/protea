@@ -1,0 +1,86 @@
+{
+  "log_files": [
+    "/Users/lianglu/work/protea/logs/ring_0.log",
+    "/Users/lianglu/work/protea/logs/ring_1.log",
+    "/Users/lianglu/work/protea/logs/ring_2.log",
+    "/Users/lianglu/work/protea/logs/ring_3.log",
+    "/var/log/system.log",
+    "/tmp/protea_debug.log"
+  ],
+  "watch_interval": 60,
+  "max_lines_per_scan": 10000,
+  "patterns": [
+    {
+      "pattern": "CRITICAL|FATAL|EMERGENCY",
+      "severity": "CRITICAL",
+      "category": "System Failure",
+      "description": "Critical system failure detected"
+    },
+    {
+      "pattern": "ERROR|Exception|Traceback",
+      "severity": "ERROR",
+      "category": "Application Error",
+      "description": "Application error or exception"
+    },
+    {
+      "pattern": "WARNING|WARN",
+      "severity": "WARNING",
+      "category": "Warning",
+      "description": "Warning condition detected"
+    },
+    {
+      "pattern": "out of memory|OOM|memory exhausted",
+      "severity": "CRITICAL",
+      "category": "Resource Exhaustion",
+      "description": "Memory exhaustion detected"
+    },
+    {
+      "pattern": "timeout|timed out|deadline exceeded",
+      "severity": "ERROR",
+      "category": "Timeout",
+      "description": "Operation timeout"
+    },
+    {
+      "pattern": "connection refused|connection reset|connection failed",
+      "severity": "ERROR",
+      "category": "Network Error",
+      "description": "Network connection failure"
+    },
+    {
+      "pattern": "disk full|no space left|quota exceeded",
+      "severity": "CRITICAL",
+      "category": "Storage",
+      "description": "Storage capacity issue"
+    },
+    {
+      "pattern": "permission denied|access denied|forbidden",
+      "severity": "ERROR",
+      "category": "Permission",
+      "description": "Permission or access error"
+    },
+    {
+      "pattern": "segmentation fault|core dumped|illegal instruction",
+      "severity": "CRITICAL",
+      "category": "Crash",
+      "description": "Process crash detected"
+    },
+    {
+      "pattern": "deprecated|obsolete",
+      "severity": "WARNING",
+      "category": "Deprecation",
+      "description": "Deprecated feature usage"
+    },
+    {
+      "pattern": "retry|retrying|attempt \\d+",
+      "severity": "WARNING",
+      "category": "Retry",
+      "description": "Automatic retry detected"
+    },
+    {
+      "pattern": "slow query|slow request|taking too long",
+      "severity": "WARNING",
+      "category": "Performance",
+      "description": "Performance degradation"
+    }
+  ]
+}

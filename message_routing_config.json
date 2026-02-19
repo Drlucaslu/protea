@@ -1,0 +1,51 @@
+{
+  "context_window": 10,
+  "routing_rules": [
+    {
+      "name": "chinese_query_router",
+      "conditions": {
+        "language": "chinese",
+        "intent": "query",
+        "min_confidence": 0.5
+      },
+      "handler": "context_aware_chinese_handler",
+      "priority": 10
+    },
+    {
+      "name": "chinese_action_router",
+      "conditions": {
+        "language": "chinese",
+        "intent": "action",
+        "min_confidence": 0.5
+      },
+      "handler": "chinese_action_handler",
+      "priority": 9
+    },
+    {
+      "name": "research_router",
+      "conditions": {
+        "intent": "research",
+        "min_confidence": 0.6
+      },
+      "handler": "research_handler",
+      "priority": 8
+    },
+    {
+      "name": "status_router",
+      "conditions": {
+        "intent": "status",
+        "min_confidence": 0.5
+      },
+      "handler": "status_handler",
+      "priority": 7
+    },
+    {
+      "name": "english_default",
+      "conditions": {
+        "language": "english"
+      },
+      "handler": "default_english_handler",
+      "priority": 1
+    }
+  ]
+}

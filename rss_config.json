@@ -1,0 +1,41 @@
+{
+  "feeds": [
+    {
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com/rss"
+    },
+    {
+      "name": "ArXiv CS.AI",
+      "url": "http://export.arxiv.org/rss/cs.AI"
+    },
+    {
+      "name": "ArXiv CS.LG",
+      "url": "http://export.arxiv.org/rss/cs.LG"
+    },
+    {
+      "name": "MIT Tech Review",
+      "url": "https://www.technologyreview.com/feed/"
+    },
+    {
+      "name": "Ars Technica",
+      "url": "http://feeds.arstechnica.com/arstechnica/index"
+    }
+  ],
+  "keywords": [
+    "AI",
+    "artificial intelligence",
+    "machine learning",
+    "deep learning",
+    "neural network",
+    "LLM",
+    "GPT",
+    "transformer",
+    "evolution",
+    "genetic algorithm",
+    "reinforcement learning",
+    "autonomous",
+    "python",
+    "optimization",
+    "algorithm"
+  ]
+}

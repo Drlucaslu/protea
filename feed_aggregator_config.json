@@ -1,0 +1,46 @@
+{
+  "feeds": [
+    {
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com/rss",
+      "type": "rss"
+    },
+    {
+      "name": "ArXiv AI",
+      "url": "http://export.arxiv.org/rss/cs.AI",
+      "type": "rss"
+    },
+    {
+      "name": "Python Insider",
+      "url": "https://blog.python.org/feeds/posts/default",
+      "type": "atom"
+    },
+    {
+      "name": "GitHub Blog",
+      "url": "https://github.blog/feed/",
+      "type": "rss"
+    },
+    {
+      "name": "TechCrunch AI",
+      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "type": "rss"
+    }
+  ],
+  "keywords": [
+    "AI",
+    "artificial intelligence",
+    "machine learning",
+    "LLM",
+    "GPT",
+    "Claude",
+    "OpenAI",
+    "Anthropic",
+    "Python",
+    "Rust",
+    "evolution",
+    "genetic",
+    "automation",
+    "agent",
+    "autonomous"
+  ]
+}

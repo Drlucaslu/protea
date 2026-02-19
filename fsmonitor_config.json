@@ -1,0 +1,15 @@
+{
+  "watch_dirs": [
+    "/Users/lianglu/Downloads",
+    "/Users/lianglu/Documents",
+    "/Users/lianglu/Desktop"
+  ],
+  "ignore_patterns": [
+    ".DS_Store",
+    ".git",
+    "__pycache__",
+    "*.pyc",
+    ".tmp",
+    "node_modules"
+  ]
+}

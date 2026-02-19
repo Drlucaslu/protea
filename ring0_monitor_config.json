@@ -1,0 +1,11 @@
+{
+  "ring0_heartbeat": "/Users/lianglu/work/protea/heartbeats/ring_0.heartbeat",
+  "check_interval": 5,
+  "restart_threshold": 15,
+  "state_file": "/Users/lianglu/work/protea/ring0_monitor_state.json",
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": ""
+  }
+}

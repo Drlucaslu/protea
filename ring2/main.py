@@ -6,13 +6,12 @@ import time
 import json
 import sys
 from threading import Thread, Event
-from datetime import datetime
-from typing import Dict, List, Any, Tuple, Set
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Tuple
 import signal
-import math
-import random
-from collections import defaultdict, deque
-from itertools import islice, combinations
+import re
+from collections import defaultdict, Counter
+import hashlib
 
 HEARTBEAT_INTERVAL = 2
 
@@ -24,245 +23,285 @@ def heartbeat_loop(heartbeat_path: pathlib.Path, pid: int, stop_event: Event) ->
             pass
         time.sleep(HEARTBEAT_INTERVAL)
 
-class NumberTheoryEngine:
-    """Explores prime numbers, sequences, and mathematical patterns"""
+class LogPattern:
+    """Represents a detected pattern in log files"""
+    def __init__(self, pattern_type: str, pattern: str, count: int, severity: str):
+        self.pattern_type = pattern_type
+        self.pattern = pattern
+        self.count = count
+        self.severity = severity
+        self.samples: List[str] = []
+        
+    def add_sample(self, line: str) -> None:
+        if len(self.samples) < 3:
+            self.samples.append(line[:200])
     
-    def __init__(self):
-        self.primes_cache = []
-        self.sequence_cache = {}
-        
-    def sieve_of_eratosthenes(self, limit: int) -> List[int]:
-        """Generate all primes up to limit using sieve algorithm"""
-        if limit < 2:
-            return []
-        
-        sieve = [True] * (limit + 1)
-        sieve[0] = sieve[1] = False
-        
-        for i in range(2, int(math.sqrt(limit)) + 1):
-            if sieve[i]:
-                for j in range(i*i, limit + 1, i):
-                    sieve[j] = False
-        
-        return [i for i in range(limit + 1) if sieve[i]]
-    
-    def goldbach_conjecture(self, n: int) -> List[Tuple[int, int]]:
-        """Find all ways to express even n as sum of two primes"""
-        if n < 4 or n % 2 != 0:
-            return []
-        
-        if not self.primes_cache or self.primes_cache[-1] < n:
-            self.primes_cache = self.sieve_of_eratosthenes(n)
-        
-        prime_set = set(self.primes_cache)
-        pairs = []
-        
-        for p in self.primes_cache:
-            if p > n // 2:
-                break
-            complement = n - p
-            if complement in prime_set:
-                pairs.append((p, complement))
-        
-        return pairs
-    
-    def collatz_sequence(self, n: int, max_steps: int = 1000) -> List[int]:
-        """Generate Collatz sequence starting from n"""
-        sequence = [n]
-        current = n
-        steps = 0
-        
-        while current != 1 and steps < max_steps:
-            if current % 2 == 0:
-                current = current // 2
-            else:
-                current = 3 * current + 1
-            sequence.append(current)
-            steps += 1
-        
-        return sequence
-    
-    def fibonacci_modular(self, n: int, mod: int) -> List[int]:
-        """Generate Fibonacci sequence modulo mod"""
-        if n <= 0:
-            return []
-        
-        fib = [0, 1]
-        for i in range(2, n):
-            fib.append((fib[i-1] + fib[i-2]) % mod)
-        
-        return fib[:n]
-    
-    def prime_gaps(self, limit: int) -> Dict[int, int]:
-        """Analyze gaps between consecutive primes"""
-        if not self.primes_cache or self.primes_cache[-1] < limit:
-            self.primes_cache = self.sieve_of_eratosthenes(limit)
-        
-        gaps = defaultdict(int)
-        for i in range(1, len(self.primes_cache)):
-            gap = self.primes_cache[i] - self.primes_cache[i-1]
-            gaps[gap] += 1
-        
-        return dict(gaps)
-    
-    def perfect_numbers(self, limit: int) -> List[int]:
-        """Find perfect numbers (sum of divisors equals the number)"""
-        perfect = []
-        
-        for n in range(2, limit):
-            divisors_sum = sum(i for i in range(1, n) if n % i == 0)
-            if divisors_sum == n:
-                perfect.append(n)
-        
-        return perfect
-    
-    def twin_primes(self, limit: int) -> List[Tuple[int, int]]:
-        """Find twin prime pairs (primes that differ by 2)"""
-        if not self.primes_cache or self.primes_cache[-1] < limit:
-            self.primes_cache = self.sieve_of_eratosthenes(limit)
-        
-        twins = []
-        for i in range(len(self.primes_cache) - 1):
-            if self.primes_cache[i+1] - self.primes_cache[i] == 2:
-                twins.append((self.primes_cache[i], self.primes_cache[i+1]))
-        
-        return twins
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.pattern_type,
+            'pattern': self.pattern,
+            'count': self.count,
+            'severity': self.severity,
+            'samples': self.samples
+        }
 
-class FractalGenerator:
-    """Generate ASCII fractals and mathematical patterns"""
+class LogAnalyzer:
+    """Analyzes log files for errors, patterns, and anomalies"""
     
-    def mandelbrot_set(self, width: int, height: int, max_iter: int = 50) -> List[str]:
-        """Generate ASCII Mandelbrot set"""
-        chars = " .:-=+*#%@"
-        result = []
+    ERROR_PATTERNS = [
+        (r'\bERROR\b', 'ERROR', 'high'),
+        (r'\bFAIL(ED)?\b', 'FAILURE', 'high'),
+        (r'\bCRITICAL\b', 'CRITICAL', 'critical'),
+        (r'\bWARN(ING)?\b', 'WARNING', 'medium'),
+        (r'\bEXCEPTION\b', 'EXCEPTION', 'high'),
+        (r'Traceback \(most recent call last\)', 'TRACEBACK', 'high'),
+        (r'\btimeout\b', 'TIMEOUT', 'medium'),
+        (r'\bconnection (refused|reset|closed)\b', 'CONNECTION', 'medium'),
+        (r'\b(404|500|502|503)\b', 'HTTP_ERROR', 'medium'),
+        (r'\bpermission denied\b', 'PERMISSION', 'medium'),
+        (r'\bno such file\b', 'FILE_NOT_FOUND', 'low'),
+    ]
+    
+    def __init__(self, config_path: Optional[pathlib.Path] = None):
+        self.config = self._load_config(config_path)
+        self.patterns_found: Dict[str, LogPattern] = {}
+        self.line_count = 0
+        self.error_count = 0
         
-        for y in range(height):
-            line = ""
-            for x in range(width):
-                # Map pixel to complex plane
-                c = complex(
-                    (x - width * 0.7) / (width * 0.3),
-                    (y - height * 0.5) / (height * 0.4)
-                )
+    def _load_config(self, config_path: Optional[pathlib.Path]) -> Dict[str, Any]:
+        default_config = {
+            'log_paths': [
+                '/var/log/system.log',
+                str(pathlib.Path.home() / 'Library' / 'Logs'),
+                '/tmp/*.log'
+            ],
+            'max_lines_per_file': 10000,
+            'time_window_hours': 24,
+            'anomaly_threshold': 10,
+            'custom_patterns': []
+        }
+        
+        if config_path and config_path.exists():
+            try:
+                with config_path.open('r') as f:
+                    return {**default_config, **json.load(f)}
+            except:
+                pass
+        
+        return default_config
+    
+    def find_log_files(self) -> List[pathlib.Path]:
+        """Find all readable log files"""
+        log_files = []
+        
+        for log_spec in self.config['log_paths']:
+            try:
+                path = pathlib.Path(log_spec).expanduser()
                 
-                z = 0
-                iteration = 0
-                
-                while abs(z) <= 2 and iteration < max_iter:
-                    z = z * z + c
-                    iteration += 1
-                
-                char_idx = min(iteration * len(chars) // max_iter, len(chars) - 1)
-                line += chars[char_idx]
+                if path.is_file() and path.suffix in ['.log', '.txt']:
+                    if os.access(path, os.R_OK):
+                        log_files.append(path)
+                elif path.is_dir():
+                    for log_file in path.rglob('*.log'):
+                        if os.access(log_file, os.R_OK):
+                            log_files.append(log_file)
+                            if len(log_files) >= 20:
+                                break
+            except (PermissionError, OSError):
+                continue
+        
+        return log_files[:20]
+    
+    def analyze_file(self, file_path: pathlib.Path) -> Dict[str, Any]:
+        """Analyze a single log file"""
+        stats = {
+            'path': str(file_path),
+            'size_bytes': 0,
+            'lines_analyzed': 0,
+            'errors_found': 0,
+            'timestamps': [],
+            'patterns': {}
+        }
+        
+        try:
+            stats['size_bytes'] = file_path.stat().st_size
             
-            result.append(line)
+            max_lines = self.config['max_lines_per_file']
+            with file_path.open('r', encoding='utf-8', errors='ignore') as f:
+                for i, line in enumerate(f):
+                    if i >= max_lines:
+                        break
+                    
+                    self.line_count += 1
+                    stats['lines_analyzed'] += 1
+                    
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    timestamp = self._extract_timestamp(line)
+                    if timestamp:
+                        stats['timestamps'].append(timestamp)
+                    
+                    for pattern_re, pattern_name, severity in self.ERROR_PATTERNS:
+                        if re.search(pattern_re, line, re.IGNORECASE):
+                            self.error_count += 1
+                            stats['errors_found'] += 1
+                            
+                            key = f"{pattern_name}_{severity}"
+                            if key not in self.patterns_found:
+                                self.patterns_found[key] = LogPattern(
+                                    pattern_name, pattern_re, 0, severity
+                                )
+                            
+                            self.patterns_found[key].count += 1
+                            self.patterns_found[key].add_sample(line)
+                            
+                            stats['patterns'][pattern_name] = stats['patterns'].get(pattern_name, 0) + 1
         
-        return result
+        except Exception as e:
+            stats['error'] = str(e)
+        
+        return stats
     
-    def sierpinski_triangle(self, size: int) -> List[str]:
-        """Generate Sierpinski triangle using chaos game"""
-        grid = [[' ' for _ in range(size * 2)] for _ in range(size)]
-        
-        # Vertices of the triangle
-        vertices = [
-            (size, 0),           # Top
-            (0, size - 1),       # Bottom left
-            (size * 2 - 1, size - 1)  # Bottom right
+    def _extract_timestamp(self, line: str) -> Optional[str]:
+        """Extract ISO timestamp or common log timestamp formats"""
+        patterns = [
+            r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}',
+            r'\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}',
+            r'\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}'
         ]
         
-        # Start at random point
-        x, y = size, size // 2
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                return match.group(0)
         
-        for _ in range(size * size * 2):
-            # Pick random vertex
-            vx, vy = random.choice(vertices)
-            
-            # Move halfway to vertex
-            x = (x + vx) // 2
-            y = (y + vy) // 2
-            
-            if 0 <= y < size and 0 <= x < len(grid[0]):
-                grid[y][x] = '█'
-        
-        return [''.join(row) for row in grid]
+        return None
     
-    def pascal_triangle(self, rows: int) -> List[str]:
-        """Generate Pascal's triangle"""
-        triangle = []
+    def detect_anomalies(self, file_stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Detect anomalous patterns based on frequency"""
+        anomalies = []
         
-        for i in range(rows):
-            row = [1]
-            if triangle:
-                last_row = [int(x) for line in triangle[-1].split() for x in [line]]
-                for j in range(len(last_row) - 1):
-                    row.append(last_row[j] + last_row[j + 1])
-                row.append(1)
-            
-            # Format with spacing
-            spaces = ' ' * (rows - i)
-            nums = ' '.join(str(n).rjust(4) for n in row)
-            triangle.append(spaces + nums)
+        all_patterns = Counter()
+        for stats in file_stats:
+            for pattern, count in stats.get('patterns', {}).items():
+                all_patterns[pattern] += count
         
-        return triangle
-
-class SequenceAnalyzer:
-    """Analyze and generate integer sequences"""
+        threshold = self.config['anomaly_threshold']
+        for pattern, count in all_patterns.most_common():
+            if count >= threshold:
+                anomalies.append({
+                    'pattern': pattern,
+                    'occurrences': count,
+                    'severity': 'high' if count >= threshold * 3 else 'medium',
+                    'message': f'{pattern} occurred {count} times (threshold: {threshold})'
+                })
+        
+        return anomalies
     
-    def look_and_say(self, start: str, iterations: int) -> List[str]:
-        """Generate look-and-say sequence (Conway sequence)"""
-        sequence = [start]
-        current = start
+    def generate_report(self) -> Dict[str, Any]:
+        """Generate comprehensive analysis report"""
+        print("🔍 Discovering log files...", flush=True)
+        log_files = self.find_log_files()
         
-        for _ in range(iterations):
-            next_term = ""
-            i = 0
-            
-            while i < len(current):
-                digit = current[i]
-                count = 1
-                
-                while i + count < len(current) and current[i + count] == digit:
-                    count += 1
-                
-                next_term += str(count) + digit
-                i += count
-            
-            sequence.append(next_term)
-            current = next_term
+        if not log_files:
+            print("⚠️  No readable log files found", flush=True)
+            print("💡 Generating synthetic demo data...", flush=True)
+            return self._generate_demo_report()
         
-        return sequence
+        print(f"📁 Found {len(log_files)} log files\n", flush=True)
+        
+        file_stats = []
+        for log_file in log_files:
+            print(f"📄 Analyzing: {log_file.name}", flush=True)
+            stats = self.analyze_file(log_file)
+            file_stats.append(stats)
+        
+        anomalies = self.detect_anomalies(file_stats)
+        
+        patterns_by_severity = defaultdict(list)
+        for pattern in self.patterns_found.values():
+            patterns_by_severity[pattern.severity].append(pattern)
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'files_analyzed': len(log_files),
+                'total_lines': self.line_count,
+                'total_errors': self.error_count,
+                'unique_patterns': len(self.patterns_found),
+                'anomalies_detected': len(anomalies)
+            },
+            'file_statistics': file_stats,
+            'patterns': {
+                severity: [p.to_dict() for p in patterns]
+                for severity, patterns in patterns_by_severity.items()
+            },
+            'anomalies': anomalies,
+            'recommendations': self._generate_recommendations(anomalies)
+        }
     
-    def recaman_sequence(self, n: int) -> List[int]:
-        """Generate Recamán's sequence"""
-        sequence = [0]
-        seen = {0}
+    def _generate_demo_report(self) -> Dict[str, Any]:
+        """Generate demo report when no logs are accessible"""
+        demo_patterns = [
+            LogPattern('CONNECTION', r'connection refused', 45, 'medium'),
+            LogPattern('TIMEOUT', r'timeout', 23, 'medium'),
+            LogPattern('ERROR', r'ERROR', 67, 'high'),
+            LogPattern('WARNING', r'WARNING', 124, 'medium'),
+        ]
         
-        for i in range(1, n):
-            candidate = sequence[i-1] - i
-            
-            if candidate > 0 and candidate not in seen:
-                sequence.append(candidate)
-                seen.add(candidate)
-            else:
-                candidate = sequence[i-1] + i
-                sequence.append(candidate)
-                seen.add(candidate)
+        for pattern in demo_patterns:
+            pattern.add_sample(f'2024-01-15 10:23:45 {pattern.pattern.upper()}: Sample log entry')
+            pattern.add_sample(f'2024-01-15 11:34:12 {pattern.pattern.upper()}: Another occurrence')
         
-        return sequence
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'mode': 'demo',
+            'summary': {
+                'files_analyzed': 0,
+                'total_lines': 5420,
+                'total_errors': 259,
+                'unique_patterns': 4,
+                'anomalies_detected': 2
+            },
+            'file_statistics': [],
+            'patterns': {
+                'high': [demo_patterns[2].to_dict()],
+                'medium': [p.to_dict() for p in [demo_patterns[0], demo_patterns[1], demo_patterns[3]]]
+            },
+            'anomalies': [
+                {'pattern': 'WARNING', 'occurrences': 124, 'severity': 'medium', 'message': 'WARNING occurred 124 times (threshold: 10)'},
+                {'pattern': 'ERROR', 'occurrences': 67, 'severity': 'high', 'message': 'ERROR occurred 67 times (threshold: 10)'}
+            ],
+            'recommendations': [
+                'Investigate high-frequency WARNING patterns',
+                'Review ERROR logs for recurring issues',
+                'Consider implementing rate limiting for connection errors'
+            ]
+        }
     
-    def catalan_numbers(self, n: int) -> List[int]:
-        """Generate Catalan numbers"""
-        if n <= 0:
-            return []
+    def _generate_recommendations(self, anomalies: List[Dict[str, Any]]) -> List[str]:
+        """Generate actionable recommendations"""
+        recs = []
         
-        catalan = [1]
+        for anomaly in anomalies[:5]:
+            pattern = anomaly['pattern']
+            count = anomaly['occurrences']
+            
+            if 'CONNECTION' in pattern:
+                recs.append(f'Review network connectivity — {count} connection errors detected')
+            elif 'TIMEOUT' in pattern:
+                recs.append(f'Optimize timeout settings — {count} timeout events found')
+            elif 'ERROR' in pattern or 'CRITICAL' in pattern:
+                recs.append(f'Prioritize fixing {pattern} — {count} occurrences need attention')
+            elif 'WARNING' in pattern and count > 50:
+                recs.append(f'Investigate {count} warnings — may indicate underlying issue')
         
-        for i in range(1, n):
-            catalan.append(
-                catalan[i-1] * 2 * (2 * i - 1) // (i + 1)
-            )
+        if not recs:
+            recs.append('No critical anomalies detected — system appears healthy')
         
-        return catalan
+        return recs
 
 def main() -> None:
     heartbeat_path_str = os.environ.get("PROTEA_HEARTBEAT")
@@ -282,225 +321,106 @@ def main() -> None:
     stop_event = Event()
 
     def signal_handler(signum, frame):
-        print(f"\n⚠️  Signal {signum} received, shutting down", flush=True)
+        print(f"\nSignal {signum} received, shutting down", flush=True)
         stop_event.set()
 
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    heartbeat_thread = Thread(
-        target=heartbeat_loop,
-        args=(heartbeat_path, pid, stop_event),
-        daemon=True
-    )
+    heartbeat_thread = Thread(target=heartbeat_loop, args=(heartbeat_path, pid, stop_event), daemon=True)
     heartbeat_thread.start()
 
-    workspace = pathlib.Path(__file__).parent
+    print("="*80, flush=True)
+    print("PROTEA LOG ANALYZER", flush=True)
+    print("Intelligent log file analysis with anomaly detection", flush=True)
+    print("="*80, flush=True)
+    print(f"PID: {pid} | Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n", flush=True)
 
-    print("╔" + "═" * 78 + "╗", flush=True)
-    print("║" + "COMPUTATIONAL MATHEMATICS ENGINE".center(78) + "║", flush=True)
-    print("║" + "Number Theory · Fractals · Sequences".center(78) + "║", flush=True)
-    print("╚" + "═" * 78 + "╝", flush=True)
-    print(f"🔢 PID: {pid} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-    print("", flush=True)
-
-    nt = NumberTheoryEngine()
-    fg = FractalGenerator()
-    sa = SequenceAnalyzer()
+    config_path = pathlib.Path.home() / '.protea' / 'log_analyzer_config.json'
+    analyzer = LogAnalyzer(config_path)
 
     try:
-        # Prime number analysis
-        print("═" * 80, flush=True)
-        print("PRIME NUMBER ANALYSIS", flush=True)
-        print("═" * 80, flush=True)
+        print(f"Configuration:\n{json.dumps(analyzer.config, indent=2)}\n", flush=True)
+
+        report = analyzer.generate_report()
+
+        print("\n" + "─"*80, flush=True)
+        print("ANALYSIS SUMMARY", flush=True)
+        print("─"*80, flush=True)
+        summary = report['summary']
+        print(f"Files analyzed: {summary['files_analyzed']}", flush=True)
+        print(f"Total lines: {summary['total_lines']:,}", flush=True)
+        print(f"Errors found: {summary['total_errors']:,}", flush=True)
+        print(f"Unique patterns: {summary['unique_patterns']}", flush=True)
+        print(f"Anomalies: {summary['anomalies_detected']}", flush=True)
+
+        if report.get('mode') == 'demo':
+            print("\n⚠️  Demo mode: No accessible logs found, showing sample analysis", flush=True)
+
+        print("\n" + "─"*80, flush=True)
+        print("ERROR PATTERNS BY SEVERITY", flush=True)
+        print("─"*80, flush=True)
         
-        primes = nt.sieve_of_eratosthenes(1000)
-        print(f"✓ Found {len(primes)} primes up to 1000", flush=True)
-        print(f"  First 20: {primes[:20]}", flush=True)
-        print(f"  Last 10:  {primes[-10:]}", flush=True)
-        print("", flush=True)
-        
-        # Twin primes
-        twins = nt.twin_primes(500)
-        print(f"🔗 Twin primes up to 500: {len(twins)} pairs", flush=True)
-        for i, (p1, p2) in enumerate(twins[:8]):
-            print(f"  {i+1}. ({p1}, {p2})", flush=True)
-        print("", flush=True)
-        
-        # Prime gaps
-        gaps = nt.prime_gaps(1000)
-        print("📊 Prime gap distribution:", flush=True)
-        for gap in sorted(gaps.keys())[:10]:
-            bar = "█" * (gaps[gap] // 2)
-            print(f"  Gap {gap:3d}: {bar} ({gaps[gap]} occurrences)", flush=True)
-        print("", flush=True)
-        
-        # Goldbach conjecture
-        print("═" * 80, flush=True)
-        print("GOLDBACH CONJECTURE VERIFICATION", flush=True)
-        print("═" * 80, flush=True)
-        
-        test_numbers = [100, 200, 500, 1000]
-        for n in test_numbers:
-            pairs = nt.goldbach_conjecture(n)
-            print(f"✓ {n} = sum of two primes: {len(pairs)} representations", flush=True)
-            print(f"  Examples: {pairs[:3]}", flush=True)
-        print("", flush=True)
-        
-        # Collatz sequences
-        print("═" * 80, flush=True)
-        print("COLLATZ CONJECTURE EXPLORATION", flush=True)
-        print("═" * 80, flush=True)
-        
-        collatz_starts = [27, 127, 255, 999]
-        for start in collatz_starts:
-            seq = nt.collatz_sequence(start, max_steps=200)
-            max_val = max(seq)
-            print(f"🔄 Starting from {start}:", flush=True)
-            print(f"   Steps to 1: {len(seq)-1} | Max value: {max_val}", flush=True)
-            print(f"   First 10: {seq[:10]}", flush=True)
-        print("", flush=True)
-        
-        # Fibonacci modular arithmetic
-        print("═" * 80, flush=True)
-        print("FIBONACCI SEQUENCES (MODULAR ARITHMETIC)", flush=True)
-        print("═" * 80, flush=True)
-        
-        for mod in [7, 13, 17]:
-            fib_mod = nt.fibonacci_modular(30, mod)
-            print(f"📐 Fibonacci mod {mod}:", flush=True)
-            print(f"   {fib_mod}", flush=True)
-            
-            # Find period
-            period_len = 0
-            for i in range(2, len(fib_mod) - 1):
-                if fib_mod[i] == 0 and fib_mod[i+1] == 1:
-                    period_len = i
-                    break
-            
-            if period_len > 0:
-                print(f"   Pisano period: {period_len}", flush=True)
-            print("", flush=True)
-        
-        # Perfect numbers
-        print("═" * 80, flush=True)
-        print("PERFECT NUMBERS", flush=True)
-        print("═" * 80, flush=True)
-        
-        perfect = nt.perfect_numbers(10000)
-        print(f"✨ Perfect numbers up to 10000: {perfect}", flush=True)
-        for p in perfect:
-            divisors = [i for i in range(1, p) if p % i == 0]
-            print(f"   {p} = {' + '.join(map(str, divisors))}", flush=True)
-        print("", flush=True)
-        
-        # Fractals
-        print("═" * 80, flush=True)
-        print("MANDELBROT SET (ASCII)", flush=True)
-        print("═" * 80, flush=True)
-        
-        mandelbrot = fg.mandelbrot_set(60, 20, max_iter=30)
-        for line in mandelbrot:
-            print(line, flush=True)
-        print("", flush=True)
-        
-        # Sierpinski triangle
-        print("═" * 80, flush=True)
-        print("SIERPINSKI TRIANGLE", flush=True)
-        print("═" * 80, flush=True)
-        
-        sierpinski = fg.sierpinski_triangle(15)
-        for line in sierpinski:
-            print(line, flush=True)
-        print("", flush=True)
-        
-        # Pascal's triangle
-        print("═" * 80, flush=True)
-        print("PASCAL'S TRIANGLE", flush=True)
-        print("═" * 80, flush=True)
-        
-        pascal = fg.pascal_triangle(10)
-        for line in pascal:
-            print(line, flush=True)
-        print("", flush=True)
-        
-        # Sequences
-        print("═" * 80, flush=True)
-        print("INTEGER SEQUENCES", flush=True)
-        print("═" * 80, flush=True)
-        
-        # Look-and-say
-        look_say = sa.look_and_say("1", 8)
-        print("🔢 Look-and-Say sequence:", flush=True)
-        for i, term in enumerate(look_say):
-            print(f"  {i}: {term[:50]}{'...' if len(term) > 50 else ''}", flush=True)
-        print("", flush=True)
-        
-        # Recamán
-        recaman = sa.recaman_sequence(30)
-        print(f"🔄 Recamán sequence (30 terms):", flush=True)
-        print(f"  {recaman}", flush=True)
-        print("", flush=True)
-        
-        # Catalan
-        catalan = sa.catalan_numbers(15)
-        print("🔺 Catalan numbers:", flush=True)
-        for i, c in enumerate(catalan):
-            print(f"  C({i}) = {c:,}", flush=True)
-        print("", flush=True)
-        
-        # Export results
-        results = {
-            "timestamp": time.time(),
-            "primes_count": len(primes),
-            "twin_primes": len(twins),
-            "perfect_numbers": perfect,
-            "collatz_analysis": {
-                str(start): len(nt.collatz_sequence(start, 200))-1
-                for start in collatz_starts
-            },
-            "catalan_numbers": catalan,
-            "recaman_30": recaman
-        }
-        
-        output_file = workspace / f"math_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        output_file.write_text(json.dumps(results, indent=2), encoding='utf-8')
-        
-        print("═" * 80, flush=True)
-        print(f"✅ Analysis exported to: {output_file.name}", flush=True)
-        print("═" * 80, flush=True)
-        print("", flush=True)
-        
-        # Keep alive
-        start_time = time.time()
-        iteration = 0
-        
+        for severity in ['critical', 'high', 'medium', 'low']:
+            if severity in report['patterns']:
+                print(f"\n{severity.upper()}:", flush=True)
+                for pattern in report['patterns'][severity]:
+                    print(f"  • {pattern['type']}: {pattern['count']} occurrences", flush=True)
+                    if pattern['samples']:
+                        print(f"    Sample: {pattern['samples'][0][:80]}...", flush=True)
+
+        if report['anomalies']:
+            print("\n" + "─"*80, flush=True)
+            print("⚠️  ANOMALIES DETECTED", flush=True)
+            print("─"*80, flush=True)
+            for i, anomaly in enumerate(report['anomalies'], 1):
+                severity_icon = "🔴" if anomaly['severity'] == 'high' else "🟡"
+                print(f"{i}. {severity_icon} {anomaly['message']}", flush=True)
+
+        if report['recommendations']:
+            print("\n" + "─"*80, flush=True)
+            print("💡 RECOMMENDATIONS", flush=True)
+            print("─"*80, flush=True)
+            for i, rec in enumerate(report['recommendations'], 1):
+                print(f"{i}. {rec}", flush=True)
+
+        if report['file_statistics']:
+            print("\n" + "─"*80, flush=True)
+            print("FILE DETAILS", flush=True)
+            print("─"*80, flush=True)
+            for stats in report['file_statistics'][:10]:
+                print(f"\n📄 {pathlib.Path(stats['path']).name}", flush=True)
+                print(f"   Size: {stats['size_bytes']:,} bytes", flush=True)
+                print(f"   Lines: {stats['lines_analyzed']:,}", flush=True)
+                print(f"   Errors: {stats['errors_found']}", flush=True)
+
+        print("\n" + "="*80, flush=True)
+        print("JSON OUTPUT", flush=True)
+        print("="*80, flush=True)
+        print(json.dumps(report, indent=2), flush=True)
+
+        print("\n" + "="*80, flush=True)
+        print(f"Analysis complete. Processed {summary['total_lines']:,} lines.", flush=True)
+        print("="*80, flush=True)
+
         while not stop_event.is_set():
-            iteration += 1
-            elapsed = time.time() - start_time
-            
-            if iteration % 60 == 0:
-                print(f"⏱️  Runtime: {elapsed/60:.1f}m | Computation engine active", flush=True)
-            
-            time.sleep(5)
+            time.sleep(10)
 
     except KeyboardInterrupt:
-        print("\n⚠️  Interrupted", flush=True)
+        print("\nInterrupted", flush=True)
         stop_event.set()
     except Exception as e:
-        print(f"\n❌ Error: {type(e).__name__}: {str(e)}", flush=True)
+        print(f"\nError: {type(e).__name__}: {str(e)}", flush=True)
         import traceback
         traceback.print_exc()
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
-
         try:
             heartbeat_path.unlink(missing_ok=True)
-        except Exception:
+        except:
             pass
-
-        print(f"\n🏁 Mathematical computation session ended", flush=True)
+        print(f"\nSession ended", flush=True)
 
 if __name__ == "__main__":
     main()

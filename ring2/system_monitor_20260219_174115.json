@@ -1,0 +1,40 @@
+{
+  "timestamp": 1771494075.0350451,
+  "system_metrics": {
+    "timestamp": 1771494075.034986,
+    "load_avg": null,
+    "memory": {},
+    "uptime": null,
+    "network": {}
+  },
+  "health_checks": [
+    {
+      "check": "load_average",
+      "status": "unknown",
+      "message": "Load average unavailable"
+    },
+    {
+      "check": "memory",
+      "status": "unknown",
+      "message": "Memory info unavailable"
+    }
+  ],
+  "process_registry": {
+    "ring2_monitor": {
+      "pid": 56193,
+      "start_time": 1771494075.034963,
+      "metadata": {
+        "type": "system_monitor",
+        "version": "1.0",
+        "capabilities": [
+          "health_check",
+          "process_tracking"
+        ]
+      }
+    }
+  },
+  "notification_formats": {
+    "restart_example": "\ud83d\udd04 **Process Restart Detected**\n\n**Process:** sentinel_ring0\n**Old PID:** 12345\n**New PID:** 12457\n**Time:** 2026-02-19 17:41:15\n\n**Metadata:**\n  \u2022 restart_reason: automatic\n  \u2022 uptime_before: 2.5h\n",
+    "health_example": "\u2705 All health checks passed"
+  }
+}
