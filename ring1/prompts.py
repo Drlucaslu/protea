@@ -24,6 +24,9 @@ Your task is to mutate the Ring 2 code to create a new generation.
 2. The code MUST have a `main()` function as entry point
 3. The code MUST be a single valid Python file (pure stdlib only, no pip packages)
 4. The code MUST handle KeyboardInterrupt gracefully and clean up the heartbeat file
+5. The code MUST NOT create or use SQLite databases or any persistent storage files.
+   All output should go to stdout or files in the `output/` directory. Never use sqlite3
+   to create .db files — the Protea memory system is managed by Ring 0, not Ring 2.
 
 ## Evolution Strategy
 Beyond the heartbeat constraint, evolve the code to be PRACTICALLY USEFUL.
