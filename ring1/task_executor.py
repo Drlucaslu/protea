@@ -738,15 +738,15 @@ class TaskExecutor:
 
         now = time.time()
 
-        # Habit detection — runs at most once per hour.
-        if self.habit_detector and now - self._last_habit_check >= 3600:
-            self._last_habit_check = now
-            try:
-                patterns = self.habit_detector.detect()
-                for p in patterns[:2]:  # max 2 proposals at a time
-                    self._propose_habit(p)
-            except Exception:
-                log.debug("Habit detection failed", exc_info=True)
+        # Habit detection — DISABLED due to high false positive rate
+        # if self.habit_detector and now - self._last_habit_check >= 3600:
+        #     self._last_habit_check = now
+        #     try:
+        #         patterns = self.habit_detector.detect()
+        #         for p in patterns[:2]:  # max 2 proposals at a time
+        #             self._propose_habit(p)
+        #     except Exception:
+        #         log.debug("Habit detection failed", exc_info=True)
         # Check idle threshold
         if now - self._last_p0_time < self.p1_idle_threshold_sec:
             return
