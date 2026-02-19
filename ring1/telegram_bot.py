@@ -148,6 +148,11 @@ class TelegramBot:
         self._offset: int = 0
         self._running = threading.Event()
         self._running.set()
+        
+        # 对话上下文追踪 - 记住最近的 bot 消息以支持回复关联
+        self._last_bot_messages = []  # 保留最近 5 条消息
+        self._max_context_messages = 5
+        self._context_window_seconds = 120  # 2分钟内的回复视为有上下文
 
     # -- low-level API helpers --
 
@@ -197,10 +202,24 @@ class TelegramBot:
         })
         if result is None:
             # Markdown was rejected — retry as plain text.
-            self._api_call("sendMessage", {
+            result = self._api_call("sendMessage", {
                 "chat_id": self.chat_id,
                 "text": text,
             })
+        
+        # 记录发送的消息以支持上下文追踪
+        if result and result.get("ok"):
+            msg_data = result.get("result", {})
+            message_id = msg_data.get("message_id")
+            if message_id:
+                self._last_bot_messages.append({
+                    "text": text,
+                    "message_id": message_id,
+                    "timestamp": time.time()
+                })
+                # 只保留最近的 N 条消息
+                if len(self._last_bot_messages) > self._max_context_messages:
+                    self._last_bot_messages.pop(0)
 
     def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> None:
         """Send a message with an inline keyboard (fire-and-forget).
@@ -1149,6 +1168,94 @@ class TelegramBot:
         "/calendar": "_cmd_calendar",
     }
 
+    def _detect_conversation_context(self, msg: dict) -> dict | None:
+        """检测用户消息是否在回复 bot 之前的消息，返回上下文信息。
+        
+        检测规则：
+        1. 用户在 Telegram 中明确 reply 了 bot 的某条消息（reply_to_message）
+        2. 用户发送的消息在时间窗口内（紧接着 bot 的消息）
+        
+        返回格式：
+        {
+            "replied_text": "bot 之前说的话",
+            "replied_message_id": 123,
+            "time_delta": 5.2,  # 秒
+            "match_type": "explicit_reply" | "time_window"
+        }
+        """
+        current_time = time.time()
+        
+        # 规则1: 检查是否明确回复了某条消息
+        reply_to = msg.get("reply_to_message")
+        if reply_to:
+            # 确认是回复 bot 的消息（不是回复其他用户）
+            reply_from = reply_to.get("from", {})
+            if reply_from.get("is_bot"):
+                replied_msg_id = reply_to.get("message_id")
+                replied_text = reply_to.get("text", "")
+                
+                # 在我们的历史记录中找到这条消息
+                for bot_msg in self._last_bot_messages:
+                    if bot_msg["message_id"] == replied_msg_id:
+                        return {
+                            "replied_text": bot_msg["text"],
+                            "replied_message_id": replied_msg_id,
+                            "time_delta": current_time - bot_msg["timestamp"],
+                            "match_type": "explicit_reply"
+                        }
+                
+                # 即使不在历史记录中，也返回基本信息
+                if replied_text:
+                    return {
+                        "replied_text": replied_text,
+                        "replied_message_id": replied_msg_id,
+                        "time_delta": 0,
+                        "match_type": "explicit_reply"
+                    }
+        
+        # 规则2: 检查时间窗口（最近一条消息）
+        if self._last_bot_messages:
+            last_msg = self._last_bot_messages[-1]
+            time_delta = current_time - last_msg["timestamp"]
+            
+            if time_delta <= self._context_window_seconds:
+                return {
+                    "replied_text": last_msg["text"],
+                    "replied_message_id": last_msg["message_id"],
+                    "time_delta": time_delta,
+                    "match_type": "time_window"
+                }
+        
+        return None
+    
+    def _enrich_text_with_context(self, user_text: str, context: dict) -> str:
+        """将上下文信息注入到用户输入中，帮助 LLM 理解对话连续性。"""
+        match_type = context.get("match_type", "unknown")
+        replied_text = context.get("replied_text", "")
+        time_delta = context.get("time_delta", 0)
+        
+        # 截取回复内容的前 200 个字符（避免过长）
+        replied_preview = replied_text[:200]
+        if len(replied_text) > 200:
+            replied_preview += "..."
+        
+        if match_type == "explicit_reply":
+            # 用户明确回复了某条消息
+            prefix = (
+                f"[Context: User is replying to your previous message]\n"
+                f"Your message: \"{replied_preview}\"\n"
+                f"User's reply: "
+            )
+        else:
+            # 时间窗口内的连续对话
+            prefix = (
+                f"[Context: User sent this {int(time_delta)}s after your last message]\n"
+                f"Your previous message: \"{replied_preview}\"\n"
+                f"User now says: "
+            )
+        
+        return prefix + user_text
+
     def _handle_command(self, text: str, chat_id: str = "") -> str:
         """Dispatch a command or free-text message and return the response."""
         stripped = text.strip()
@@ -1267,6 +1374,13 @@ class TelegramBot:
                         text = msg.get("text", "")
                         if not text:
                             continue
+                        
+                        # 上下文增强：检测用户是否在回复 bot 的消息
+                        context_info = self._detect_conversation_context(msg)
+                        if context_info:
+                            # 将上下文信息注入到用户输入中
+                            text = self._enrich_text_with_context(text, context_info)
+                        
                         reply = self._handle_command(text, chat_id=msg_chat_id)
                         if reply is not None:
                             self._send_reply(reply)

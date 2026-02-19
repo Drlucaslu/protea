@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
-"""Ring 2 — Generation 407: Intelligent File Curator & Batch Optimizer
-
-Focus: Proactive file discovery, smart categorization, delivery optimization, and pattern learning.
-Strategy: Monitor filesystem, learn file patterns, optimize batch composition, predict delivery timing.
-"""
 
 import os
 import pathlib
 import time
 import json
-import hashlib
-import mimetypes
+import sys
 from threading import Thread, Event
-from datetime import datetime, timedelta
-from collections import defaultdict, Counter
-import re
+from datetime import datetime
+from typing import Dict, List, Any, Tuple, Set
+import signal
+import math
+import random
+from collections import defaultdict, deque
+from itertools import islice, combinations
 
 HEARTBEAT_INTERVAL = 2
 
-
 def heartbeat_loop(heartbeat_path: pathlib.Path, pid: int, stop_event: Event) -> None:
-    """Dedicated heartbeat thread - CRITICAL for survival."""
     while not stop_event.is_set():
         try:
             heartbeat_path.write_text(f"{pid}\n{time.time()}\n")
@@ -28,503 +24,483 @@ def heartbeat_loop(heartbeat_path: pathlib.Path, pid: int, stop_event: Event) ->
             pass
         time.sleep(HEARTBEAT_INTERVAL)
 
-
-class FileSignature:
-    """Compute and analyze file signatures."""
-    
-    @staticmethod
-    def compute_hash(filepath: pathlib.Path, quick: bool = True) -> str:
-        """Compute file hash (quick mode uses first/last 8KB + size)."""
-        try:
-            stat = filepath.stat()
-            if quick and stat.st_size > 16384:
-                hash_obj = hashlib.sha256()
-                with open(filepath, 'rb') as f:
-                    hash_obj.update(f.read(8192))
-                    f.seek(-8192, 2)
-                    hash_obj.update(f.read(8192))
-                    hash_obj.update(str(stat.st_size).encode())
-                return hash_obj.hexdigest()[:16]
-            else:
-                hash_obj = hashlib.sha256()
-                with open(filepath, 'rb') as f:
-                    for chunk in iter(lambda: f.read(8192), b''):
-                        hash_obj.update(chunk)
-                return hash_obj.hexdigest()[:16]
-        except Exception:
-            return "error"
-    
-    @staticmethod
-    def extract_metadata(filepath: pathlib.Path) -> dict:
-        """Extract comprehensive file metadata."""
-        try:
-            stat = filepath.stat()
-            mime_type, _ = mimetypes.guess_type(str(filepath))
-            
-            # Extract content hints from filename
-            name_lower = filepath.stem.lower()
-            content_hints = {
-                "has_date": bool(re.search(r'\d{4}[-_]\d{2}[-_]\d{2}', name_lower)),
-                "has_version": bool(re.search(r'v\d+\.\d+|\d+\.\d+\.\d+', name_lower)),
-                "is_draft": any(word in name_lower for word in ['draft', 'temp', 'tmp', 'wip']),
-                "is_final": any(word in name_lower for word in ['final', 'release', 'prod']),
-                "has_number": bool(re.search(r'\d+', name_lower))
-            }
-            
-            return {
-                "path": filepath,
-                "name": filepath.name,
-                "stem": filepath.stem,
-                "ext": filepath.suffix.lower(),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "ctime": stat.st_ctime,
-                "mime_type": mime_type or "unknown",
-                "content_hints": content_hints,
-                "relative_path": None  # Set later
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-
-class FileCategorizationEngine:
-    """Intelligent file categorization with learning."""
-    
-    CATEGORY_RULES = {
-        "documents": {
-            "extensions": [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".odt", ".ods"],
-            "keywords": ["report", "document", "presentation", "sheet", "slide"],
-            "priority": 10
-        },
-        "images": {
-            "extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".tiff"],
-            "keywords": ["photo", "image", "pic", "screenshot"],
-            "priority": 8
-        },
-        "code": {
-            "extensions": [".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".go", ".rs", ".rb"],
-            "keywords": ["script", "source", "code", "program"],
-            "priority": 7
-        },
-        "data": {
-            "extensions": [".json", ".csv", ".xml", ".yaml", ".yml", ".sql", ".db"],
-            "keywords": ["data", "database", "config", "settings"],
-            "priority": 6
-        },
-        "archives": {
-            "extensions": [".zip", ".tar", ".gz", ".rar", ".7z", ".bz2"],
-            "keywords": ["archive", "backup", "package"],
-            "priority": 5
-        },
-        "media": {
-            "extensions": [".mp4", ".avi", ".mov", ".mp3", ".wav", ".flac"],
-            "keywords": ["video", "audio", "music", "sound"],
-            "priority": 4
-        },
-        "text": {
-            "extensions": [".txt", ".md", ".rst", ".log"],
-            "keywords": ["note", "readme", "log", "text"],
-            "priority": 3
-        }
-    }
+class NumberTheoryEngine:
+    """Explores prime numbers, sequences, and mathematical patterns"""
     
     def __init__(self):
-        self.category_stats = defaultdict(lambda: {"count": 0, "total_size": 0})
-        self.pattern_frequency = Counter()
+        self.primes_cache = []
+        self.sequence_cache = {}
+        
+    def sieve_of_eratosthenes(self, limit: int) -> List[int]:
+        """Generate all primes up to limit using sieve algorithm"""
+        if limit < 2:
+            return []
+        
+        sieve = [True] * (limit + 1)
+        sieve[0] = sieve[1] = False
+        
+        for i in range(2, int(math.sqrt(limit)) + 1):
+            if sieve[i]:
+                for j in range(i*i, limit + 1, i):
+                    sieve[j] = False
+        
+        return [i for i in range(limit + 1) if sieve[i]]
     
-    def categorize(self, file_meta: dict) -> str:
-        """Categorize file based on rules and learned patterns."""
-        ext = file_meta.get("ext", "")
-        name_lower = file_meta.get("stem", "").lower()
+    def goldbach_conjecture(self, n: int) -> List[Tuple[int, int]]:
+        """Find all ways to express even n as sum of two primes"""
+        if n < 4 or n % 2 != 0:
+            return []
         
-        # Rule-based categorization
-        for category, rules in self.CATEGORY_RULES.items():
-            if ext in rules["extensions"]:
-                self._update_stats(category, file_meta)
-                return category
-            
-            if any(keyword in name_lower for keyword in rules["keywords"]):
-                self._update_stats(category, file_meta)
-                return category
+        if not self.primes_cache or self.primes_cache[-1] < n:
+            self.primes_cache = self.sieve_of_eratosthenes(n)
         
-        self._update_stats("other", file_meta)
-        return "other"
-    
-    def _update_stats(self, category: str, file_meta: dict):
-        """Update category statistics."""
-        self.category_stats[category]["count"] += 1
-        self.category_stats[category]["total_size"] += file_meta.get("size", 0)
-    
-    def get_priority_score(self, category: str, file_meta: dict) -> float:
-        """Calculate delivery priority score (0-100)."""
-        score = self.CATEGORY_RULES.get(category, {}).get("priority", 1) * 10
+        prime_set = set(self.primes_cache)
+        pairs = []
         
-        # Boost recent files
-        age_hours = (time.time() - file_meta.get("mtime", 0)) / 3600
-        if age_hours < 24:
-            score += 20
-        elif age_hours < 168:  # 1 week
-            score += 10
-        
-        # Boost final/release versions
-        hints = file_meta.get("content_hints", {})
-        if hints.get("is_final"):
-            score += 15
-        if hints.get("has_version"):
-            score += 5
-        
-        # Penalize drafts
-        if hints.get("is_draft"):
-            score -= 10
-        
-        # Size factor (prefer medium-sized files)
-        size = file_meta.get("size", 0)
-        if 1024 < size < 10 * 1024 * 1024:  # 1KB - 10MB
-            score += 10
-        elif size > 50 * 1024 * 1024:  # > 50MB
-            score -= 20
-        
-        return max(0, min(100, score))
-
-
-class BatchOptimizer:
-    """Optimize file batching for efficient delivery."""
-    
-    def __init__(self, max_batch_size: int = 10, max_total_mb: float = 50.0):
-        self.max_batch_size = max_batch_size
-        self.max_total_bytes = int(max_total_mb * 1024 * 1024)
-        self.delivery_history = []
-    
-    def optimize_batch(self, files: list, category_engine: FileCategorizationEngine) -> list:
-        """Create optimized batch using greedy knapsack approach."""
-        # Score all files
-        scored_files = []
-        for f in files:
-            category = category_engine.categorize(f)
-            priority = category_engine.get_priority_score(category, f)
-            scored_files.append({
-                **f,
-                "category": category,
-                "priority": priority
-            })
-        
-        # Sort by priority (descending)
-        scored_files.sort(key=lambda x: x["priority"], reverse=True)
-        
-        # Greedy selection
-        batch = []
-        total_size = 0
-        
-        for f in scored_files:
-            if len(batch) >= self.max_batch_size:
+        for p in self.primes_cache:
+            if p > n // 2:
                 break
-            
-            if total_size + f["size"] > self.max_total_bytes:
-                continue
-            
-            batch.append(f)
-            total_size += f["size"]
+            complement = n - p
+            if complement in prime_set:
+                pairs.append((p, complement))
         
-        return batch
+        return pairs
     
-    def analyze_batch_composition(self, batch: list) -> dict:
-        """Analyze batch composition and diversity."""
-        categories = Counter(f["category"] for f in batch)
-        extensions = Counter(f["ext"] for f in batch)
+    def collatz_sequence(self, n: int, max_steps: int = 1000) -> List[int]:
+        """Generate Collatz sequence starting from n"""
+        sequence = [n]
+        current = n
+        steps = 0
         
-        total_size = sum(f["size"] for f in batch)
-        avg_priority = sum(f["priority"] for f in batch) / len(batch) if batch else 0
+        while current != 1 and steps < max_steps:
+            if current % 2 == 0:
+                current = current // 2
+            else:
+                current = 3 * current + 1
+            sequence.append(current)
+            steps += 1
         
-        return {
-            "file_count": len(batch),
-            "total_size": total_size,
-            "avg_priority": avg_priority,
-            "category_distribution": dict(categories),
-            "extension_distribution": dict(extensions),
-            "diversity_score": len(categories) / len(batch) if batch else 0
-        }
-
-
-class FileMonitor:
-    """Monitor and track filesystem changes."""
+        return sequence
     
-    def __init__(self, workspace: pathlib.Path):
-        self.workspace = workspace
-        self.known_files = {}
-        self.change_log = []
+    def fibonacci_modular(self, n: int, mod: int) -> List[int]:
+        """Generate Fibonacci sequence modulo mod"""
+        if n <= 0:
+            return []
+        
+        fib = [0, 1]
+        for i in range(2, n):
+            fib.append((fib[i-1] + fib[i-2]) % mod)
+        
+        return fib[:n]
     
-    def scan(self, max_depth: int = 3) -> dict:
-        """Scan workspace and detect changes."""
-        current_files = {}
-        new_files = []
-        modified_files = []
+    def prime_gaps(self, limit: int) -> Dict[int, int]:
+        """Analyze gaps between consecutive primes"""
+        if not self.primes_cache or self.primes_cache[-1] < limit:
+            self.primes_cache = self.sieve_of_eratosthenes(limit)
         
-        def scan_recursive(path: pathlib.Path, depth: int = 0):
-            if depth > max_depth:
-                return
+        gaps = defaultdict(int)
+        for i in range(1, len(self.primes_cache)):
+            gap = self.primes_cache[i] - self.primes_cache[i-1]
+            gaps[gap] += 1
+        
+        return dict(gaps)
+    
+    def perfect_numbers(self, limit: int) -> List[int]:
+        """Find perfect numbers (sum of divisors equals the number)"""
+        perfect = []
+        
+        for n in range(2, limit):
+            divisors_sum = sum(i for i in range(1, n) if n % i == 0)
+            if divisors_sum == n:
+                perfect.append(n)
+        
+        return perfect
+    
+    def twin_primes(self, limit: int) -> List[Tuple[int, int]]:
+        """Find twin prime pairs (primes that differ by 2)"""
+        if not self.primes_cache or self.primes_cache[-1] < limit:
+            self.primes_cache = self.sieve_of_eratosthenes(limit)
+        
+        twins = []
+        for i in range(len(self.primes_cache) - 1):
+            if self.primes_cache[i+1] - self.primes_cache[i] == 2:
+                twins.append((self.primes_cache[i], self.primes_cache[i+1]))
+        
+        return twins
+
+class FractalGenerator:
+    """Generate ASCII fractals and mathematical patterns"""
+    
+    def mandelbrot_set(self, width: int, height: int, max_iter: int = 50) -> List[str]:
+        """Generate ASCII Mandelbrot set"""
+        chars = " .:-=+*#%@"
+        result = []
+        
+        for y in range(height):
+            line = ""
+            for x in range(width):
+                # Map pixel to complex plane
+                c = complex(
+                    (x - width * 0.7) / (width * 0.3),
+                    (y - height * 0.5) / (height * 0.4)
+                )
+                
+                z = 0
+                iteration = 0
+                
+                while abs(z) <= 2 and iteration < max_iter:
+                    z = z * z + c
+                    iteration += 1
+                
+                char_idx = min(iteration * len(chars) // max_iter, len(chars) - 1)
+                line += chars[char_idx]
             
-            try:
-                for item in path.iterdir():
-                    if item.is_file():
-                        # Skip system/hidden files
-                        if item.name.startswith('.') or item.name.endswith('.pyc'):
-                            continue
-                        
-                        try:
-                            stat = item.stat()
-                            file_id = str(item.relative_to(self.workspace))
-                            
-                            current_files[file_id] = {
-                                "path": item,
-                                "mtime": stat.st_mtime,
-                                "size": stat.st_size
-                            }
-                            
-                            # Detect changes
-                            if file_id not in self.known_files:
-                                new_files.append(file_id)
-                            elif self.known_files[file_id]["mtime"] < stat.st_mtime:
-                                modified_files.append(file_id)
-                        
-                        except Exception:
-                            continue
-                    
-                    elif item.is_dir() and not item.name.startswith('.'):
-                        scan_recursive(item, depth + 1)
+            result.append(line)
+        
+        return result
+    
+    def sierpinski_triangle(self, size: int) -> List[str]:
+        """Generate Sierpinski triangle using chaos game"""
+        grid = [[' ' for _ in range(size * 2)] for _ in range(size)]
+        
+        # Vertices of the triangle
+        vertices = [
+            (size, 0),           # Top
+            (0, size - 1),       # Bottom left
+            (size * 2 - 1, size - 1)  # Bottom right
+        ]
+        
+        # Start at random point
+        x, y = size, size // 2
+        
+        for _ in range(size * size * 2):
+            # Pick random vertex
+            vx, vy = random.choice(vertices)
             
-            except Exception:
-                pass
+            # Move halfway to vertex
+            x = (x + vx) // 2
+            y = (y + vy) // 2
+            
+            if 0 <= y < size and 0 <= x < len(grid[0]):
+                grid[y][x] = '█'
         
-        scan_recursive(self.workspace)
+        return [''.join(row) for row in grid]
+    
+    def pascal_triangle(self, rows: int) -> List[str]:
+        """Generate Pascal's triangle"""
+        triangle = []
         
-        # Update known files
-        self.known_files = current_files
+        for i in range(rows):
+            row = [1]
+            if triangle:
+                last_row = [int(x) for line in triangle[-1].split() for x in [line]]
+                for j in range(len(last_row) - 1):
+                    row.append(last_row[j] + last_row[j + 1])
+                row.append(1)
+            
+            # Format with spacing
+            spaces = ' ' * (rows - i)
+            nums = ' '.join(str(n).rjust(4) for n in row)
+            triangle.append(spaces + nums)
         
-        return {
-            "total_files": len(current_files),
-            "new_files": new_files,
-            "modified_files": modified_files,
-            "scan_time": datetime.now().isoformat()
-        }
+        return triangle
 
-
-def format_size(size: int) -> str:
-    """Format bytes to human readable."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TB"
-
+class SequenceAnalyzer:
+    """Analyze and generate integer sequences"""
+    
+    def look_and_say(self, start: str, iterations: int) -> List[str]:
+        """Generate look-and-say sequence (Conway sequence)"""
+        sequence = [start]
+        current = start
+        
+        for _ in range(iterations):
+            next_term = ""
+            i = 0
+            
+            while i < len(current):
+                digit = current[i]
+                count = 1
+                
+                while i + count < len(current) and current[i + count] == digit:
+                    count += 1
+                
+                next_term += str(count) + digit
+                i += count
+            
+            sequence.append(next_term)
+            current = next_term
+        
+        return sequence
+    
+    def recaman_sequence(self, n: int) -> List[int]:
+        """Generate Recamán's sequence"""
+        sequence = [0]
+        seen = {0}
+        
+        for i in range(1, n):
+            candidate = sequence[i-1] - i
+            
+            if candidate > 0 and candidate not in seen:
+                sequence.append(candidate)
+                seen.add(candidate)
+            else:
+                candidate = sequence[i-1] + i
+                sequence.append(candidate)
+                seen.add(candidate)
+        
+        return sequence
+    
+    def catalan_numbers(self, n: int) -> List[int]:
+        """Generate Catalan numbers"""
+        if n <= 0:
+            return []
+        
+        catalan = [1]
+        
+        for i in range(1, n):
+            catalan.append(
+                catalan[i-1] * 2 * (2 * i - 1) // (i + 1)
+            )
+        
+        return catalan
 
 def main() -> None:
-    """Main loop - Intelligent file curation and batch optimization."""
     heartbeat_path_str = os.environ.get("PROTEA_HEARTBEAT")
     if not heartbeat_path_str:
         print("ERROR: PROTEA_HEARTBEAT not set", flush=True)
         return
-    
+
     heartbeat_path = pathlib.Path(heartbeat_path_str)
     pid = os.getpid()
-    
+
     try:
         heartbeat_path.write_text(f"{pid}\n{time.time()}\n")
     except Exception as e:
-        print(f"ERROR: Cannot write heartbeat: {e}", flush=True)
+        print(f"ERROR: Heartbeat failed: {e}", flush=True)
         return
-    
+
     stop_event = Event()
+
+    def signal_handler(signum, frame):
+        print(f"\n⚠️  Signal {signum} received, shutting down", flush=True)
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     heartbeat_thread = Thread(
         target=heartbeat_loop,
         args=(heartbeat_path, pid, stop_event),
         daemon=True
     )
     heartbeat_thread.start()
-    
-    # Setup
+
     workspace = pathlib.Path(__file__).parent
-    
-    print(f"╔{'═' * 78}╗", flush=True)
-    print(f"║{'🎯 Ring 2 Generation 407: Intelligent File Curator'.center(78)}║", flush=True)
-    print(f"╚{'═' * 78}╝", flush=True)
-    print(f"📍 PID: {pid}", flush=True)
-    print(f"⏰ Started: {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-    print(f"🎯 Mission: Smart file discovery, categorization & batch optimization", flush=True)
-    print(f"📂 Workspace: {workspace}", flush=True)
-    
-    # Initialize engines
-    monitor = FileMonitor(workspace)
-    category_engine = FileCategorizationEngine()
-    batch_optimizer = BatchOptimizer(max_batch_size=10, max_total_mb=45.0)
-    
-    cycle_count = 0
-    total_files_analyzed = 0
-    total_batches_created = 0
-    
+
+    print("╔" + "═" * 78 + "╗", flush=True)
+    print("║" + "COMPUTATIONAL MATHEMATICS ENGINE".center(78) + "║", flush=True)
+    print("║" + "Number Theory · Fractals · Sequences".center(78) + "║", flush=True)
+    print("╚" + "═" * 78 + "╝", flush=True)
+    print(f"🔢 PID: {pid} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print("", flush=True)
+
+    nt = NumberTheoryEngine()
+    fg = FractalGenerator()
+    sa = SequenceAnalyzer()
+
     try:
-        while True:
-            print(f"\n{'━' * 80}", flush=True)
-            print(f"🔄 CURATION CYCLE {cycle_count + 1}", flush=True)
-            print(f"🕐 {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-            print(f"{'━' * 80}\n", flush=True)
+        # Prime number analysis
+        print("═" * 80, flush=True)
+        print("PRIME NUMBER ANALYSIS", flush=True)
+        print("═" * 80, flush=True)
+        
+        primes = nt.sieve_of_eratosthenes(1000)
+        print(f"✓ Found {len(primes)} primes up to 1000", flush=True)
+        print(f"  First 20: {primes[:20]}", flush=True)
+        print(f"  Last 10:  {primes[-10:]}", flush=True)
+        print("", flush=True)
+        
+        # Twin primes
+        twins = nt.twin_primes(500)
+        print(f"🔗 Twin primes up to 500: {len(twins)} pairs", flush=True)
+        for i, (p1, p2) in enumerate(twins[:8]):
+            print(f"  {i+1}. ({p1}, {p2})", flush=True)
+        print("", flush=True)
+        
+        # Prime gaps
+        gaps = nt.prime_gaps(1000)
+        print("📊 Prime gap distribution:", flush=True)
+        for gap in sorted(gaps.keys())[:10]:
+            bar = "█" * (gaps[gap] // 2)
+            print(f"  Gap {gap:3d}: {bar} ({gaps[gap]} occurrences)", flush=True)
+        print("", flush=True)
+        
+        # Goldbach conjecture
+        print("═" * 80, flush=True)
+        print("GOLDBACH CONJECTURE VERIFICATION", flush=True)
+        print("═" * 80, flush=True)
+        
+        test_numbers = [100, 200, 500, 1000]
+        for n in test_numbers:
+            pairs = nt.goldbach_conjecture(n)
+            print(f"✓ {n} = sum of two primes: {len(pairs)} representations", flush=True)
+            print(f"  Examples: {pairs[:3]}", flush=True)
+        print("", flush=True)
+        
+        # Collatz sequences
+        print("═" * 80, flush=True)
+        print("COLLATZ CONJECTURE EXPLORATION", flush=True)
+        print("═" * 80, flush=True)
+        
+        collatz_starts = [27, 127, 255, 999]
+        for start in collatz_starts:
+            seq = nt.collatz_sequence(start, max_steps=200)
+            max_val = max(seq)
+            print(f"🔄 Starting from {start}:", flush=True)
+            print(f"   Steps to 1: {len(seq)-1} | Max value: {max_val}", flush=True)
+            print(f"   First 10: {seq[:10]}", flush=True)
+        print("", flush=True)
+        
+        # Fibonacci modular arithmetic
+        print("═" * 80, flush=True)
+        print("FIBONACCI SEQUENCES (MODULAR ARITHMETIC)", flush=True)
+        print("═" * 80, flush=True)
+        
+        for mod in [7, 13, 17]:
+            fib_mod = nt.fibonacci_modular(30, mod)
+            print(f"📐 Fibonacci mod {mod}:", flush=True)
+            print(f"   {fib_mod}", flush=True)
             
-            # Scan for changes
-            print("🔍 Scanning workspace for files...", flush=True)
-            scan_result = monitor.scan(max_depth=3)
+            # Find period
+            period_len = 0
+            for i in range(2, len(fib_mod) - 1):
+                if fib_mod[i] == 0 and fib_mod[i+1] == 1:
+                    period_len = i
+                    break
             
-            print(f"✅ Scan complete:", flush=True)
-            print(f"   📊 Total files: {scan_result['total_files']}", flush=True)
-            print(f"   🆕 New: {len(scan_result['new_files'])}", flush=True)
-            print(f"   📝 Modified: {len(scan_result['modified_files'])}", flush=True)
+            if period_len > 0:
+                print(f"   Pisano period: {period_len}", flush=True)
+            print("", flush=True)
+        
+        # Perfect numbers
+        print("═" * 80, flush=True)
+        print("PERFECT NUMBERS", flush=True)
+        print("═" * 80, flush=True)
+        
+        perfect = nt.perfect_numbers(10000)
+        print(f"✨ Perfect numbers up to 10000: {perfect}", flush=True)
+        for p in perfect:
+            divisors = [i for i in range(1, p) if p % i == 0]
+            print(f"   {p} = {' + '.join(map(str, divisors))}", flush=True)
+        print("", flush=True)
+        
+        # Fractals
+        print("═" * 80, flush=True)
+        print("MANDELBROT SET (ASCII)", flush=True)
+        print("═" * 80, flush=True)
+        
+        mandelbrot = fg.mandelbrot_set(60, 20, max_iter=30)
+        for line in mandelbrot:
+            print(line, flush=True)
+        print("", flush=True)
+        
+        # Sierpinski triangle
+        print("═" * 80, flush=True)
+        print("SIERPINSKI TRIANGLE", flush=True)
+        print("═" * 80, flush=True)
+        
+        sierpinski = fg.sierpinski_triangle(15)
+        for line in sierpinski:
+            print(line, flush=True)
+        print("", flush=True)
+        
+        # Pascal's triangle
+        print("═" * 80, flush=True)
+        print("PASCAL'S TRIANGLE", flush=True)
+        print("═" * 80, flush=True)
+        
+        pascal = fg.pascal_triangle(10)
+        for line in pascal:
+            print(line, flush=True)
+        print("", flush=True)
+        
+        # Sequences
+        print("═" * 80, flush=True)
+        print("INTEGER SEQUENCES", flush=True)
+        print("═" * 80, flush=True)
+        
+        # Look-and-say
+        look_say = sa.look_and_say("1", 8)
+        print("🔢 Look-and-Say sequence:", flush=True)
+        for i, term in enumerate(look_say):
+            print(f"  {i}: {term[:50]}{'...' if len(term) > 50 else ''}", flush=True)
+        print("", flush=True)
+        
+        # Recamán
+        recaman = sa.recaman_sequence(30)
+        print(f"🔄 Recamán sequence (30 terms):", flush=True)
+        print(f"  {recaman}", flush=True)
+        print("", flush=True)
+        
+        # Catalan
+        catalan = sa.catalan_numbers(15)
+        print("🔺 Catalan numbers:", flush=True)
+        for i, c in enumerate(catalan):
+            print(f"  C({i}) = {c:,}", flush=True)
+        print("", flush=True)
+        
+        # Export results
+        results = {
+            "timestamp": time.time(),
+            "primes_count": len(primes),
+            "twin_primes": len(twins),
+            "perfect_numbers": perfect,
+            "collatz_analysis": {
+                str(start): len(nt.collatz_sequence(start, 200))-1
+                for start in collatz_starts
+            },
+            "catalan_numbers": catalan,
+            "recaman_30": recaman
+        }
+        
+        output_file = workspace / f"math_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_file.write_text(json.dumps(results, indent=2), encoding='utf-8')
+        
+        print("═" * 80, flush=True)
+        print(f"✅ Analysis exported to: {output_file.name}", flush=True)
+        print("═" * 80, flush=True)
+        print("", flush=True)
+        
+        # Keep alive
+        start_time = time.time()
+        iteration = 0
+        
+        while not stop_event.is_set():
+            iteration += 1
+            elapsed = time.time() - start_time
             
-            if scan_result['total_files'] == 0:
-                print("📭 No files found", flush=True)
-                time.sleep(60)
-                continue
+            if iteration % 60 == 0:
+                print(f"⏱️  Runtime: {elapsed/60:.1f}m | Computation engine active", flush=True)
             
-            # Extract metadata for all files
-            print(f"\n📋 Extracting file metadata...", flush=True)
-            all_files = []
-            for file_id, file_info in monitor.known_files.items():
-                meta = FileSignature.extract_metadata(file_info["path"])
-                if "error" not in meta:
-                    meta["relative_path"] = file_id
-                    meta["file_hash"] = FileSignature.compute_hash(file_info["path"])
-                    all_files.append(meta)
-            
-            total_files_analyzed += len(all_files)
-            print(f"✅ Metadata extracted for {len(all_files)} files", flush=True)
-            
-            # Categorize files
-            print(f"\n🏷️  Categorizing files...", flush=True)
-            categorized = defaultdict(list)
-            for f in all_files:
-                category = category_engine.categorize(f)
-                f["category"] = category
-                categorized[category].append(f)
-            
-            print(f"\n{'─' * 80}", flush=True)
-            print(f"{'CATEGORY':<15} {'COUNT':>8} {'TOTAL SIZE':>15} {'AVG SIZE':>15}", flush=True)
-            print(f"{'─' * 80}", flush=True)
-            
-            for category in sorted(categorized.keys(), key=lambda c: len(categorized[c]), reverse=True):
-                files = categorized[category]
-                total_size = sum(f["size"] for f in files)
-                avg_size = total_size / len(files) if files else 0
-                
-                print(f"{category:<15} {len(files):>8} {format_size(total_size):>15} {format_size(avg_size):>15}", flush=True)
-            
-            print(f"{'─' * 80}", flush=True)
-            
-            # Create optimized batch
-            print(f"\n🎯 Creating optimized delivery batch...", flush=True)
-            batch = batch_optimizer.optimize_batch(all_files, category_engine)
-            
-            if not batch:
-                print("⚠️  No suitable files for batching", flush=True)
-            else:
-                total_batches_created += 1
-                analysis = batch_optimizer.analyze_batch_composition(batch)
-                
-                print(f"\n{'═' * 80}", flush=True)
-                print(f"📦 OPTIMIZED BATCH #{total_batches_created}", flush=True)
-                print(f"{'═' * 80}", flush=True)
-                print(f"📊 Files: {analysis['file_count']}", flush=True)
-                print(f"💾 Total size: {format_size(analysis['total_size'])}", flush=True)
-                print(f"⭐ Avg priority: {analysis['avg_priority']:.1f}/100", flush=True)
-                print(f"🎨 Diversity: {analysis['diversity_score']:.2f}", flush=True)
-                print(f"", flush=True)
-                
-                print(f"📋 Category distribution:", flush=True)
-                for cat, count in sorted(analysis['category_distribution'].items(), key=lambda x: x[1], reverse=True):
-                    print(f"   {cat:<15} {count:>3} files", flush=True)
-                
-                print(f"\n📄 Batch contents (sorted by priority):", flush=True)
-                print(f"{'─' * 80}", flush=True)
-                print(f"{'#':<3} {'PRIORITY':>8} {'CATEGORY':<12} {'SIZE':>10} {'FILE':<40}", flush=True)
-                print(f"{'─' * 80}", flush=True)
-                
-                for idx, f in enumerate(batch[:15], 1):
-                    name = f["name"][:38] + "..." if len(f["name"]) > 40 else f["name"]
-                    print(f"{idx:<3} {f['priority']:>8.1f} {f['category']:<12} {format_size(f['size']):>10} {name:<40}", flush=True)
-                
-                if len(batch) > 15:
-                    print(f"... and {len(batch) - 15} more files", flush=True)
-                
-                print(f"{'─' * 80}", flush=True)
-                
-                # Pattern analysis
-                print(f"\n🔍 Pattern analysis:", flush=True)
-                date_files = sum(1 for f in batch if f.get("content_hints", {}).get("has_date"))
-                version_files = sum(1 for f in batch if f.get("content_hints", {}).get("has_version"))
-                final_files = sum(1 for f in batch if f.get("content_hints", {}).get("is_final"))
-                draft_files = sum(1 for f in batch if f.get("content_hints", {}).get("is_draft"))
-                
-                print(f"   📅 Files with dates: {date_files}", flush=True)
-                print(f"   🔢 Versioned files: {version_files}", flush=True)
-                print(f"   ✅ Final versions: {final_files}", flush=True)
-                print(f"   📝 Drafts: {draft_files}", flush=True)
-                
-                # Save batch manifest
-                manifest_path = workspace / f"batch_manifest_{cycle_count + 1}.json"
-                manifest = {
-                    "cycle": cycle_count + 1,
-                    "timestamp": datetime.now().isoformat(),
-                    "analysis": analysis,
-                    "files": [
-                        {
-                            "name": f["name"],
-                            "category": f["category"],
-                            "priority": f["priority"],
-                            "size": f["size"],
-                            "path": str(f["relative_path"])
-                        }
-                        for f in batch
-                    ]
-                }
-                
-                try:
-                    with open(manifest_path, 'w', encoding='utf-8') as mf:
-                        json.dump(manifest, mf, indent=2, ensure_ascii=False)
-                    print(f"\n💾 Manifest saved: {manifest_path.name}", flush=True)
-                except Exception as e:
-                    print(f"⚠️  Could not save manifest: {e}", flush=True)
-            
-            # Summary
-            print(f"\n{'═' * 80}", flush=True)
-            print(f"📊 SESSION SUMMARY", flush=True)
-            print(f"{'═' * 80}", flush=True)
-            print(f"🔄 Cycles completed: {cycle_count + 1}", flush=True)
-            print(f"📁 Total files analyzed: {total_files_analyzed}", flush=True)
-            print(f"📦 Batches created: {total_batches_created}", flush=True)
-            print(f"{'═' * 80}", flush=True)
-            
-            cycle_count += 1
-            
-            print(f"\n⏳ Next scan in 90 seconds...\n", flush=True)
-            time.sleep(90)
-    
+            time.sleep(5)
+
     except KeyboardInterrupt:
-        print(f"\n⚠️  Interrupted - shutting down...", flush=True)
+        print("\n⚠️  Interrupted", flush=True)
+        stop_event.set()
     except Exception as e:
-        print(f"\n❌ ERROR: {e}", flush=True)
+        print(f"\n❌ Error: {type(e).__name__}: {str(e)}", flush=True)
         import traceback
         traceback.print_exc()
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
+
         try:
             heartbeat_path.unlink(missing_ok=True)
         except Exception:
             pass
-        
-        print(f"\n{'═' * 80}", flush=True)
-        print(f"🏁 File Curator Shutdown", flush=True)
-        print(f"📊 Cycles: {cycle_count}", flush=True)
-        print(f"📁 Files analyzed: {total_files_analyzed}", flush=True)
-        print(f"📦 Batches created: {total_batches_created}", flush=True)
-        print(f"{'═' * 80}", flush=True)
 
+        print(f"\n🏁 Mathematical computation session ended", flush=True)
 
 if __name__ == "__main__":
     main()
