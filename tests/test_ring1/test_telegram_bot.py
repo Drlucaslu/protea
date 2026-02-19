@@ -23,30 +23,42 @@ from ring1.telegram_bot import (
 # ---------------------------------------------------------------------------
 
 class _BotHandler(http.server.BaseHTTPRequestHandler):
-    """Mock Telegram Bot API that handles getUpdates + sendMessage + answerCallbackQuery."""
+    """Mock Telegram Bot API that handles getUpdates + sendMessage + answerCallbackQuery + sendDocument."""
 
     updates_queue: list[dict] = []
     sent_messages: list[dict] = []
     callback_answers: list[dict] = []
+    sent_documents: list[dict] = []
     status_code: int = 200
+    send_document_ok: bool = True
 
     def do_POST(self):
         content_len = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_len)) if content_len else {}
+        raw_body = self.rfile.read(content_len) if content_len else b""
 
         # Route by path
         path = self.path
-        if path.endswith("/getUpdates"):
-            resp_body = {"ok": True, "result": list(_BotHandler.updates_queue)}
-            _BotHandler.updates_queue.clear()
-        elif path.endswith("/sendMessage"):
-            _BotHandler.sent_messages.append(body)
-            resp_body = {"ok": True, "result": {"message_id": 1}}
-        elif path.endswith("/answerCallbackQuery"):
-            _BotHandler.callback_answers.append(body)
-            resp_body = {"ok": True, "result": True}
+        if path.endswith("/sendDocument"):
+            # Multipart — just record that it was called
+            _BotHandler.sent_documents.append({
+                "content_type": self.headers.get("Content-Type", ""),
+                "body_len": len(raw_body),
+            })
+            ok = _BotHandler.send_document_ok
+            resp_body = {"ok": ok, "result": {"message_id": 2} if ok else {}}
         else:
-            resp_body = {"ok": False}
+            body = json.loads(raw_body) if raw_body else {}
+            if path.endswith("/getUpdates"):
+                resp_body = {"ok": True, "result": list(_BotHandler.updates_queue)}
+                _BotHandler.updates_queue.clear()
+            elif path.endswith("/sendMessage"):
+                _BotHandler.sent_messages.append(body)
+                resp_body = {"ok": True, "result": {"message_id": 1}}
+            elif path.endswith("/answerCallbackQuery"):
+                _BotHandler.callback_answers.append(body)
+                resp_body = {"ok": True, "result": True}
+            else:
+                resp_body = {"ok": False}
 
         self.send_response(_BotHandler.status_code)
         self.send_header("Content-Type", "application/json")
@@ -65,7 +77,9 @@ def _make_server():
     _BotHandler.updates_queue = []
     _BotHandler.sent_messages = []
     _BotHandler.callback_answers = []
+    _BotHandler.sent_documents = []
     _BotHandler.status_code = 200
+    _BotHandler.send_document_ok = True
     return server, port
 
 
@@ -1412,6 +1426,214 @@ class TestAutoDetectChatId:
             assert bot.chat_id == "88888"
             assert len(_BotHandler.sent_messages) >= 1
             assert _BotHandler.sent_messages[0]["chat_id"] == "88888"
+
+            bot.stop()
+            thread.join(timeout=5)
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestSendDocument
+# ---------------------------------------------------------------------------
+
+class TestSendDocument:
+    """Test _send_document method."""
+
+    def test_send_document_success(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            f = tmp_path / "test.pdf"
+            f.write_bytes(b"%PDF-1.4 content here")
+            result = bot._send_document(str(f))
+            assert result is True
+            assert len(_BotHandler.sent_documents) == 1
+            assert "multipart/form-data" in _BotHandler.sent_documents[0]["content_type"]
+        finally:
+            server.shutdown()
+
+    def test_send_document_with_caption(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            f = tmp_path / "data.csv"
+            f.write_text("a,b\n1,2\n")
+            result = bot._send_document(str(f), caption="Here is your data")
+            assert result is True
+            assert len(_BotHandler.sent_documents) == 1
+        finally:
+            server.shutdown()
+
+    def test_send_document_file_not_found(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            result = bot._send_document("/nonexistent/file.txt")
+            assert result is False
+            assert len(_BotHandler.sent_documents) == 0
+        finally:
+            server.shutdown()
+
+    def test_send_document_api_failure(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            _BotHandler.send_document_ok = False
+            f = tmp_path / "test.txt"
+            f.write_text("hello")
+            result = bot._send_document(str(f))
+            assert result is False
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestHandleFileTupleReturn
+# ---------------------------------------------------------------------------
+
+class TestHandleFileTupleReturn:
+    """Test that _handle_file returns (str, Path | None) tuples."""
+
+    def test_success_returns_tuple_with_path(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            monkeypatch.setattr(bot, "_download_file", lambda fid: b"file content")
+            monkeypatch.chdir(tmp_path)
+
+            file_info = {"file_id": "abc123", "file_name": "test.txt", "file_size": 12}
+            reply, saved_path = bot._handle_file(file_info, "document", "12345")
+            assert "已接收并保存" in reply
+            assert saved_path is not None
+            assert saved_path.exists()
+            assert saved_path.read_bytes() == b"file content"
+        finally:
+            server.shutdown()
+
+    def test_missing_file_id_returns_none_path(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            file_info = {"file_name": "test.txt", "file_size": 0}
+            reply, saved_path = bot._handle_file(file_info, "document", "12345")
+            assert "文件 ID 缺失" in reply
+            assert saved_path is None
+        finally:
+            server.shutdown()
+
+    def test_download_failure_returns_none_path(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            monkeypatch.setattr(bot, "_download_file", lambda fid: None)
+            file_info = {"file_id": "abc123", "file_name": "test.txt"}
+            reply, saved_path = bot._handle_file(file_info, "document", "12345")
+            assert "文件下载失败" in reply
+            assert saved_path is None
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestCaptionAutoEnqueue
+# ---------------------------------------------------------------------------
+
+class TestCaptionAutoEnqueue:
+    """Test that file uploads with captions auto-enqueue a task."""
+
+    def _make_document_update(
+        self, caption: str = "", chat_id: str = "12345", update_id: int = 1
+    ) -> dict:
+        update = {
+            "update_id": update_id,
+            "message": {
+                "chat": {"id": int(chat_id)},
+                "document": {
+                    "file_id": "doc-abc",
+                    "file_name": "report.pdf",
+                    "file_size": 1024,
+                },
+            },
+        }
+        if caption:
+            update["message"]["caption"] = caption
+        return update
+
+    def test_file_with_caption_enqueues_task(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            monkeypatch.setattr(bot, "_download_file", lambda fid: b"pdf content")
+            monkeypatch.chdir(tmp_path)
+
+            _BotHandler.updates_queue = [
+                self._make_document_update(caption="Analyze this PDF"),
+            ]
+            thread = start_bot_thread(bot)
+            deadline = time.time() + 5
+            while time.time() < deadline and len(_BotHandler.sent_messages) < 2:
+                time.sleep(0.1)
+
+            # Should have: 1) file confirmation, 2) task ack
+            assert len(_BotHandler.sent_messages) >= 2
+            ack_msg = _BotHandler.sent_messages[-1]["text"]
+            assert "收到 — 正在处理你的请求" in ack_msg
+
+            # Task should be in queue
+            assert not bot.state.task_queue.empty()
+            task = bot.state.task_queue.get_nowait()
+            assert "文件已上传" in task.text
+            assert "Analyze this PDF" in task.text
+
+            bot.stop()
+            thread.join(timeout=5)
+        finally:
+            server.shutdown()
+
+    def test_file_without_caption_no_task(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            monkeypatch.setattr(bot, "_download_file", lambda fid: b"pdf content")
+            monkeypatch.chdir(tmp_path)
+
+            _BotHandler.updates_queue = [
+                self._make_document_update(caption=""),
+            ]
+            thread = start_bot_thread(bot)
+            deadline = time.time() + 5
+            while time.time() < deadline and not _BotHandler.sent_messages:
+                time.sleep(0.1)
+
+            # Should have only file confirmation, no task ack
+            assert len(_BotHandler.sent_messages) == 1
+            assert bot.state.task_queue.empty()
+
+            bot.stop()
+            thread.join(timeout=5)
+        finally:
+            server.shutdown()
+
+    def test_file_with_slash_caption_no_task(self, tmp_path, monkeypatch):
+        """Captions starting with / should not auto-enqueue."""
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            monkeypatch.setattr(bot, "_download_file", lambda fid: b"content")
+            monkeypatch.chdir(tmp_path)
+
+            _BotHandler.updates_queue = [
+                self._make_document_update(caption="/status"),
+            ]
+            thread = start_bot_thread(bot)
+            deadline = time.time() + 5
+            while time.time() < deadline and not _BotHandler.sent_messages:
+                time.sleep(0.1)
+
+            # Only file confirmation, no task
+            assert len(_BotHandler.sent_messages) == 1
+            assert bot.state.task_queue.empty()
 
             bot.stop()
             thread.join(timeout=5)

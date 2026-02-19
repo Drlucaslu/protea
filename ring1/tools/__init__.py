@@ -18,6 +18,7 @@ def create_default_registry(
     skill_runner=None,
     registry_client=None,
     scheduled_store=None,
+    send_file_fn=None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with all standard tools.
 
@@ -66,5 +67,9 @@ def create_default_registry(
     if scheduled_store is not None:
         from ring1.tools.schedule import make_schedule_tool
         registry.register(make_schedule_tool(scheduled_store))
+
+    if send_file_fn is not None:
+        from ring1.tools.send_file import make_send_file_tool
+        registry.register(make_send_file_tool(send_file_fn))
 
     return registry

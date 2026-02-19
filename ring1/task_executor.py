@@ -187,6 +187,10 @@ Schedule tool:
   For cron: use 5-field cron expressions (e.g. "*/5 * * * *" = every 5 minutes).
   For one-shot: set schedule_type="once" and cron_expr to an ISO datetime.
 
+File delivery tool:
+- send_file: Send a local file to the user via Telegram.
+  Use AFTER writing or generating any file that the user needs.
+
 Use web tools when the user's request requires current information from the web.
 Use file/shell tools when the user asks to read, modify, or explore files and code.
 Use the message tool to keep the user informed during long operations.
@@ -210,6 +214,14 @@ FILE OUTPUT RULES:
 - Use subdirectories for organization: output/scripts/, output/reports/, output/data/.
 - NEVER write generated files directly to the project root directory.
 - You may read any project file, but generated content must go to output/.
+
+REMOTE ACCESS — CRITICAL:
+- The user interacts EXCLUSIVELY via Telegram from a remote device.
+  They CANNOT access local files on this machine.
+- After generating ANY file (PDF, report, script, image, data), you MUST use
+  send_file to deliver it. Just writing to disk is NOT enough.
+- Uploaded files are in the telegram_output/ directory.
+- Workflow: write_file → (generate content) → send_file.
 """
 
 P1_SYSTEM_PROMPT = """\
@@ -790,6 +802,7 @@ def create_executor(
     user_profiler=None,
     embedding_provider=None,
     scheduled_store=None,
+    send_file_fn=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -817,6 +830,7 @@ def create_executor(
         skill_runner=skill_runner,
         registry_client=registry_client,
         scheduled_store=scheduled_store,
+        send_file_fn=send_file_fn,
     )
     subagent_mgr = SubagentManager(client, base_registry, reply_fn)
 
@@ -830,6 +844,7 @@ def create_executor(
         skill_runner=skill_runner,
         registry_client=registry_client,
         scheduled_store=scheduled_store,
+        send_file_fn=send_file_fn,
     )
 
     prefer_local_skills = getattr(config, "prefer_local_skills", True)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import pathlib
 import queue
 import threading
@@ -15,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 log = logging.getLogger("protea.telegram_bot")
 
@@ -208,6 +210,76 @@ class TelegramBot:
             "reply_markup": json.dumps({"inline_keyboard": buttons}),
         })
 
+    def _send_document(self, file_path: str, caption: str = "") -> bool:
+        """Send a file to the authorized chat via sendDocument (multipart).
+
+        Args:
+            file_path: Path to the file on disk.
+            caption: Optional caption text (max 1024 chars).
+
+        Returns:
+            True on success, False on any error.
+        """
+        path = pathlib.Path(file_path)
+        if not path.is_file():
+            log.warning("_send_document: file not found: %s", file_path)
+            return False
+        file_size = path.stat().st_size
+        if file_size > 50 * 1024 * 1024:  # 50 MB Telegram limit
+            log.warning("_send_document: file too large (%d bytes): %s", file_size, file_path)
+            return False
+
+        boundary = uuid4().hex
+        content_type, _ = mimetypes.guess_type(path.name)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        # Build multipart/form-data body
+        parts: list[bytes] = []
+
+        # chat_id field
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+        parts.append(f"{self.chat_id}\r\n".encode())
+
+        # caption field (optional)
+        if caption:
+            parts.append(f"--{boundary}\r\n".encode())
+            parts.append(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+            parts.append(f"{caption[:1024]}\r\n".encode())
+
+        # document field (file binary)
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(
+            f'Content-Disposition: form-data; name="document"; filename="{path.name}"\r\n'.encode()
+        )
+        parts.append(f"Content-Type: {content_type}\r\n\r\n".encode())
+        parts.append(path.read_bytes())
+        parts.append(b"\r\n")
+
+        # closing boundary
+        parts.append(f"--{boundary}--\r\n".encode())
+
+        body = b"".join(parts)
+        url = _API_BASE.format(token=self.bot_token, method="sendDocument")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                if result.get("ok"):
+                    log.info("Sent document: %s", path.name)
+                    return True
+                log.warning("sendDocument failed: %s", result)
+                return False
+        except Exception:
+            log.debug("sendDocument error", exc_info=True)
+            return False
+
     def _download_file(self, file_id: str) -> bytes | None:
         """Download a file from Telegram servers and return its bytes."""
         try:
@@ -228,19 +300,20 @@ class TelegramBot:
             log.debug("File download failed", exc_info=True)
             return None
 
-    def _handle_file(self, file_info: dict, file_type: str, msg_chat_id: str, caption: str = "") -> str:
+    def _handle_file(self, file_info: dict, file_type: str, msg_chat_id: str, caption: str = "") -> tuple[str, pathlib.Path | None]:
         """Handle any file upload (document, photo, audio, video, voice).
-        
+
         Args:
             file_info: dict containing file_id, file_name (or generated), file_size
             file_type: "document", "photo", "audio", "video", "voice"
             msg_chat_id: chat ID
             caption: optional caption from message
-        
-        Returns: Success or error message
+
+        Returns:
+            Tuple of (response_text, saved_path_or_None).
         """
         file_id = file_info.get("file_id")
-        
+
         # Generate filename based on type if not provided
         if "file_name" in file_info:
             file_name = file_info["file_name"]
@@ -255,22 +328,22 @@ class TelegramBot:
             }
             ext = ext_map.get(file_type, "bin")
             file_name = f"{file_type}_{timestamp}.{ext}"
-        
+
         file_size = file_info.get("file_size", 0)
-        
+
         if not file_id:
-            return "⚠️ 文件 ID 缺失。"
-        
+            return "⚠️ 文件 ID 缺失。", None
+
         # Download file
         file_bytes = self._download_file(file_id)
         if file_bytes is None:
-            return "⚠️ 文件下载失败。"
-        
+            return "⚠️ 文件下载失败。", None
+
         # Save to telegram_output directory
         output_dir = pathlib.Path("telegram_output")
         output_dir.mkdir(exist_ok=True)
         output_path = output_dir / file_name
-        
+
         # Handle duplicate names
         counter = 1
         while output_path.exists():
@@ -280,10 +353,10 @@ class TelegramBot:
             else:
                 output_path = output_dir / f"{file_name}_{counter}"
             counter += 1
-        
+
         try:
             output_path.write_bytes(file_bytes)
-            
+
             # Type-specific emoji
             emoji_map = {
                 "document": "📄",
@@ -293,7 +366,7 @@ class TelegramBot:
                 "voice": "🎤",
             }
             emoji = emoji_map.get(file_type, "📎")
-            
+
             type_name_map = {
                 "document": "文档",
                 "photo": "图片",
@@ -302,23 +375,23 @@ class TelegramBot:
                 "voice": "语音",
             }
             type_name = type_name_map.get(file_type, "文件")
-            
+
             response = (
                 f"✅ {emoji} {type_name}已接收并保存！\n\n"
                 f"📄 文件名: {file_name}\n"
                 f"💾 大小: {file_size / 1024:.1f} KB\n"
                 f"📂 保存路径: {output_path}\n"
             )
-            
+
             if caption:
                 response += f"💬 说明: {caption}\n"
-            
+
             response += "\n💡 现在可以用其他命令处理这个文件了。"
-            
-            return response
+
+            return response, output_path
         except Exception as e:
             log.error("Failed to save file", exc_info=True)
-            return f"⚠️ 保存文件失败: {str(e)}"
+            return f"⚠️ 保存文件失败: {str(e)}", None
 
     def _answer_callback_query(self, callback_query_id: str) -> None:
         """Acknowledge a callback query so Telegram stops showing a spinner."""
@@ -1080,63 +1153,54 @@ class TelegramBot:
                         # Check for various file types
                         handled = False
                         
+                        # Helper: process file result tuple and optionally enqueue caption as task
+                        def _process_file(file_info, file_type):
+                            reply, saved_path = self._handle_file(file_info, file_type, msg_chat_id, caption)
+                            if reply:
+                                self._send_reply(reply)
+                            if caption and saved_path and not caption.strip().startswith("/"):
+                                task_text = f"[文件已上传: {saved_path}]\n\n{caption}"
+                                ack = self._enqueue_task(task_text, msg_chat_id)
+                                self._send_reply(ack)
+
                         # 1. Document (any file uploaded as document)
                         document = msg.get("document")
                         if document:
-                            reply = self._handle_file(document, "document", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(document, "document")
                             handled = True
-                        
+
                         # 2. Photo (images)
                         if not handled and "photo" in msg:
                             # Telegram sends multiple sizes, get the largest
                             photos = msg["photo"]
                             if photos:
                                 largest_photo = max(photos, key=lambda p: p.get("file_size", 0))
-                                reply = self._handle_file(largest_photo, "photo", msg_chat_id, caption)
-                                if reply:
-                                    self._send_reply(reply)
+                                _process_file(largest_photo, "photo")
                                 handled = True
-                        
+
                         # 3. Audio (music files with metadata)
                         if not handled and "audio" in msg:
-                            audio = msg["audio"]
-                            reply = self._handle_file(audio, "audio", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(msg["audio"], "audio")
                             handled = True
-                        
+
                         # 4. Video
                         if not handled and "video" in msg:
-                            video = msg["video"]
-                            reply = self._handle_file(video, "video", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(msg["video"], "video")
                             handled = True
-                        
+
                         # 5. Voice message
                         if not handled and "voice" in msg:
-                            voice = msg["voice"]
-                            reply = self._handle_file(voice, "voice", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(msg["voice"], "voice")
                             handled = True
-                        
+
                         # 6. Video note (circular video)
                         if not handled and "video_note" in msg:
-                            video_note = msg["video_note"]
-                            reply = self._handle_file(video_note, "video_note", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(msg["video_note"], "video_note")
                             handled = True
-                        
+
                         # 7. Sticker
                         if not handled and "sticker" in msg:
-                            sticker = msg["sticker"]
-                            reply = self._handle_file(sticker, "sticker", msg_chat_id, caption)
-                            if reply:
-                                self._send_reply(reply)
+                            _process_file(msg["sticker"], "sticker")
                             handled = True
                         
                         # If file was handled, skip text processing
