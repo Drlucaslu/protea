@@ -270,6 +270,124 @@ def _compute_daily_skill_hit_ratio(memory_store, days: int = 14) -> list[dict]:
     return result
 
 
+def _compute_daily_token_usage(fitness_tracker, days: int = 14) -> list[dict]:
+    """Aggregate daily token usage from llm_usage table.
+
+    Returns [{date, input_tokens, output_tokens, total, calls}].
+    """
+    from datetime import datetime, timedelta, timezone
+
+    raw = []
+    try:
+        raw = fitness_tracker.get_llm_usage(limit=500)
+    except Exception:
+        pass
+
+    # Bucket by date
+    buckets: dict[str, dict] = {}
+    for r in raw:
+        ts = r.get("timestamp", "")
+        if not ts:
+            continue
+        day = ts[:10]
+        if day not in buckets:
+            buckets[day] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        buckets[day]["input_tokens"] += r.get("input_tokens", 0)
+        buckets[day]["output_tokens"] += r.get("output_tokens", 0)
+        buckets[day]["calls"] += 1
+
+    # Fill missing days
+    today = datetime.now(timezone.utc).date()
+    result = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        key = d.isoformat()
+        b = buckets.get(key, {"input_tokens": 0, "output_tokens": 0, "calls": 0})
+        result.append({
+            "date": key,
+            "input_tokens": b["input_tokens"],
+            "output_tokens": b["output_tokens"],
+            "total": b["input_tokens"] + b["output_tokens"],
+            "calls": b["calls"],
+        })
+    return result
+
+
+def _render_token_usage_svg(daily_data: list[dict], width: int = 800, height: int = 200) -> str:
+    """Stacked bar chart SVG for daily token usage."""
+    if not daily_data or all(d["total"] == 0 for d in daily_data):
+        return '<p style="color:#777">No token usage data yet.</p>'
+
+    margin = 40
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    n = len(daily_data)
+    bar_w = max(4, plot_w / n - 4)
+
+    max_total = max(d["total"] for d in daily_data)
+    if max_total == 0:
+        return '<p style="color:#777">No token usage data yet.</p>'
+
+    parts = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">'
+        f'<rect width="{width}" height="{height}" fill="#0d1230" rx="8"/>',
+        # Axes
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
+        f'<line x1="{margin}" y1="{margin + plot_h}" x2="{margin + plot_w}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
+    ]
+
+    # Y-axis labels (auto-scale, show in k)
+    for frac in (0, 0.25, 0.5, 0.75, 1.0):
+        val = max_total * frac
+        y = margin + plot_h - frac * plot_h
+        if val >= 1000:
+            label = f"{val / 1000:.0f}k"
+        else:
+            label = f"{val:.0f}"
+        parts.append(f'<text x="{margin - 5}" y="{y + 4}" fill="#555" font-size="10" text-anchor="end">{label}</text>')
+        parts.append(f'<line x1="{margin}" y1="{y}" x2="{margin + plot_w}" y2="{y}" stroke="#1a1f3a" stroke-width="0.5" stroke-dasharray="4"/>')
+
+    # Stacked bars
+    for i, d in enumerate(daily_data):
+        x = margin + i * (plot_w / n) + 2
+        if d["total"] == 0:
+            # X-axis label only
+            day_num = d["date"][8:10]
+            parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{margin + plot_h + 14}" fill="#555" font-size="9" text-anchor="middle">{day_num}</text>')
+            continue
+        # Input tokens (bottom, blue)
+        inp_h = d["input_tokens"] / max_total * plot_h
+        out_h = d["output_tokens"] / max_total * plot_h
+        total_h = inp_h + out_h
+        y_inp = margin + plot_h - inp_h
+        y_out = y_inp - out_h
+        parts.append(f'<rect x="{x:.1f}" y="{y_inp:.1f}" width="{bar_w:.1f}" height="{inp_h:.1f}" rx="2" fill="#667eea" opacity="0.8"/>')
+        # Output tokens (top, purple)
+        if out_h > 0:
+            parts.append(f'<rect x="{x:.1f}" y="{y_out:.1f}" width="{bar_w:.1f}" height="{out_h:.1f}" rx="2" fill="#764ba2" opacity="0.8"/>')
+        # Top label: total in k
+        total_val = d["total"]
+        if total_val >= 1000:
+            top_label = f"{total_val / 1000:.0f}k"
+        else:
+            top_label = str(total_val)
+        parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{y_out - 4:.1f}" fill="#999" font-size="9" text-anchor="middle">{top_label}</text>')
+        # X-axis label
+        day_num = d["date"][8:10]
+        parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{margin + plot_h + 14}" fill="#555" font-size="9" text-anchor="middle">{day_num}</text>')
+
+    # Legend
+    lx = margin + plot_w - 160
+    ly = margin + 8
+    parts.append(f'<rect x="{lx - 4}" y="{ly - 5}" width="10" height="10" rx="2" fill="#667eea" opacity="0.8"/>')
+    parts.append(f'<text x="{lx + 10}" y="{ly + 4}" fill="#999" font-size="10">input</text>')
+    parts.append(f'<rect x="{lx + 56}" y="{ly - 5}" width="10" height="10" rx="2" fill="#764ba2" opacity="0.8"/>')
+    parts.append(f'<text x="{lx + 70}" y="{ly + 4}" fill="#999" font-size="10">output</text>')
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _render_skill_hit_ratio_svg(daily_data: list[dict], width: int = 800, height: int = 200) -> str:
     """Bar chart SVG for daily skill hit ratio."""
     if not daily_data or all(d["total"] == 0 for d in daily_data):
@@ -382,6 +500,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_skill_hit_ratio()
         elif path == "/api/llm_usage":
             self._api_llm_usage()
+        elif path == "/api/token_usage_daily":
+            self._api_token_usage_daily()
         else:
             self._send_error(404, "Not Found")
 
@@ -532,12 +652,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Token usage chart
+        token_usage_svg = ""
+        if self.fitness_tracker:
+            try:
+                daily_tokens = _compute_daily_token_usage(self.fitness_tracker)
+                token_usage_svg = _render_token_usage_svg(daily_tokens)
+            except Exception:
+                pass
+
         body = (
             f'<div class="cards">{gen_card}{mem_card}{skill_card}{gene_card}{intent_card}{profile_card}{cooldown_card}{token_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
             f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
             f'{hit_ratio_svg}'
+            f'<h2 style="margin:2rem 0 1rem">LLM Token Usage</h2>'
+            f'{token_usage_svg}'
         )
         self._send_html(_page("Overview", body))
 
@@ -949,6 +1080,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 data["recent"] = self.fitness_tracker.get_llm_usage(limit=50)
                 data["summary"] = self.fitness_tracker.get_llm_usage_summary()
+            except Exception:
+                pass
+        self._send_json(data)
+
+    def _api_token_usage_daily(self) -> None:
+        data = []
+        if self.fitness_tracker:
+            try:
+                data = _compute_daily_token_usage(self.fitness_tracker)
             except Exception:
                 pass
         self._send_json(data)
