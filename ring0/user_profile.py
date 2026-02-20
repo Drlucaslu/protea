@@ -364,6 +364,16 @@ class UserProfiler:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_top_topic_names(self, limit: int = 30) -> list[str]:
+        """Return top topic names by weight for keyword matching."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT topic FROM user_profile_topics "
+                "ORDER BY weight DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [r["topic"] for r in rows]
+
     def get_category_distribution(self) -> dict[str, float]:
         """Return total weight per category, sorted descending."""
         with self._connect() as con:

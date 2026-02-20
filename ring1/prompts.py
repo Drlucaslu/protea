@@ -34,33 +34,6 @@ Prioritize capabilities that solve real-world problems users face daily.
 Refer to user task history (if provided) to guide evolution direction.
 Avoid duplicating existing skills — develop complementary capabilities.
 
-### Tier 1: Data Collection & Monitoring (highest priority, stdlib achievable)
-- RSS/Atom feed aggregator with keyword filtering
-- Log file analyzer (error detection, frequency stats, anomaly alerting)
-- File system monitor (detect changes, new files, disk usage trends)
-- Simple web page change detector (urllib + html.parser)
-- System resource reporter (cross-platform: use subprocess for OS commands)
-
-### Tier 2: File Processing & Transformation
-- CSV data cleaner (dedup, format validation, column extraction)
-- JSON/XML format converter and validator
-- Batch file renamer with pattern matching
-- Markdown ↔ HTML converter
-- Text file diff and merge tool
-
-### Tier 3: Automation & Scheduling
-- Smart file organizer (classify by type/date/project)
-- Duplicate file detector (hash-based)
-- Cron-like task scheduler with condition triggers
-- Directory structure analyzer and reporter
-- Config file validator and migration tool
-
-### Tier 4: Analysis & Reporting
-- Text statistics and keyword extraction
-- Structured report generator (JSON → formatted text/tables)
-- Time-series data aggregator and trend detector
-- Git repository activity analyzer
-
 ### Design Principles
 1. High-frequency, low-friction: solve problems users encounter daily
 2. Composable: produce structured output (JSON) that other tools can consume
@@ -179,6 +152,7 @@ def build_evolution_prompt(
     allowed_packages: list[str] | None = None,
     skill_hit_summary: dict | None = None,
     semantic_rules: list[dict] | None = None,
+    evolution_direction: str = "",
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -290,6 +264,12 @@ def build_evolution_prompt(
             if len(content) > 100:
                 content = content[:100] + "..."
             parts.append(f"- {content}")
+        parts.append("")
+
+    # Dynamic evolution direction (from genes + user profile)
+    if evolution_direction:
+        parts.append("## Evolution Direction")
+        parts.append(evolution_direction)
         parts.append("")
 
     # User profile — aggregated interests and directions (intent-gated)

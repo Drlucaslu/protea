@@ -516,6 +516,65 @@ class TestRealErrorDetection:
         assert not _is_real_error_line("")
 
 
+class TestScoreTaskAlignment:
+    """score_task_alignment with optional topic_keywords."""
+
+    def test_basic_category_match(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        output = ["coding analysis running"]
+        cats = {"coding": 5.0}
+        score = tracker.score_task_alignment(output, cats)
+        assert score > 0.0
+
+    def test_empty_output_returns_zero(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        score = tracker.score_task_alignment([], {"coding": 5.0})
+        assert score == 0.0
+
+    def test_empty_categories_returns_zero(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        score = tracker.score_task_alignment(["hello world"], {})
+        assert score == 0.0
+
+    def test_topic_keywords_boost_score(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        output = ["stock price analysis report for portfolio"]
+        cats = {"finance": 5.0}
+        # Without topic keywords — category name "finance" doesn't appear in output.
+        score_no_topics = tracker.score_task_alignment(output, cats)
+        # With topic keywords — "stock", "price", "portfolio" match.
+        score_with_topics = tracker.score_task_alignment(
+            output, cats, topic_keywords=["stock", "price", "portfolio"],
+        )
+        assert score_with_topics > score_no_topics
+
+    def test_topic_keywords_only_no_category_match(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        output = ["python debugging session complete"]
+        cats = {"coding": 5.0}
+        score = tracker.score_task_alignment(
+            output, cats, topic_keywords=["python", "debugging"],
+        )
+        assert score > 0.0
+
+    def test_max_score_capped_at_015(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        output = ["coding coding coding coding coding"]
+        cats = {"coding": 100.0}
+        score = tracker.score_task_alignment(
+            output, cats, topic_keywords=["coding"],
+        )
+        assert score <= 0.15
+
+    def test_none_topic_keywords_works(self, tmp_path):
+        """Passing None for topic_keywords should behave like no keywords."""
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        output = ["hello world"]
+        cats = {"general": 1.0}
+        score = tracker.score_task_alignment(output, cats, topic_keywords=None)
+        assert isinstance(score, float)
+
+
 class TestErrorPenaltyFalsePositive:
     """evaluate_output should not penalize programs that report on errors."""
 

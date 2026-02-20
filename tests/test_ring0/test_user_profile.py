@@ -203,6 +203,33 @@ class TestGetTopTopics:
         assert len(topics) <= 3
 
 
+class TestGetTopTopicNames:
+    def test_returns_list_of_strings(self, tmp_path):
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("python code debug")
+        names = profiler.get_top_topic_names()
+        assert isinstance(names, list)
+        assert all(isinstance(n, str) for n in names)
+        assert "python" in names
+
+    def test_empty_profiler(self, tmp_path):
+        profiler = UserProfiler(tmp_path / "test.db")
+        assert profiler.get_top_topic_names() == []
+
+    def test_respects_limit(self, tmp_path):
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("python code debug function class api git algorithm")
+        names = profiler.get_top_topic_names(limit=3)
+        assert len(names) <= 3
+
+    def test_ordered_by_weight(self, tmp_path):
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("python python python code")
+        names = profiler.get_top_topic_names(limit=2)
+        # "python" has weight 3.0, "code" has weight 1.0
+        assert names[0] == "python"
+
+
 class TestGetCategoryDistribution:
     def test_returns_categories(self, tmp_path):
         profiler = UserProfiler(tmp_path / "test.db")

@@ -420,15 +420,19 @@ class FitnessTracker(SQLiteStore):
         self,
         output_lines: list[str],
         user_categories: dict[str, float],
+        topic_keywords: list[str] | None = None,
     ) -> float:
         """Score how well Ring 2 output aligns with user interest categories.
 
-        Checks if output tokens overlap with high-weight user interest keywords.
-        Returns a bonus score (0.0–0.10) to be added to the base fitness.
+        Checks if output tokens overlap with high-weight user interest keywords
+        and optional topic keywords from the user profile.
+        Returns a bonus score (0.0–0.15) to be added to the base fitness.
 
         Args:
             output_lines: Lines of Ring 2 output.
             user_categories: Dict mapping category name → weight (0.0–1.0).
+            topic_keywords: Optional list of topic names from user_profile_topics
+                for more specific keyword matching.
         """
         if not user_categories or not output_lines:
             return 0.0
@@ -466,10 +470,29 @@ class FitnessTracker(SQLiteStore):
             total_score += cat_score * weight
             total_weight += weight
 
-        if total_weight == 0:
-            return 0.0
+        cat_alignment = 0.0
+        if total_weight > 0:
+            cat_alignment = total_score / total_weight
 
-        alignment = total_score / total_weight
+        # Topic keyword matching: more specific than category names.
+        topic_alignment = 0.0
+        if topic_keywords:
+            topic_tokens: set[str] = set()
+            for kw in topic_keywords:
+                for part in kw.split("_"):
+                    cleaned = re.sub(r"[^a-zA-Z0-9_]", "", part).lower()
+                    if len(cleaned) >= 3 and not cleaned.isdigit():
+                        topic_tokens.add(cleaned)
+            if topic_tokens:
+                overlap = len(output_tokens & topic_tokens)
+                topic_alignment = min(overlap / max(len(topic_tokens), 1), 1.0)
+
+        # Weighted blend: topic keywords (60%) + category (40%) when both present.
+        if topic_keywords and topic_alignment > 0:
+            alignment = topic_alignment * 0.6 + cat_alignment * 0.4
+        else:
+            alignment = cat_alignment
+
         return round(min(alignment * 0.15, 0.15), 4)
 
     def is_plateaued(self, window: int = 5, epsilon: float = 0.03) -> bool:

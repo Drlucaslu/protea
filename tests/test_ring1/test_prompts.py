@@ -350,6 +350,65 @@ class TestBuildEvolutionPrompt:
         assert "Evolution Strategy" in system
         assert "user" in system.lower()
 
+    def test_system_prompt_no_hardcoded_tiers(self):
+        """Tier 1-4 lists should no longer appear in SYSTEM_PROMPT."""
+        system, _ = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=0,
+            survived=True,
+        )
+        assert "### Tier 1" not in system
+        assert "### Tier 2" not in system
+        assert "### Tier 3" not in system
+        assert "### Tier 4" not in system
+        assert "RSS/Atom feed" not in system
+
+    def test_evolution_direction_included(self):
+        direction = "### User Interest Areas\n- coding (weight: 50)"
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            evolution_direction=direction,
+        )
+        assert "## Evolution Direction" in user
+        assert "coding (weight: 50)" in user
+
+    def test_empty_evolution_direction_no_section(self):
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            evolution_direction="",
+        )
+        assert "## Evolution Direction" not in user
+
+    def test_evolution_direction_before_user_profile(self):
+        direction = "### User Interest Areas\n- coding"
+        _, user = build_evolution_prompt(
+            current_source="x=1",
+            fitness_history=[],
+            best_performers=[],
+            params={},
+            generation=10,
+            survived=True,
+            evolution_direction=direction,
+            user_profile_summary="profile summary",
+            evolution_intent={"intent": "optimize", "signals": []},
+        )
+        dir_pos = user.index("## Evolution Direction")
+        profile_pos = user.index("## User Profile")
+        assert dir_pos < profile_pos
+
     def test_crash_logs_included_when_died(self):
         crash_logs = [
             {"generation": 2, "content": "Gen 2 died after 5s.\nReason: exit code 1\n\n--- Last output ---\nKeyError: 'foo'"},

@@ -350,7 +350,73 @@ def _try_auto_directive(memory_store, user_profiler, project_root):
         return None
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
+def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_store):
+    """Build dynamic evolution direction from genes + user interests."""
+    parts = []
+
+    # 1. From user_profile: top categories + topics.
+    if user_profiler:
+        try:
+            cats = user_profiler.get_category_distribution()
+            if cats:
+                top_cats = list(cats.items())[:5]
+                parts.append("### User Interest Areas (by frequency)")
+                for cat, weight in top_cats:
+                    parts.append(f"- {cat} (weight: {weight:.0f})")
+            topics = user_profiler.get_top_topic_names(limit=10)
+            if topics:
+                parts.append("")
+                parts.append("### Specific Topics of Interest")
+                parts.append(", ".join(topics))
+        except Exception:
+            pass
+
+    # 2. From gene_pool: top scoring genes' summaries (DNA).
+    if gene_pool:
+        try:
+            top_genes = gene_pool.get_top(5)
+            if top_genes:
+                parts.append("")
+                parts.append("### Successful Gene Patterns (DNA)")
+                parts.append("These patterns scored well in past generations. Build on them:")
+                for g in top_genes:
+                    summary = g.get("gene_summary", "")
+                    score = g.get("score", 0)
+                    task_hits = g.get("task_hit_count", 0) or 0
+                    if summary:
+                        parts.append(f"- [score={score:.2f}, task_hits={task_hits}] {summary[:120]}")
+        except Exception:
+            pass
+
+    # 3. From recent tasks: uncovered task types (evolution opportunities).
+    if memory_store and skill_store:
+        try:
+            tasks = memory_store.get_by_type("task", limit=20)
+            uncovered = []
+            for t in tasks:
+                meta = t.get("metadata", {})
+                if isinstance(meta, str):
+                    meta = json.loads(meta) if meta else {}
+                if not meta.get("skills_used") and not meta.get("skills_matched"):
+                    content = t.get("content", "")[:80]
+                    if content:
+                        uncovered.append(content)
+            if uncovered:
+                parts.append("")
+                parts.append("### Uncovered Task Types (evolution opportunities)")
+                parts.append(
+                    "These recent user tasks had NO skill coverage — "
+                    "evolve toward capabilities that serve these needs:"
+                )
+                for task_desc in uncovered[:5]:
+                    parts.append(f"- {task_desc}")
+        except Exception:
+            pass
+
+    return "\n".join(parts) if parts else ""
+
+
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction=""):
     """Best-effort evolution.  Returns (success, gene_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
@@ -491,6 +557,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
             skill_hit_summary=skill_hit_summary,
             semantic_rules=semantic_rules or None,
+            evolution_direction=evolution_direction,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -988,6 +1055,7 @@ def run(project_root: pathlib.Path) -> None:
 
     last_injected_gene_ids: list[int] = []
     last_attributed_task_id: int = 0
+    directive_remaining_cycles: int = 0
 
     try:
         params = generate_params(generation, seed)
@@ -1096,10 +1164,11 @@ def run(project_root: pathlib.Path) -> None:
                 # Task alignment bonus: reward output that matches user interests.
                 if user_profiler:
                     try:
-                        user_cats = user_profiler.get_categories()
+                        user_cats = user_profiler.get_category_distribution()
+                        topic_kw = user_profiler.get_top_topic_names(limit=30)
                         if user_cats:
                             alignment_bonus = fitness.score_task_alignment(
-                                output_lines, user_cats,
+                                output_lines, user_cats, topic_keywords=topic_kw,
                             )
                             if alignment_bonus > 0:
                                 score = min(score + alignment_bonus, 1.0)
@@ -1200,7 +1269,12 @@ def run(project_root: pathlib.Path) -> None:
                 else:
                     with state.lock:
                         directive = state.evolution_directive
-                        state.evolution_directive = ""
+                        if directive:
+                            if directive_remaining_cycles <= 0:
+                                directive_remaining_cycles = 3  # new directive lives for 3 cycles
+                            directive_remaining_cycles -= 1
+                            if directive_remaining_cycles <= 0:
+                                state.evolution_directive = ""
                     if directive and memory_store:
                         memory_store.add(generation, "directive", directive)
                     crash_logs = []
@@ -1223,6 +1297,10 @@ def run(project_root: pathlib.Path) -> None:
                             pref_summary = preference_store.get_preference_summary_text()
                         except Exception:
                             pass
+                    # Build dynamic evolution direction.
+                    evo_direction = _build_evolution_direction(
+                        gene_pool, user_profiler, skill_store, memory_store,
+                    )
                     evolved, last_injected_gene_ids = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
@@ -1237,6 +1315,7 @@ def run(project_root: pathlib.Path) -> None:
                         venv_manager=venv_manager,
                         allowed_packages=allowed_packages,
                         skill_hit_summary=skill_hit,
+                        evolution_direction=evo_direction,
                     )
                 if evolved:
                     state.last_evolution_time = time.time()
@@ -1472,7 +1551,12 @@ def run(project_root: pathlib.Path) -> None:
             else:
                 with state.lock:
                     directive = state.evolution_directive
-                    state.evolution_directive = ""
+                    if directive:
+                        if directive_remaining_cycles <= 0:
+                            directive_remaining_cycles = 3
+                        directive_remaining_cycles -= 1
+                        if directive_remaining_cycles <= 0:
+                            state.evolution_directive = ""
                 if directive and memory_store:
                     memory_store.add(generation, "directive", directive)
                 crash_logs = []
@@ -1495,6 +1579,10 @@ def run(project_root: pathlib.Path) -> None:
                         pref_summary = preference_store.get_preference_summary_text()
                     except Exception:
                         pass
+                # Build dynamic evolution direction.
+                evo_direction = _build_evolution_direction(
+                    gene_pool, user_profiler, skill_store, memory_store,
+                )
                 evolved, last_injected_gene_ids = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
@@ -1509,6 +1597,7 @@ def run(project_root: pathlib.Path) -> None:
                     venv_manager=venv_manager,
                     allowed_packages=allowed_packages,
                     skill_hit_summary=skill_hit,
+                    evolution_direction=evo_direction,
                 )
             if evolved:
                 state.last_evolution_time = time.time()
