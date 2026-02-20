@@ -82,6 +82,13 @@ enabled = true
 interval_sec = 7200          # 2 hours between sync cycles
 max_discover_per_sync = 5    # max skills to download per cycle
 
+[ring1.convergence]
+enabled = true
+cluster_window_sec = 900
+min_corrections = 2
+similarity_threshold = 0.5
+cooldown_sec = 600
+
 [ring1.habit_detection]
 enabled = true
 check_interval_sec = 3600

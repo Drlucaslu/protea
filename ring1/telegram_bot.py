@@ -51,6 +51,8 @@ class SentinelState:
         # Habit detection
         "habit_proposals", "_habit_dismissed", "_habit_context",
         "_pending_habits",
+        # Convergence detection
+        "convergence_proposals", "_convergence_context",
         # Preference store reference (for feedback)
         "_preference_store",
     )
@@ -92,6 +94,9 @@ class SentinelState:
         self._habit_dismissed: set[str] = set()
         self._habit_context: dict[str, dict] = {}  # pattern_key -> proposal details
         self._pending_habits: dict[str, dict] = {}  # pattern_key -> {cron, auto_stop_hours, timestamp}
+        # Convergence detection
+        self.convergence_proposals: queue.Queue = queue.Queue()
+        self._convergence_context: dict[str, dict] = {}
         self._preference_store = None  # Set by Sentinel after creation
 
     def snapshot(self) -> dict:
@@ -1151,6 +1156,27 @@ class TelegramBot:
             self.state._habit_dismissed.add(pattern_key)
             return "好的，不再提醒这个模式。"
 
+        if data.startswith("convergence:confirm:"):
+            rule_key = data[len("convergence:confirm:"):]
+            ctx = self.state._convergence_context.pop(rule_key, None)
+            if not ctx:
+                return "规则已过期。"
+            ms = self.state.memory_store
+            if ms:
+                ms.add(
+                    generation=self.state.snapshot().get("generation", 0),
+                    entry_type="semantic_rule",
+                    content=ctx["rule_text"],
+                    importance=0.9,
+                    metadata={"source": "convergence", "cluster_size": ctx["cluster_size"]},
+                )
+            return f"已固化规则：{ctx['rule_text'][:80]}"
+
+        if data.startswith("convergence:dismiss:"):
+            rule_key = data[len("convergence:dismiss:"):]
+            self.state._convergence_context.pop(rule_key, None)
+            return "好的，不保存这条规则。"
+
         if data.startswith("run:"):
             name = data[4:]
             sr = self.state.skill_runner
@@ -1487,6 +1513,17 @@ class TelegramBot:
                         break
                     except Exception:
                         log.debug("Error sending habit proposal", exc_info=True)
+                        break
+
+                # Consume convergence proposals from the executor.
+                while not self.state.convergence_proposals.empty():
+                    try:
+                        text, buttons = self.state.convergence_proposals.get_nowait()
+                        self._send_message_with_keyboard(text, buttons)
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        log.debug("Error sending convergence proposal", exc_info=True)
                         break
             except Exception:
                 log.debug("Error in polling loop", exc_info=True)

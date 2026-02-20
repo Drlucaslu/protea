@@ -465,6 +465,8 @@ class TaskExecutor:
         self._last_habit_check: float = 0.0
         # Habit detector — initialized later in create_executor() with templates.
         self.habit_detector = None
+        # Convergence detector — initialized later in create_executor().
+        self.convergence_detector = None
         # Conversation history: list of (timestamp, user_text, response_text)
         self._chat_history: list[tuple[float, str, str]] = []
         self._chat_history_max = 5
@@ -641,6 +643,17 @@ class TaskExecutor:
 
             # Check for correction pattern and persist as semantic_rule.
             self._check_and_store_correction(task.text)
+
+            # Multi-round convergence detection.
+            if self.convergence_detector:
+                try:
+                    self.convergence_detector.record(task.text, response)
+                    result = self.convergence_detector.check()
+                    if result:
+                        text, buttons = result
+                        self.state.convergence_proposals.put((text, buttons))
+                except Exception:
+                    log.debug("Convergence check failed", exc_info=True)
 
             # Cross-domain inspiration check (rate-limited: 1 per 5 tasks).
             inspiration = self._check_cross_domain_inspiration(
@@ -1257,6 +1270,18 @@ def create_executor(
             scheduled_store,
             templates=templates,
             llm_client=client,
+        )
+
+    # Initialize convergence detector.
+    if memory_store and embedding_provider:
+        from ring1.convergence_detector import ConvergenceDetector
+        conv_cfg = getattr(config, "_raw_cfg", {}).get("ring1", {}).get("convergence", {})
+        executor.convergence_detector = ConvergenceDetector(
+            memory_store=memory_store,
+            embedding_provider=embedding_provider,
+            llm_client=client,
+            convergence_context=state._convergence_context,
+            config=conv_cfg,
         )
 
     return executor
