@@ -593,6 +593,7 @@ class TaskExecutor:
                     recommended_skills, other_skills = _match_skills(task.text, skills)
                 else:
                     other_skills = skills
+            skills_matched = [s["name"] for s in recommended_skills]
 
             semantic_rules: list[dict] = []
             if self.memory_store:
@@ -710,6 +711,7 @@ class TaskExecutor:
                         "response_summary": response[:200],
                         "duration_sec": round(duration, 2),
                         "skills_used": skills_used,
+                        "skills_matched": skills_matched,
                         "tool_sequence": tool_sequence,
                     }
                     if embedding is not None:
@@ -1087,6 +1089,7 @@ class TaskExecutor:
                     recommended_skills_p1, other_skills_p1 = _match_skills(task_desc, skills)
                 else:
                     other_skills_p1 = skills
+            skills_matched = [s["name"] for s in recommended_skills_p1]
 
             semantic_rules_p1: list[dict] = []
             if self.memory_store:
@@ -1156,6 +1159,7 @@ class TaskExecutor:
                             "response_summary": response[:200],
                             "duration_sec": round(duration, 2),
                             "skills_used": skills_used,
+                            "skills_matched": skills_matched,
                             "tool_sequence": tool_sequence,
                         },
                     )

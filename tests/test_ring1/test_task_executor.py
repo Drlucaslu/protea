@@ -1513,3 +1513,77 @@ class TestExtractProfileIntent:
         executor.client.send_message.return_value = "x" * 300
         result = executor._extract_profile_intent("some long input text here")
         assert len(result) == 200
+
+
+# ---------------------------------------------------------------------------
+# TestSkillsMatchedRecording
+# ---------------------------------------------------------------------------
+
+class TestSkillsMatchedRecording:
+    """Test that skills_matched is recorded in task metadata."""
+
+    def test_skills_matched_recorded_in_metadata(self, tmp_path):
+        """Matched skill names should appear in metadata.skills_matched."""
+        from ring0.memory import MemoryStore
+        from ring0.skill_store import SkillStore
+
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        ss = SkillStore(tmp_path / "skills.db")
+        ss.add("summarize", "Summarize text", "Please summarize: {{text}}")
+        ss.add("translate", "Translate text", "Translate: {{text}}")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms, skill_store=ss,
+        )
+        # Use text that matches "summarize" skill
+        task = Task(text="please summarize this article", chat_id="123")
+        executor._execute_task(task)
+
+        tasks = ms.get_by_type("task")
+        assert len(tasks) == 1
+        meta = tasks[0]["metadata"]
+        assert "skills_matched" in meta
+        assert "summarize" in meta["skills_matched"]
+
+    def test_skills_matched_empty_when_no_match(self, tmp_path):
+        """When no skills match, skills_matched should be an empty list."""
+        from ring0.memory import MemoryStore
+        from ring0.skill_store import SkillStore
+
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        ms = MemoryStore(tmp_path / "mem.db")
+        ss = SkillStore(tmp_path / "skills.db")
+        ss.add("quantum_physics", "Quantum calculations", "Calculate: {{expr}}")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        reply_fn = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, reply_fn,
+            registry=registry, memory_store=ms, skill_store=ss,
+        )
+        task = Task(text="what is the weather today", chat_id="123")
+        executor._execute_task(task)
+
+        tasks = ms.get_by_type("task")
+        assert len(tasks) == 1
+        meta = tasks[0]["metadata"]
+        assert "skills_matched" in meta
+        assert meta["skills_matched"] == []

@@ -324,3 +324,46 @@ class TestTaskHitAttributionE2E:
         genes = gp.get_top(0)
         gene_a = next(g for g in genes if g["id"] == gene_a_id)
         assert abs(gene_a["score"] - 0.85) < 0.001
+
+
+class TestAttributionUsesSkillsMatched:
+    """Sentinel attribution should also read skills_matched from metadata."""
+
+    def test_attribution_uses_skills_matched(self, tmp_path):
+        """skills_matched entries should contribute to attributed_gene_ids."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        ss = SkillStore(db)
+
+        # Add genes
+        gp.add(1, 0.80, SAMPLE_SOURCE)
+        gp.add(2, 0.70, SAMPLE_SOURCE_B)
+        genes = gp.get_top(0)
+        gene_a_id = genes[0]["id"]
+        gene_b_id = genes[1]["id"]
+
+        # Record lineage
+        ss.record_lineage("stream_detect", [gene_a_id], generation=3)
+        ss.record_lineage("weather_predict", [gene_b_id], generation=3)
+
+        # Simulate task metadata with skills_matched (not skills_used)
+        task_meta = {"skills_used": [], "skills_matched": ["stream_detect", "weather_predict"]}
+
+        # Attribution logic (mirrors sentinel.py)
+        attributed_gene_ids: set[int] = set()
+        for skill_name in task_meta.get("skills_used", []):
+            for entry in ss.get_lineage(skill_name):
+                attributed_gene_ids.add(entry["gene_id"])
+        for skill_name in task_meta.get("skills_matched", []):
+            for entry in ss.get_lineage(skill_name):
+                attributed_gene_ids.add(entry["gene_id"])
+
+        assert attributed_gene_ids == {gene_a_id, gene_b_id}
+
+        # Record and verify
+        gp.record_task_hits(list(attributed_gene_ids), generation=5)
+        genes = gp.get_top(0)
+        gene_a = next(g for g in genes if g["id"] == gene_a_id)
+        gene_b = next(g for g in genes if g["id"] == gene_b_id)
+        assert gene_a["task_hit_count"] == 1
+        assert gene_b["task_hit_count"] == 1

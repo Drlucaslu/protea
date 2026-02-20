@@ -1305,6 +1305,9 @@ def run(project_root: pathlib.Path) -> None:
                                 for skill_name in meta.get("skills_used", []):
                                     for entry in skill_store.get_lineage(skill_name):
                                         attributed_gene_ids.add(entry["gene_id"])
+                                for skill_name in meta.get("skills_matched", []):
+                                    for entry in skill_store.get_lineage(skill_name):
+                                        attributed_gene_ids.add(entry["gene_id"])
                             if attributed_gene_ids:
                                 gene_pool.record_task_hits(list(attributed_gene_ids), generation)
                             if new_tasks:
