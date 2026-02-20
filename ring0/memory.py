@@ -73,6 +73,7 @@ _NOISE_PATTERNS: list[re.Pattern[str]] = [
 
 # Minimum quality threshold: entries scoring below this are rejected.
 _MIN_QUALITY_SCORE = 0.15
+_TASK_MIN_QUALITY_SCORE = 0.25  # Lenient threshold for user tasks
 
 # Patterns for detecting low-value follow-up messages (operational commands).
 # Chinese + English operational verbs / short commands.
@@ -111,6 +112,10 @@ def _compute_importance(entry_type: str, content: str) -> float:
         text = content.strip()
         text_len = len(text)
 
+        # Ultra-short fragments (< 5 chars): reject-level score.
+        if text_len < 5:
+            return 0.1
+
         # Very short confirmations (< 10 chars): minimal value.
         if text_len < 10:
             return 0.2
@@ -118,7 +123,7 @@ def _compute_importance(entry_type: str, content: str) -> float:
         # Check for follow-up / operational patterns.
         for pat in _FOLLOWUP_PATTERNS:
             if pat.search(text):
-                return 0.35 if text_len > 30 else 0.25
+                return 0.35 if text_len > 30 else 0.2
 
         # Short messages (< 25 chars) without substantive keywords.
         if text_len < 25:
@@ -445,9 +450,11 @@ class MemoryStore(SQLiteStore):
         if importance is None:
             importance = _compute_importance(entry_type, content)
 
-        # PHASE 3: Minimum quality threshold (except protected types)
-        if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
-            return -1  # Rejected: below quality threshold
+        # PHASE 3: Minimum quality threshold (directives always pass)
+        if entry_type != "directive":
+            threshold = _TASK_MIN_QUALITY_SCORE if entry_type == "task" else _MIN_QUALITY_SCORE
+            if importance < threshold:
+                return -1  # Rejected: below quality threshold
 
         # PHASE 4: Deduplication — reject near-duplicate content.
         # Tasks use exact-match only (user may phrase similar requests differently).
@@ -489,9 +496,11 @@ class MemoryStore(SQLiteStore):
         if importance is None:
             importance = _compute_importance(entry_type, content)
 
-        # PHASE 3: Minimum quality threshold (except protected types)
-        if entry_type not in ("task", "directive") and importance < _MIN_QUALITY_SCORE:
-            return -1  # Rejected: below quality threshold
+        # PHASE 3: Minimum quality threshold (directives always pass)
+        if entry_type != "directive":
+            threshold = _TASK_MIN_QUALITY_SCORE if entry_type == "task" else _MIN_QUALITY_SCORE
+            if importance < threshold:
+                return -1  # Rejected: below quality threshold
 
         # PHASE 4: Deduplication
         if self._is_recent_duplicate(entry_type, content):
