@@ -6,6 +6,8 @@ import pathlib
 
 import pytest
 
+reportlab = pytest.importorskip("reportlab", reason="reportlab not installed")
+
 from ring1.pdf_utils import markdown_to_pdf, _ensure_font
 
 
