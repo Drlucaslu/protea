@@ -7,7 +7,7 @@ Self-evolving artificial life system. The program is a living organism — it ca
 Three-ring design running on a single Mac mini:
 
 - **Ring 0 (Sentinel)** — Immutable physics layer. Supervises Ring 2, performs heartbeat monitoring, git snapshots, rollback on failure, fitness tracking, and persistent storage (SQLite). Pure Python stdlib.
-- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram bot, skill crystallizer, web portal, dashboard. Supports multiple LLM providers (Anthropic, OpenAI, DeepSeek, Qwen) for mutations, user tasks, and autonomous P1 work.
+- **Ring 1 (Intelligence)** — LLM-driven evolution engine, task executor, Telegram/Matrix bots, skill crystallizer, web portal, dashboard. Supports multiple LLM providers (Anthropic, OpenAI, DeepSeek, Qwen) for mutations, user tasks, and autonomous P1 work.
 - **Ring 2 (Evolvable Code)** — The living code that evolves. Managed in its own git repo by Ring 0.
 
 ## Prerequisites
@@ -43,26 +43,43 @@ protea/
 │   ├── skill_store.py          # Crystallized skill store (SQLite)
 │   ├── gene_pool.py            # Gene pool — top-N evolutionary inheritance (SQLite)
 │   ├── task_store.py           # Task persistence store (SQLite)
+│   ├── scheduled_task_store.py # Cron / one-shot scheduled tasks (SQLite)
 │   ├── user_profile.py         # User profiling — topic extraction + interest decay
+│   ├── preference_store.py     # Structured preference store (moments → preferences)
+│   ├── cron.py                 # Cron expression parser + scheduler
+│   ├── evolution_intent.py     # Evolution intent tracking
+│   ├── output_filter.py        # Ring 2 output filtering
 │   ├── parameter_seed.py       # Deterministic parameter generation
 │   ├── resource_monitor.py     # CPU/memory/disk monitoring
+│   ├── sqlite_store.py         # Base SQLite store mixin
 │   └── commit_watcher.py       # Auto-restart on new commits
 │
 ├── ring1/                      # Ring 1 — Intelligence layer
 │   ├── config.py               # Ring 1 configuration loader
 │   ├── evolver.py              # LLM-driven code evolution
 │   ├── crystallizer.py         # Skill crystallization from surviving code
+│   ├── auto_crystallizer.py    # Automatic skill crystallization triggers
 │   ├── llm_base.py             # LLM client ABC + factory
 │   ├── llm_client.py           # Anthropic Claude client
 │   ├── llm_openai.py           # OpenAI / DeepSeek / Qwen client
 │   ├── task_executor.py        # P0 user tasks + P1 autonomous tasks
+│   ├── task_generator.py       # Autonomous task generation
+│   ├── preference_extractor.py # Implicit preference signal extraction
+│   ├── habit_detector.py       # User habit pattern detection
+│   ├── proactive_loop.py       # Proactive suggestion engine
+│   ├── directive_generator.py  # Dynamic evolution direction
+│   ├── convergence_detector.py # Evolution convergence detection
 │   ├── dashboard.py            # System dashboard (memory, skills, profile, intent)
 │   ├── memory_curator.py       # LLM-assisted memory curation (warm→cold)
 │   ├── embeddings.py           # Embedding provider (OpenAI / NoOp)
 │   ├── telegram_bot.py         # Telegram bot (commands + free-text)
 │   ├── telegram.py             # Telegram notifier (one-way)
+│   ├── matrix_bot.py           # Matrix bot (commands + free-text via /sync)
 │   ├── skill_portal.py         # Web dashboard for skills
 │   ├── skill_runner.py         # Skill process manager
+│   ├── skill_sandbox.py        # Skill venv + dependency manager
+│   ├── skill_sync.py           # Skill ↔ profile sync
+│   ├── skill_validator.py      # Skill code validation
 │   ├── subagent.py             # Background task subagents
 │   ├── registry_client.py      # Hub registry client
 │   ├── tool_registry.py        # Tool dispatch framework
@@ -73,7 +90,10 @@ protea/
 │   │   ├── message.py          # Progress messages to user
 │   │   ├── skill.py            # run_skill, view_skill, edit_skill
 │   │   ├── spawn.py            # Background task spawning
-│   │   └── report.py           # Report generation
+│   │   ├── schedule.py         # Scheduled task management
+│   │   ├── send_file.py        # File sending to chat
+│   │   ├── report.py           # Report generation
+│   │   └── progress_monitor.py # Task progress monitoring
 │   ├── web_tools.py            # DuckDuckGo + URL fetch
 │   ├── pdf_utils.py            # PDF text extraction
 │   └── prompts.py              # Evolution + crystallization prompts
@@ -83,9 +103,12 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 1098 tests
+├── tests/                      # 1873 tests
 │   ├── test_ring0/             # Ring 0 unit tests
-│   └── test_ring1/             # Ring 1 unit tests
+│   ├── test_ring1/             # Ring 1 unit tests
+│   ├── test_integration/       # Cross-ring integration tests
+│   ├── test_skills/            # Skill system tests
+│   └── test_registry/          # Registry client tests
 ├── .github/workflows/ci.yml   # CI (Python 3.11 + 3.13)
 └── run.py                      # Entry point
 ```
@@ -167,7 +190,9 @@ Importance is scored automatically by entry type (directive=0.9, crash_log=0.8, 
 
 ## User Profiling
 
-Keyword-based topic extraction from task history across 9 categories (coding, math, data, web, ai, system, creative, finance, research). Topic weights decay over time (`0.95^cycle`), so the profile reflects recent interests. The profile summary is injected into evolution prompts to guide mutations toward the user's active domains.
+Keyword-based topic extraction from task history across 10 categories (coding, math, data, web, ai, system, creative, finance, research, lifestyle). Topic weights decay over time (`0.95^cycle`), so the profile reflects recent interests. The profile summary is injected into evolution prompts to guide mutations toward the user's active domains.
+
+Implicit preference signals (moments) are extracted from each task and aggregated into stable preferences with confidence scores in the **PreferenceStore**. Drift detection compares recent activity against stored confidences to identify rising/falling interests.
 
 ## Dashboard
 
@@ -228,16 +253,19 @@ All settings live in `config/config.toml`:
 - [x] Ring 1 Evolution — LLM mutations, adaptive evolution, crystallization, P0/P1 tasks
 - [x] Multi-LLM — Anthropic, OpenAI, DeepSeek, Qwen via unified client
 - [x] Telegram Bot — bidirectional commands + free-text tasks
+- [x] Matrix Bot — bidirectional commands via Client-Server API long-polling
 - [x] Skill Portal — web dashboard
 - [x] Dashboard — system state visualization (memory, skills, profile, intent)
 - [x] Long-term memory — tiered storage, importance scoring, LLM-curated compaction
-- [x] User profiling — interest extraction, weight decay, evolution guidance
+- [x] User profiling — interest extraction, weight decay, preference moments, drift detection
+- [x] Habit detection — recurring task pattern recognition + proactive suggestions
+- [x] Scheduled tasks — cron + one-shot tasks with auto-execution
 - [x] Semantic search — optional vector embeddings + hybrid retrieval
 - [x] CommitWatcher — auto-restart on deploy
 - [x] Gene Pool — AST-based code inheritance across generations
 - [x] Task persistence — survives restarts via SQLite
 - [x] CI — GitHub Actions (Python 3.11 + 3.13)
-- [x] 1098 tests passing
+- [x] 1873 tests passing
 
 ## Registry
 
