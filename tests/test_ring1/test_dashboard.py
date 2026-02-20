@@ -342,20 +342,25 @@ class TestDashboardServer:
     def test_genes_page(self):
         mock_gene_pool = MagicMock()
         mock_gene_pool.get_top.return_value = [
-            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness,error", "hit_count": 7, "last_hit_gen": 42},
-            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0},
+            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness error", "hit_count": 7, "last_hit_gen": 42, "task_hit_count": 3, "last_task_hit_gen": 40},
+            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0, "task_hit_count": 0, "last_task_hit_gen": 0},
         ]
         mock_gene_pool.count.return_value = 10
-        dashboard, base = self._start(gene_pool=mock_gene_pool)
+        mock_skill_store = MagicMock()
+        mock_skill_store.get_gene_skills.return_value = []
+        dashboard, base = self._start(gene_pool=mock_gene_pool, skill_store=mock_skill_store)
         try:
             code, body = self._get(f"{base}/genes")
             assert code == 200
             assert "Gene Leaderboard" in body
             assert "Improved error handling" in body
-            assert "0.85" in body
-            assert "0.72" in body
-            assert "Hits" in body
-            assert "Last Hit" in body
+            assert "0.850" in body
+            assert "0.720" in body
+            assert "Code Hits" in body
+            assert "Task Hits" in body
+            assert "Last Task Hit" in body
+            assert "Task-Proven" in body
+            assert "Avg Score" in body
         finally:
             dashboard.stop()
 

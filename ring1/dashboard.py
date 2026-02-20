@@ -81,7 +81,7 @@ td.content-cell { white-space: pre-wrap; word-break: break-word; max-width: 600p
 .skill-card h3 { font-size: 1rem; margin-bottom: 0.3rem; }
 .skill-card .desc { color: #999; font-size: 0.8rem; margin-bottom: 0.5rem; }
 .skill-card .tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem; }
-.skill-card .tag { background: #252a4a; color: #aaa; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 3px; }
+.skill-card .tag, td .tag { background: #252a4a; color: #aaa; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 3px; }
 .skill-card .meta { font-size: 0.75rem; color: #666; }
 .profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
 @media (max-width: 768px) { .profile-grid { grid-template-columns: 1fr; } }
@@ -964,7 +964,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_html(_page("Schedule", body))
 
     def _serve_genes(self) -> None:
-        """Gene leaderboard page — top genes by score."""
+        """Gene leaderboard page — full gene data for debugging."""
         genes = []
         if self.gene_pool:
             try:
@@ -972,30 +972,86 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Gather lineage info (gene_id → skill names).
+        gene_skills: dict[int, list[str]] = {}
+        if self.skill_store and genes:
+            try:
+                for g in genes:
+                    gid = g.get("id")
+                    if gid is not None:
+                        skills = self.skill_store.get_gene_skills(gid)
+                        if skills:
+                            gene_skills[gid] = skills
+            except Exception:
+                pass
+
+        # Summary cards.
+        total = len(genes)
+        avg_score = sum(g.get("score", 0) for g in genes) / total if total else 0
+        task_proven = sum(1 for g in genes if (g.get("task_hit_count") or 0) > 0)
+        linked = len(gene_skills)
+        cards_html = (
+            '<div class="cards">'
+            f'<div class="card"><h3>Total Genes</h3><div class="value">{total}</div></div>'
+            f'<div class="card"><h3>Avg Score</h3><div class="value">{avg_score:.2f}</div></div>'
+            f'<div class="card"><h3>Task-Proven</h3><div class="value">{task_proven}</div>'
+            f'<div class="detail">genes with task_hit &gt; 0</div></div>'
+            f'<div class="card"><h3>Linked to Skills</h3><div class="value">{linked}</div>'
+            f'<div class="detail">genes with skill lineage</div></div>'
+            '</div>'
+        )
+
         rows_html = []
         for i, g in enumerate(genes, 1):
+            gid = g.get("id", "?")
             score = g.get("score", 0)
             gen = g.get("generation", "?")
-            summary = _esc(str(g.get("gene_summary", ""))[:80])
-            tags = _esc(str(g.get("tags", ""))[:60])
+            summary = _esc(str(g.get("gene_summary", "")))
+            tags_raw = str(g.get("tags", ""))
+            tags_html = " ".join(
+                f'<span class="tag">{_esc(t)}</span>' for t in tags_raw.split() if t
+            ) if tags_raw.strip() else '<span style="color:#555">—</span>'
             hits = g.get("hit_count", 0)
             last_hit = g.get("last_hit_gen", 0)
+            task_hits = g.get("task_hit_count", 0) or 0
+            last_task_hit = g.get("last_task_hit_gen", 0) or 0
+            skills = gene_skills.get(gid, [])
+            skills_html = ", ".join(_esc(s) for s in skills) if skills else '<span style="color:#555">—</span>'
+
+            # Color score cell by value.
+            if score >= 0.8:
+                score_color = "#4ecdc4"
+            elif score >= 0.5:
+                score_color = "#feca57"
+            else:
+                score_color = "#ff6b6b"
+
             rows_html.append(
-                f'<tr><td>{i}</td><td>{score:.2f}</td><td>{gen}</td>'
-                f'<td>{summary}</td><td>{tags}</td>'
-                f'<td>{hits}</td><td>{last_hit}</td></tr>'
+                f'<tr>'
+                f'<td>{gid}</td>'
+                f'<td style="color:{score_color};font-weight:600">{score:.3f}</td>'
+                f'<td>{gen}</td>'
+                f'<td>{hits}</td><td>{last_hit}</td>'
+                f'<td style="font-weight:600">{task_hits}</td><td>{last_task_hit}</td>'
+                f'<td>{skills_html}</td>'
+                f'<td class="content-cell" style="max-width:none">{summary}</td>'
+                f'<td style="max-width:300px">{tags_html}</td>'
+                f'</tr>'
             )
 
         table = (
-            "<table><thead><tr>"
-            "<th>#</th><th>Score</th><th>Gen</th><th>Summary</th><th>Tags</th>"
-            "<th>Hits</th><th>Last Hit</th>"
-            "</tr></thead><tbody>"
+            '<table><thead><tr>'
+            '<th>ID</th><th>Score</th><th>Gen</th>'
+            '<th>Code Hits</th><th>Last Code Hit</th>'
+            '<th>Task Hits</th><th>Last Task Hit</th>'
+            '<th>Skills</th>'
+            '<th>Summary</th><th>Tags</th>'
+            '</tr></thead><tbody>'
             + "".join(rows_html)
-            + "</tbody></table>"
+            + '</tbody></table>'
         ) if rows_html else '<p style="color:#777">No genes in pool yet.</p>'
 
-        body = f"<h2>Gene Leaderboard</h2>{table}"
+        body = f"<h2>Gene Leaderboard ({total})</h2>{cards_html}{table}"
         self._send_html(_page("Genes", body))
 
     # ------------------------------------------------------------------
