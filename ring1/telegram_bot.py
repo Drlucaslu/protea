@@ -51,6 +51,8 @@ class SentinelState:
         # Habit detection
         "habit_proposals", "_habit_dismissed", "_habit_context",
         "_pending_habits",
+        # Preference store reference (for feedback)
+        "_preference_store",
     )
 
     def __init__(self) -> None:
@@ -90,6 +92,7 @@ class SentinelState:
         self._habit_dismissed: set[str] = set()
         self._habit_context: dict[str, dict] = {}  # pattern_key -> proposal details
         self._pending_habits: dict[str, dict] = {}  # pattern_key -> {cron, auto_stop_hours, timestamp}
+        self._preference_store = None  # Set by Sentinel after creation
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -156,6 +159,10 @@ class TelegramBot:
         self._last_bot_messages = []  # 保留最近 5 条消息
         self._max_context_messages = 5
         self._context_window_seconds = 120  # 2分钟内的回复视为有上下文
+
+        # Feedback collection: send 👍/👎 after every N task responses.
+        self._task_response_counter: int = 0
+        self._feedback_interval: int = 3  # Ask for feedback every 3 tasks
 
     # -- low-level API helpers --
 
@@ -236,6 +243,23 @@ class TelegramBot:
             "parse_mode": "Markdown",
             "reply_markup": json.dumps({"inline_keyboard": buttons}),
         })
+
+    def send_feedback_prompt(self) -> None:
+        """Send a quick feedback prompt after a task response.
+
+        Called by the task executor (via reply_fn wrapper) every N tasks.
+        Sends a lightweight inline keyboard with 👍/👎.
+        """
+        self._task_response_counter += 1
+        if self._task_response_counter % self._feedback_interval != 0:
+            return
+        buttons = [[
+            {"text": "\U0001f44d", "callback_data": "feedback:positive"},
+            {"text": "\U0001f44e", "callback_data": "feedback:negative"},
+        ]]
+        self._send_message_with_keyboard(
+            "这次回答还行吗？", buttons,
+        )
 
     def _send_document(self, file_path: str, caption: str = "") -> bool:
         """Send a file to the authorized chat via sendDocument (multipart).
@@ -1053,9 +1077,35 @@ class TelegramBot:
     def _handle_callback(self, data: str) -> str:
         """Handle an inline keyboard callback by prefix.
 
-        ``data`` format: ``run:<name>``, ``skill:<name>``, or ``habit:…``.
+        ``data`` format: ``run:<name>``, ``skill:<name>``, ``habit:…``,
+        or ``feedback:positive|negative``.
         Returns a text reply.
         """
+        # --- feedback callbacks ---
+        if data == "feedback:positive":
+            return "\U0001f44d 谢谢反馈！"
+        if data == "feedback:negative":
+            # Record negative feedback as a drift event if preference_store is available.
+            try:
+                ms = self.state.memory_store
+                if ms:
+                    recent = ms.get_by_type("task", limit=1)
+                    if recent:
+                        content = recent[0].get("content", "")[:100]
+                        log.info("Negative feedback on task: %s", content)
+                        # Store as a preference moment of type 'feedback'.
+                        ps = getattr(self.state, "_preference_store", None)
+                        if ps:
+                            ps.store_moment(
+                                moment_type="feedback",
+                                content=f"negative feedback on: {content}",
+                                category="general",
+                                extracted_signal="user dissatisfied with response",
+                            )
+            except Exception:
+                log.debug("Feedback processing failed", exc_info=True)
+            return "\U0001f44e 收到，我会改进的！"
+
         # --- habit callbacks ---
         if data.startswith("habit:schedule:"):
             # format: habit:schedule:<pattern_key>:<cron_expr>

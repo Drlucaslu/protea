@@ -285,6 +285,58 @@ class GenePool(SQLiteStore):
                 boosted += 1
             return boosted
 
+    def verify_adoption(
+        self,
+        new_source: str,
+        gene_ids: list[int],
+        generation: int,
+    ) -> list[int]:
+        """Verify which genes were actually adopted in the new Ring 2 code.
+
+        Compares gene summary tags against tokens in the new source.
+        Only genes with meaningful tag overlap are recorded as hits.
+
+        Args:
+            new_source: The new Ring 2 source code after evolution.
+            gene_ids: Gene IDs that were injected into the prompt.
+            generation: Current generation number.
+
+        Returns:
+            List of gene IDs that were verified as adopted.
+        """
+        if not gene_ids or not new_source:
+            return []
+
+        # Extract tokens from new source code.
+        source_tokens: set[str] = set()
+        for word in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', new_source):
+            for part in word.split("_"):
+                low = part.lower()
+                if len(low) >= 3 and low not in _STOPWORDS:
+                    source_tokens.add(low)
+
+        adopted: list[int] = []
+        with self._connect() as con:
+            for gid in gene_ids:
+                row = con.execute(
+                    "SELECT tags FROM gene_pool WHERE id = ?", (gid,),
+                ).fetchone()
+                if not row or not row["tags"]:
+                    continue
+                gene_tags = set(row["tags"].split())
+                if not gene_tags:
+                    continue
+                overlap = len(gene_tags & source_tokens)
+                # Require at least 30% tag overlap to count as adopted.
+                if overlap / len(gene_tags) >= 0.3:
+                    adopted.append(gid)
+
+        if adopted:
+            self.record_hits(adopted, generation)
+            log.info("Gene adoption verified: %d/%d genes adopted", len(adopted), len(gene_ids))
+
+        return adopted
+
     def apply_decay(self, current_generation: int, decay_rate: float = 0.02) -> int:
         """Decay genes not hit in >10 generations: -decay_rate (floor 0.10).
 

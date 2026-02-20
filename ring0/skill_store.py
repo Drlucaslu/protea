@@ -303,3 +303,24 @@ class SkillStore(SQLiteStore):
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
+    def cleanup_unused(self, min_age_days: int = 14) -> int:
+        """Deactivate evolved skills that have never been used.
+
+        Targets skills from evolution/crystallization that have zero usage
+        after existing for at least min_age_days. Permanent and user-created
+        skills are preserved.
+
+        Returns the number of skills deactivated.
+        """
+        with self._connect() as con:
+            cur = con.execute(
+                "UPDATE skills SET active = 0 "
+                "WHERE active = 1 "
+                "AND permanent = 0 "
+                "AND source IN ('crystallized', 'evolved') "
+                "AND usage_count = 0 "
+                "AND created_at < datetime('now', ?)",
+                (f"-{min_age_days} days",),
+            )
+            return cur.rowcount
+

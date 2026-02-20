@@ -420,6 +420,7 @@ class TaskExecutor:
         embedding_provider=None,
         prefer_local_skills: bool = True,
         scheduled_store=None,
+        preference_store=None,
     ) -> None:
         """
         Args:
@@ -455,6 +456,9 @@ class TaskExecutor:
         self.embedding_provider = embedding_provider
         self.prefer_local_skills = prefer_local_skills
         self.scheduled_store = scheduled_store
+        self.preference_store = preference_store
+        self.preference_extractor = None  # Initialized in create_executor()
+        self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
@@ -638,6 +642,13 @@ class TaskExecutor:
             # Check for correction pattern and persist as semantic_rule.
             self._check_and_store_correction(task.text)
 
+            # Cross-domain inspiration check (rate-limited: 1 per 5 tasks).
+            inspiration = self._check_cross_domain_inspiration(
+                task.text, response,
+            )
+            if inspiration:
+                response += f"\n\n{inspiration}"
+
             # Resolution footer.
             elapsed = time.time() - start
             if skills_used:
@@ -712,6 +723,15 @@ class TaskExecutor:
                     self.user_profiler.update_from_task(profile_text)
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
+            # Extract implicit preferences.
+            if self.preference_extractor:
+                try:
+                    self.preference_extractor.extract_and_store(
+                        task_text=memory_text,
+                        response_text=response[:200],
+                    )
+                except Exception:
+                    log.debug("Failed to extract preferences", exc_info=True)
 
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"
@@ -768,6 +788,73 @@ class TaskExecutor:
                 )
                 log.info("Correction detected, stored as semantic_rule: %s", rule_text[:60])
                 break
+
+    def _check_cross_domain_inspiration(
+        self,
+        task_text: str,
+        response: str,
+    ) -> str | None:
+        """Check if there's a cross-domain connection to share with the user.
+
+        Conditions (all must be met to avoid being annoying):
+        - Task text is substantive (>= 30 characters)
+        - memory_store and user_profiler are available
+        - Rate limit: triggers at most once per 5 tasks
+        - Found a high-relevance cross-domain memory
+
+        Returns inspiration text or None.
+        """
+        self._cross_domain_counter += 1
+        if self._cross_domain_counter % 5 != 0:
+            return None
+
+        if len(task_text.strip()) < 30:
+            return None
+
+        if not self.memory_store or not self.user_profiler:
+            return None
+
+        try:
+            profile = self.user_profiler.get_categories()
+            if not profile:
+                return None
+
+            # Build embedding if available.
+            query_embedding = None
+            if self.embedding_provider:
+                try:
+                    vecs = self.embedding_provider.embed([task_text[:200]])
+                    query_embedding = vecs[0] if vecs else None
+                except Exception:
+                    pass
+
+            results = self.memory_store.search_cross_domain(
+                current_task=task_text,
+                user_profile={"categories": profile},
+                limit=1,
+                query_embedding=query_embedding,
+            )
+
+            if not results:
+                return None
+
+            hit = results[0]
+            content = hit.get("content", "")
+            if not content or len(content) < 10:
+                return None
+
+            # Truncate for display.
+            if len(content) > 150:
+                content = content[:150] + "..."
+
+            return (
+                "\u2728 Cross-domain insight:\n"
+                f"{content}\n"
+                "Want me to explore this connection?"
+            )
+        except Exception:
+            log.debug("Cross-domain inspiration check failed", exc_info=True)
+            return None
 
     def _propose_habit(self, pattern) -> None:
         """Push a habit proposal to state.habit_proposals for the bot to send."""
@@ -1081,6 +1168,7 @@ def create_executor(
     embedding_provider=None,
     scheduled_store=None,
     send_file_fn=None,
+    preference_store=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -1140,8 +1228,24 @@ def create_executor(
         embedding_provider=embedding_provider,
         prefer_local_skills=prefer_local_skills,
         scheduled_store=scheduled_store,
+        preference_store=preference_store,
     )
     executor.subagent_manager = subagent_mgr
+
+    # Initialize preference extractor.
+    if preference_store:
+        try:
+            from ring1.preference_extractor import PreferenceExtractor
+            user_profile_cfg = getattr(config, "_raw_cfg", {}).get("ring1", {}).get("user_profile", {})
+            rate_limit = user_profile_cfg.get("extraction_rate_limit_sec", 300)
+            executor.preference_extractor = PreferenceExtractor(
+                llm_client=client,
+                preference_store=preference_store,
+                rate_limit_sec=rate_limit,
+            )
+            log.info("PreferenceExtractor initialized (rate_limit=%ds)", rate_limit)
+        except Exception:
+            log.debug("PreferenceExtractor init failed (non-fatal)", exc_info=True)
 
     # Initialize habit detector with templates and LLM client.
     if memory_store:

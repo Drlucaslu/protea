@@ -416,6 +416,62 @@ class FitnessTracker(SQLiteStore):
             }
             return summary
 
+    def score_task_alignment(
+        self,
+        output_lines: list[str],
+        user_categories: dict[str, float],
+    ) -> float:
+        """Score how well Ring 2 output aligns with user interest categories.
+
+        Checks if output tokens overlap with high-weight user interest keywords.
+        Returns a bonus score (0.0–0.10) to be added to the base fitness.
+
+        Args:
+            output_lines: Lines of Ring 2 output.
+            user_categories: Dict mapping category name → weight (0.0–1.0).
+        """
+        if not user_categories or not output_lines:
+            return 0.0
+
+        meaningful = [ln for ln in output_lines if ln.strip()]
+        if not meaningful:
+            return 0.0
+
+        # Build token set from output.
+        output_tokens: set[str] = set()
+        for line in meaningful:
+            for word in line.split():
+                cleaned = re.sub(r"[^a-zA-Z0-9_]", "", word).lower()
+                if len(cleaned) >= 3 and not cleaned.isdigit():
+                    output_tokens.add(cleaned)
+
+        if not output_tokens:
+            return 0.0
+
+        # Check overlap with each category's keywords, weighted by category weight.
+        total_score = 0.0
+        total_weight = 0.0
+        for category, weight in user_categories.items():
+            if weight < 0.1:
+                continue
+            cat_tokens = {
+                re.sub(r"[^a-zA-Z0-9_]", "", t).lower()
+                for t in category.split()
+                if len(t) >= 2
+            }
+            if not cat_tokens:
+                continue
+            overlap = len(output_tokens & cat_tokens)
+            cat_score = min(overlap / max(len(cat_tokens), 1), 1.0)
+            total_score += cat_score * weight
+            total_weight += weight
+
+        if total_weight == 0:
+            return 0.0
+
+        alignment = total_score / total_weight
+        return round(min(alignment * 0.10, 0.10), 4)
+
     def is_plateaued(self, window: int = 5, epsilon: float = 0.03) -> bool:
         """Check if recent survived scores are stagnant.
 

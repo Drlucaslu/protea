@@ -1099,6 +1099,176 @@ class MemoryStore(SQLiteStore):
                 count += 1
             return count
 
+    def search_cross_domain(
+        self,
+        current_task: str,
+        user_profile: dict,
+        limit: int = 3,
+        query_embedding: list[float] | None = None,
+    ) -> list[dict]:
+        """Cross-domain associative search: find memories from *different* domains
+        that might inspire connections with the current task.
+
+        Strategy:
+        1. Determine the current task's primary category from user_profile.
+        2. Search memories tagged with OTHER high-weight categories.
+        3. Rank by embedding similarity (if available) or keyword overlap.
+
+        Args:
+            current_task: The current task text.
+            user_profile: Dict with 'categories' mapping category → weight.
+            limit: Max results to return.
+            query_embedding: Optional embedding of the current task.
+
+        Returns:
+            List of memory dicts with added 'cross_domain_score' field.
+        """
+        categories = user_profile.get("categories", {})
+        if not categories:
+            return []
+
+        # Determine current task's likely category via keyword overlap.
+        task_keywords = set(_KEYWORD_RE.findall(current_task.lower()))
+        current_category = ""
+        best_overlap = 0
+        for cat in categories:
+            cat_keywords = set(_KEYWORD_RE.findall(cat.lower()))
+            overlap = len(task_keywords & cat_keywords)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                current_category = cat
+
+        # If no category matched, pick the highest-weight one as "current".
+        if not current_category and categories:
+            current_category = max(categories, key=lambda c: categories[c])
+
+        # Other categories sorted by weight descending.
+        other_cats = [
+            c for c in sorted(categories, key=lambda c: categories[c], reverse=True)
+            if c != current_category
+        ]
+        if not other_cats:
+            return []
+
+        # Collect keywords from other categories for search.
+        other_keywords: list[str] = []
+        for cat in other_cats[:3]:
+            other_keywords.extend(_KEYWORD_RE.findall(cat.lower()))
+        # Also add task keywords for cross-relevance.
+        search_keywords = list(set(other_keywords)) + list(task_keywords)[:5]
+
+        # Use hybrid search across all tiers.
+        candidates = self.hybrid_search(
+            keywords=search_keywords,
+            query_embedding=query_embedding,
+            limit=limit * 3,
+        )
+
+        # Filter: keep only entries whose keywords overlap with other categories
+        # (not the current category).
+        current_cat_kw = set(_KEYWORD_RE.findall(current_category.lower()))
+        other_cat_kw = set(other_keywords)
+
+        results: list[tuple[float, dict]] = []
+        for entry in candidates:
+            entry_kw = set((entry.get("keywords", "") or "").lower().split())
+            # Score: how much does this entry relate to OTHER categories?
+            other_overlap = len(entry_kw & other_cat_kw)
+            # Also check it has SOME relevance to current task (cross-connection).
+            task_overlap = len(entry_kw & task_keywords)
+
+            if other_overlap > 0 and task_overlap > 0:
+                score = (other_overlap * 0.6 + task_overlap * 0.4) / max(len(entry_kw), 1)
+                entry["cross_domain_score"] = round(score, 4)
+                results.append((score, entry))
+
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in results[:limit]]
+
+    def recall_by_reference(
+        self,
+        reference_text: str,
+        limit: int = 3,
+        query_embedding: list[float] | None = None,
+    ) -> list[dict]:
+        """Fuzzy reference recall: find memories matching vague references
+        like "上次那个XX" or "the thing about YY".
+
+        Searches ALL tiers (including cold and archive) to find old memories.
+        Uses hybrid search (keyword + embedding) for best results.
+
+        Args:
+            reference_text: The user's vague reference text.
+            limit: Max results to return.
+            query_embedding: Optional embedding for semantic matching.
+
+        Returns:
+            List of memory dicts with 'recall_score' field, most relevant first.
+        """
+        if not reference_text.strip():
+            return []
+
+        # Extract keywords from the reference.
+        keywords = _KEYWORD_RE.findall(reference_text.lower())
+        # Filter very short tokens.
+        keywords = [kw for kw in keywords if len(kw) >= 2]
+
+        if not keywords and query_embedding is None:
+            return []
+
+        # Search across ALL tiers (including archive).
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM memory ORDER BY id DESC",
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        kw_set = set(keywords)
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            d = self._row_to_dict(row)
+            entry_keywords = (row["keywords"] or "").lower().split()
+            entry_kw_set = set(entry_keywords)
+
+            # Keyword score.
+            kw_score = 0.0
+            if kw_set:
+                matches = len(kw_set & entry_kw_set)
+                kw_score = matches / len(kw_set)
+
+            # Content match boost: check if reference keywords appear in content.
+            content_lower = (row["content"] or "").lower()
+            content_hits = sum(1 for kw in keywords if kw in content_lower)
+            content_score = content_hits / len(keywords) if keywords else 0.0
+
+            # Vector score.
+            vec_score = 0.0
+            has_embedding = False
+            if query_embedding and row["embedding"]:
+                try:
+                    emb = json.loads(row["embedding"])
+                    vec_score = _cosine_similarity(query_embedding, emb)
+                    has_embedding = True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Combined score: keyword + content + vector.
+            if has_embedding:
+                score = 0.25 * kw_score + 0.25 * content_score + 0.5 * vec_score
+            else:
+                score = 0.4 * kw_score + 0.6 * content_score
+
+            if score > 0.1:  # Minimum threshold.
+                d["recall_score"] = round(score, 4)
+                d["recalled"] = True
+                scored.append((score, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:limit]]
+
     def _cleanup_cold(self, current_generation: int) -> int:
         """Archive old, low-importance cold entries (demote to archive tier)."""
         threshold_gen = current_generation - 200

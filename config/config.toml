@@ -87,6 +87,20 @@ enabled = true
 check_interval_sec = 3600
 template_file = "config/task_templates.json"
 
+[ring1.proactive]
+enabled = true
+morning_hour = 9
+evening_hour = 21
+check_interval_sec = 1800
+max_proactive_actions_per_day = 5
+
+[ring1.user_profile]
+implicit_extraction = true
+extraction_rate_limit_sec = 300
+moment_aggregation_threshold = 3
+confidence_decay_rate = 0.98
+max_preferences = 50
+
 [ring1.telegram]
 enabled = true
 

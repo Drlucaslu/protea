@@ -173,6 +173,7 @@ def build_evolution_prompt(
     gene_pool: list[dict] | None = None,
     evolution_intent: dict | None = None,
     user_profile_summary: str = "",
+    structured_preferences: str = "",
     tool_names: list[str] | None = None,
     permanent_capabilities: list[dict] | None = None,
     allowed_packages: list[str] | None = None,
@@ -298,6 +299,15 @@ def build_evolution_prompt(
         if len(profile_text) > 200:
             profile_text = profile_text[:200] + "..."
         parts.append(profile_text)
+        parts.append("")
+
+    # Structured preferences — detailed user preference signals (intent-gated)
+    if include_user_profile and structured_preferences:
+        parts.append("## Structured Preferences")
+        pref_text = structured_preferences
+        if len(pref_text) > 300:
+            pref_text = pref_text[:300] + "..."
+        parts.append(pref_text)
         parts.append("")
 
     # Available tools/capabilities (so LLM knows what already exists)

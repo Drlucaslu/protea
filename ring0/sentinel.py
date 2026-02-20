@@ -350,7 +350,7 @@ def _try_auto_directive(memory_store, user_profiler, project_root):
         return None
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
     """Best-effort evolution.  Returns True if new code was written."""
     try:
         from ring1.config import load_ring1_config
@@ -485,6 +485,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             gene_pool=genes,
             evolution_intent=evolution_intent,
             user_profile_summary=user_profile_summary,
+            structured_preferences=structured_preferences,
             permanent_capabilities=permanent_caps or None,
             allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
             skill_hit_summary=skill_hit_summary,
@@ -544,6 +545,17 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                             )
                         except Exception:
                             pass
+
+            # Verify gene adoption: only genes actually used in new code get hits.
+            if gene_pool and genes and result.new_source:
+                try:
+                    gene_ids = [g["id"] for g in genes if "id" in g]
+                    if gene_ids:
+                        gene_pool.verify_adoption(
+                            result.new_source, gene_ids, generation,
+                        )
+                except Exception:
+                    pass
 
             return True
         else:
@@ -754,13 +766,13 @@ def _create_dashboard(project_root, cfg, **data_sources):
     return _best_effort("Dashboard", _factory)
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, registry_client=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, registry_client=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None):
     """Best-effort task executor creation."""
     def _factory():
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store)
         if executor:
             thread = start_executor_thread(executor)
             state.executor_thread = thread
@@ -803,6 +815,7 @@ def run(project_root: pathlib.Path) -> None:
     task_store = _best_effort("TaskStore", lambda: __import__("ring0.task_store", fromlist=["TaskStore"]).TaskStore(db_path))
     scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
+    preference_store = _best_effort("PreferenceStore", lambda: __import__("ring0.user_profile", fromlist=["PreferenceStore"]).PreferenceStore(db_path, cfg.get("ring1", {}).get("user_profile", {})))
     embedding_provider = _create_embedding_provider(cfg)
     memory_curator = _create_memory_curator(project_root)
 
@@ -837,6 +850,7 @@ def run(project_root: pathlib.Path) -> None:
     state.skill_runner = skill_runner
     state.task_store = task_store
     state.scheduled_store = scheduled_store
+    state._preference_store = preference_store
     bot = _create_bot(project_root, state, fitness, ring2_path)
     matrix_bot = _create_matrix_bot(project_root, state)
 
@@ -844,11 +858,14 @@ def run(project_root: pathlib.Path) -> None:
     registry_client = _create_registry_client(project_root, cfg)
     state.registry_client = registry_client
 
-    # Evict stale hub skills on startup.
+    # Evict stale hub skills and clean up unused evolved skills on startup.
     if skill_store:
         evicted = skill_store.evict_stale()
         if evicted:
             log.info("Evicted %d stale hub skills", evicted)
+        cleaned = skill_store.cleanup_unused()
+        if cleaned:
+            log.info("Deactivated %d unused evolved skills", cleaned)
 
     # Skill syncer — periodic publish + discover.
     skill_syncer = _create_skill_syncer(skill_store, registry_client, user_profiler, cfg)
@@ -873,11 +890,46 @@ def run(project_root: pathlib.Path) -> None:
             log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
 
     # Task executor for P0 user tasks.
-    reply_fn = bot._send_reply if bot else (lambda text: None)
+    # Wrap reply_fn to trigger feedback prompts after replies.
+    if bot:
+        def _reply_with_feedback(text: str) -> None:
+            bot._send_reply(text)
+            try:
+                bot.send_feedback_prompt()
+            except Exception:
+                pass
+        reply_fn = _reply_with_feedback
+    else:
+        reply_fn = lambda text: None
     send_file_fn = bot._send_document if bot else None
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store)
     # Expose subagent_manager on state for /background command.
     state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
+
+    # Proactive loop — morning briefings, evening summaries, periodic checks.
+    proactive_loop = None
+    proactive_cfg = cfg.get("ring1", {}).get("proactive", {})
+    if proactive_cfg.get("enabled", False):
+        def _create_proactive():
+            from ring1.config import load_ring1_config
+            from ring1.proactive_loop import ProactiveLoop
+            r1_config = load_ring1_config(project_root)
+            if not r1_config.has_llm_config():
+                return None
+            client = r1_config.get_llm_client()
+            return ProactiveLoop(
+                llm_client=client,
+                memory_store=memory_store,
+                preference_store=preference_store,
+                user_profiler=user_profiler,
+                notifier=notifier,
+                config=proactive_cfg,
+            )
+        proactive_loop = _best_effort("ProactiveLoop", _create_proactive)
+        if proactive_loop:
+            log.info("ProactiveLoop enabled (morning=%d, evening=%d)",
+                     proactive_cfg.get("morning_hour", 9),
+                     proactive_cfg.get("evening_hour", 21))
 
     # Skill Portal — unified web dashboard.
     portal = _create_portal(project_root, cfg, skill_store, skill_runner)
@@ -910,6 +962,7 @@ def run(project_root: pathlib.Path) -> None:
     last_good_hash: str | None = None
     last_crystallized_hash: str | None = None
     last_skill_sync_time: float = 0.0  # epoch — triggers sync on first eligible moment
+    last_consolidation_date: str = ""  # YYYY-MM-DD — nightly consolidation
     skill_cap = r0.skill_max_count
     proc: subprocess.Popen | None = None
 
@@ -934,6 +987,13 @@ def run(project_root: pathlib.Path) -> None:
         while True:
             state.p0_event.wait(timeout=interval)
             state.p0_event.clear()
+
+            # --- proactive loop check ---
+            if proactive_loop:
+                try:
+                    proactive_loop.check_and_send()
+                except Exception:
+                    log.debug("Proactive check failed (non-fatal)", exc_info=True)
 
             # --- resource check ---
             ok, msg = check_resources(
@@ -1021,6 +1081,20 @@ def run(project_root: pathlib.Path) -> None:
                     elapsed=elapsed, max_runtime=params.max_runtime_sec,
                     recent_fingerprints=recent_fps,
                 )
+
+                # Task alignment bonus: reward output that matches user interests.
+                if user_profiler:
+                    try:
+                        user_cats = user_profiler.get_categories()
+                        if user_cats:
+                            alignment_bonus = fitness.score_task_alignment(
+                                output_lines, user_cats,
+                            )
+                            if alignment_bonus > 0:
+                                score = min(score + alignment_bonus, 1.0)
+                                detail["task_alignment"] = alignment_bonus
+                    except Exception:
+                        pass
 
                 # Record success.
                 commit_hash = last_good_hash or "unknown"
@@ -1124,6 +1198,13 @@ def run(project_root: pathlib.Path) -> None:
                             profile_summary = user_profiler.get_profile_summary()
                         except Exception:
                             pass
+                    # Get structured preferences for evolution.
+                    pref_summary = ""
+                    if preference_store:
+                        try:
+                            pref_summary = preference_store.get_preference_summary_text()
+                        except Exception:
+                            pass
                     evolved = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
@@ -1134,6 +1215,7 @@ def run(project_root: pathlib.Path) -> None:
                         is_plateaued=plateaued,
                         gene_pool=gene_pool,
                         user_profile_summary=profile_summary,
+                        structured_preferences=pref_summary,
                         venv_manager=venv_manager,
                         allowed_packages=allowed_packages,
                         skill_hit_summary=skill_hit,
@@ -1169,6 +1251,35 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Profile decay: removed %d stale topics", removed)
                         except Exception:
                             log.debug("Profile decay failed (non-fatal)", exc_info=True)
+                    if preference_store:
+                        try:
+                            aggregated = preference_store.aggregate_moments()
+                            if aggregated:
+                                log.info("Preference aggregation: %d preferences updated", aggregated)
+                            decayed = preference_store.apply_confidence_decay()
+                            if decayed:
+                                log.info("Preference decay: removed %d low-confidence entries", decayed)
+                        except Exception:
+                            log.debug("Preference maintenance failed (non-fatal)", exc_info=True)
+                        # Detect preference drift and inject evolution directive if significant.
+                        try:
+                            drifts = preference_store.detect_drift()
+                            rising = [d for d in drifts if d["drift_direction"] == "rising"]
+                            if rising:
+                                top_drift = rising[0]
+                                drift_msg = (
+                                    f"User interest rising in '{top_drift['preference_key']}' "
+                                    f"(confidence {top_drift['old_confidence']:.2f} → "
+                                    f"{top_drift['new_confidence']:.2f})"
+                                )
+                                log.info("Preference drift detected: %s", drift_msg)
+                                with state.lock:
+                                    if not state.evolution_directive:
+                                        state.evolution_directive = (
+                                            f"Adapt to user's increasing interest: {drift_msg}"
+                                        )
+                        except Exception:
+                            log.debug("Drift detection failed (non-fatal)", exc_info=True)
                     if gene_pool:
                         try:
                             recent_tasks = []
@@ -1192,6 +1303,22 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Gene scoring: boosted=%d decayed=%d", boosted, decayed)
                         except Exception:
                             log.debug("Gene scoring failed (non-fatal)", exc_info=True)
+
+                    # Nightly consolidation: cross-task correlation + insights (once per day).
+                    from datetime import datetime as _dt
+                    _today = _dt.now().strftime("%Y-%m-%d")
+                    _hour = _dt.now().hour
+                    if (memory_store and memory_curator and _today != last_consolidation_date
+                            and _hour >= 23):
+                        try:
+                            cons_result = memory_curator.nightly_consolidate(
+                                memory_store, preference_store=preference_store,
+                            )
+                            last_consolidation_date = _today
+                            if cons_result.get("moments_stored", 0):
+                                log.info("Nightly consolidation: %s", cons_result)
+                        except Exception:
+                            log.debug("Nightly consolidation failed (non-fatal)", exc_info=True)
 
                 # Periodic skill sync (every sync_interval seconds, default 2 hours).
                 if skill_syncer and (time.time() - last_skill_sync_time) >= sync_interval:
@@ -1320,6 +1447,13 @@ def run(project_root: pathlib.Path) -> None:
                         profile_summary = user_profiler.get_profile_summary()
                     except Exception:
                         pass
+                # Get structured preferences for evolution.
+                pref_summary = ""
+                if preference_store:
+                    try:
+                        pref_summary = preference_store.get_preference_summary_text()
+                    except Exception:
+                        pass
                 evolved = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
@@ -1330,6 +1464,7 @@ def run(project_root: pathlib.Path) -> None:
                     is_plateaued=False,  # failure path — focus on fixing, not novelty
                     gene_pool=gene_pool,
                     user_profile_summary=profile_summary,
+                    structured_preferences=pref_summary,
                     venv_manager=venv_manager,
                     allowed_packages=allowed_packages,
                     skill_hit_summary=skill_hit,
