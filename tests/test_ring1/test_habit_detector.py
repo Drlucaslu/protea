@@ -333,7 +333,7 @@ class TestRepetitiveDetection:
         assert len(rep) >= 1
 
     def test_l1_takes_precedence(self):
-        """If L1 finds something, L2 is not run."""
+        """L1 template patterns appear first; L2 always runs but deduplicates."""
         tasks = [
             _make_task("查一下机票",
                        tool_sequence=["web_search", "web_search", "message"]),
@@ -343,8 +343,10 @@ class TestRepetitiveDetection:
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem, templates=[FLIGHT_TEMPLATE])
         patterns = detector.detect()
-        assert len(patterns) == 1
-        assert patterns[0].pattern_type == "template"
+        # L1 pattern is present
+        template_patterns = [p for p in patterns if p.pattern_type == "template"]
+        assert len(template_patterns) >= 1
+        assert template_patterns[0].template_name == "flight_price_tracker"
 
     def test_pattern_key_format(self):
         """pattern_key has format 'tool_pattern:{intent}:{tools}'."""
@@ -378,6 +380,96 @@ class TestRepetitiveDetection:
         patterns = detector.detect()
         rep = [p for p in patterns if p.pattern_type == "repetitive"]
         assert len(rep) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tool-sequence validation (L1 → L2 pipeline)
+# ---------------------------------------------------------------------------
+
+class TestToolSequenceValidation:
+    """Validate that L1 template hits are filtered by tool-sequence consistency."""
+
+    PAPER_TEMPLATE = {
+        "id": "academic_paper_alert",
+        "name": "学术论文监控",
+        "keywords": ["论文", "paper", "research", "arxiv", "研究", "学术"],
+        "regex_patterns": ["最新.*研究", "academic.*paper"],
+        "task_type": "periodic",
+        "default_cron": "0 8 * * *",
+        "default_task_text": "搜索关注领域的最新学术论文并生成摘要",
+        "min_hits": 2,
+        "window_hours": 168,
+    }
+
+    def test_consistent_tool_seq_passes(self):
+        """Template hits with consistent tool_sequence all pass validation."""
+        tasks = [
+            _make_task("搜索最新AI研究论文",
+                       tool_sequence=["web_search", "web_fetch", "message"]),
+            _make_task("帮我找最新研究论文",
+                       tool_sequence=["web_search", "web_fetch", "message"]),
+            _make_task("查一下arxiv上的论文",
+                       tool_sequence=["web_search", "web_search", "web_fetch", "message"]),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[self.PAPER_TEMPLATE])
+        patterns = detector.detect()
+        tmpl = [p for p in patterns if p.pattern_type == "template"]
+        assert len(tmpl) == 1
+        assert tmpl[0].count == 3
+
+    def test_mixed_tool_seq_filtered(self):
+        """Template hits with divergent tool_sequences are filtered out."""
+        tasks = [
+            # Real paper search
+            _make_task("搜索最新AI研究论文",
+                       tool_sequence=["web_search", "web_fetch", "message"]),
+            # Discussing the paper-monitoring feature (file creation)
+            _make_task("我想设计一个论文监控功能",
+                       tool_sequence=["write_file", "edit_file", "exec"]),
+            # Managing schedules related to papers
+            _make_task("帮我取消论文搜索的定时任务",
+                       tool_sequence=["manage_schedule"]),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[self.PAPER_TEMPLATE])
+        patterns = detector.detect()
+        tmpl = [p for p in patterns if p.pattern_type == "template"]
+        # Largest cluster has only 1 task → below min_hits=2
+        assert len(tmpl) == 0
+
+    def test_no_tool_seq_fallback(self):
+        """Hits without tool_sequence skip validation (backward compat)."""
+        tasks = [
+            _make_task("搜索最新AI研究论文"),
+            _make_task("帮我找最新研究论文"),
+            _make_task("查一下arxiv上的论文"),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[self.PAPER_TEMPLATE])
+        patterns = detector.detect()
+        tmpl = [p for p in patterns if p.pattern_type == "template"]
+        assert len(tmpl) == 1
+        assert tmpl[0].count == 3
+
+    def test_partial_tool_seq(self):
+        """Hits with partial tool_sequence: validation uses only those with seq."""
+        tasks = [
+            # Two with consistent search sequences
+            _make_task("搜索最新AI研究论文",
+                       tool_sequence=["web_search", "web_fetch", "message"]),
+            _make_task("帮我找最新研究论文",
+                       tool_sequence=["web_search", "web_search", "web_fetch", "message"]),
+            # One old task without tool_sequence
+            _make_task("查一下arxiv上的论文"),
+        ]
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem, templates=[self.PAPER_TEMPLATE])
+        patterns = detector.detect()
+        tmpl = [p for p in patterns if p.pattern_type == "template"]
+        # 2 with_seq form one cluster (size 2 >= min_hits 2) → passes
+        assert len(tmpl) == 1
+        assert tmpl[0].count == 2
 
 
 # ---------------------------------------------------------------------------

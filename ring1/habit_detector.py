@@ -203,14 +203,17 @@ class HabitDetector:
         log.debug("Analysing %d tasks for habits", len(tasks))
         existing_scheduled = self._get_existing_scheduled_names()
 
-        # Layer 1: Template matching
+        # Layer 1: Template matching (broad, validated by tool-sequence)
         patterns = self._detect_template_matches(tasks, existing_scheduled)
         log.debug("L1 template matching: %d patterns", len(patterns))
 
-        # Layer 2: High-threshold repetitive detection (only if L1 found nothing)
-        if not patterns:
-            patterns = self._detect_repetitive_patterns(tasks, existing_scheduled)
-            log.debug("L2 tool-sequence detection: %d patterns", len(patterns))
+        # Layer 2: Discover new patterns (always runs)
+        l2_patterns = self._detect_repetitive_patterns(tasks, existing_scheduled)
+        log.debug("L2 tool-sequence detection: %d patterns", len(l2_patterns))
+        l1_keys = {p.pattern_key for p in patterns}
+        for p in l2_patterns:
+            if p.pattern_key not in l1_keys:
+                patterns.append(p)
 
         # Filter out proposed/dismissed
         before = len(patterns)
@@ -269,8 +272,52 @@ class HabitDetector:
         return True
 
     # ------------------------------------------------------------------
-    # Layer 1: Template matching
+    # Layer 1: Template matching (with tool-sequence validation)
     # ------------------------------------------------------------------
+
+    def _validate_hits_by_tool_sequence(self, hits: list[dict]) -> list[dict]:
+        """Validate template hits by checking tool-sequence consistency.
+
+        If hits have tool_sequence metadata, cluster them by cosine similarity
+        and return only the largest consistent cluster.  This filters out
+        keyword-only matches where the user discussed a topic (e.g. "论文")
+        without actually performing the associated action (e.g. web_search).
+        """
+        with_seq: list[tuple[dict, dict[str, float]]] = []
+        without_seq: list[dict] = []
+        for hit in hits:
+            profile = _tool_profile(hit)
+            if profile:
+                with_seq.append((hit, profile))
+            else:
+                without_seq.append(hit)
+
+        # Not enough tool-sequence data to validate — return all hits
+        if len(with_seq) < 2:
+            log.debug("Tool-seq validation: %d with seq (< 2), skipping",
+                      len(with_seq))
+            return hits
+
+        # Single-pass clustering by cosine >= 0.7
+        clusters: list[list[tuple[dict, dict[str, float]]]] = []
+        for item in with_seq:
+            _, profile = item
+            placed = False
+            for cluster in clusters:
+                _, rep_profile = cluster[0]
+                if _tool_profile_cosine(profile, rep_profile) >= 0.7:
+                    cluster.append(item)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([item])
+
+        # Return tasks from the largest cluster
+        largest = max(clusters, key=len)
+        log.debug("Tool-seq validation: %d with_seq → %d clusters, "
+                  "largest=%d, without_seq=%d",
+                  len(with_seq), len(clusters), len(largest), len(without_seq))
+        return [task for task, _ in largest]
 
     def _detect_template_matches(
         self, tasks: list[dict], existing_scheduled: set[str],
@@ -339,6 +386,14 @@ class HabitDetector:
                     hits.append(task)
 
             if len(hits) >= min_hits and task_type != "on_demand":
+                # Validate keyword hits against tool-sequence consistency
+                validated = self._validate_hits_by_tool_sequence(hits)
+                log.debug("Template %s: %d hits → %d validated",
+                          tmpl_id, len(hits), len(validated))
+                if len(validated) < min_hits:
+                    continue
+                hits = validated
+
                 # Prefer template's default_task_text; fall back to first hit.
                 sample = template.get("default_task_text", "") or hits[0].get("content", "")[:100]
                 cron = default_cron or self._detect_time_pattern(hits)
