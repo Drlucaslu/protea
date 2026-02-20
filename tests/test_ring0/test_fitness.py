@@ -570,7 +570,7 @@ class TestScoreTaskAlignment:
         """Passing None for topic_keywords should behave like no keywords."""
         tracker = FitnessTracker(tmp_path / "fitness.db")
         output = ["hello world"]
-        cats = {"general": 1.0}
+        cats = {"coding": 1.0}
         score = tracker.score_task_alignment(output, cats, topic_keywords=None)
         assert isinstance(score, float)
 

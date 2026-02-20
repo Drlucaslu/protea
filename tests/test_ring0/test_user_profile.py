@@ -1,8 +1,9 @@
-"""Tests for ring0.user_profile — UserProfiler."""
+"""Tests for ring0.user_profile — UserProfiler and PreferenceStore."""
 
 from __future__ import annotations
 
 from ring0.user_profile import (
+    PreferenceStore,
     UserProfiler,
     _tokenize,
     _extract_bigrams,
@@ -103,21 +104,36 @@ class TestUpdateFromTask:
         assert python_topic["weight"] == 2.0
         assert python_topic["hit_count"] == 2
 
-    def test_unmatched_words_go_to_general(self, tmp_path):
+    def test_unmatched_words_go_to_dominant_category(self, tmp_path):
+        """Unmatched long tokens adopt the task's dominant category, not 'general'."""
         profiler = UserProfiler(tmp_path / "test.db")
-        # "xylophone" (len=9) qualifies for general; "something" (len=9) too
-        profiler.update_from_task("xylophone something")
-        topics = profiler.get_top_topics()
-        general = [t for t in topics if t["category"] == "general"]
-        assert len(general) >= 1
-
-    def test_general_threshold_raised(self, tmp_path):
-        """Short tokens (len < 5) no longer go to general."""
-        profiler = UserProfiler(tmp_path / "test.db")
-        profiler.update_from_task("ring main last")  # all len <= 4
+        # "python" → coding; "xylophone" (len=9) unmatched → coding (dominant)
+        profiler.update_from_task("python xylophone")
         topics = profiler.get_top_topics()
         general = [t for t in topics if t["category"] == "general"]
         assert len(general) == 0
+        xyl = [t for t in topics if t["topic"] == "xylophone"]
+        assert len(xyl) == 1
+        assert xyl[0]["category"] == "coding"
+
+    def test_short_tokens_dropped(self, tmp_path):
+        """Short tokens (len < 5) are dropped — never stored."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("ring main last")  # all len <= 4
+        topics = profiler.get_top_topics()
+        assert len(topics) == 0
+
+    def test_update_returns_dominant_category(self, tmp_path):
+        """update_from_task returns the dominant category string."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        result = profiler.update_from_task("python code debug")
+        assert result == "coding"
+
+    def test_update_returns_empty_on_no_match(self, tmp_path):
+        """update_from_task returns '' when no tokens match any category."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        result = profiler.update_from_task("hello world")
+        assert result == ""
 
     def test_chinese_not_in_general(self, tmp_path):
         """Chinese bigrams that don't match a category should NOT go to general."""
@@ -283,6 +299,114 @@ class TestGetProfileSummary:
         profiler.update_from_task("python code")
         summary = profiler.get_profile_summary()
         assert "Total interactions:" in summary
+
+
+class TestReclassifyGeneral:
+    """Tests for UserProfiler.reclassify_general()."""
+
+    def test_keyword_match(self, tmp_path):
+        """Topics matching a keyword get reclassified by keyword."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        import sqlite3
+        con = sqlite3.connect(str(tmp_path / "test.db"))
+        con.execute(
+            "INSERT INTO user_profile_topics (topic, weight, category) VALUES (?, 1.0, 'general')",
+            ("python",),
+        )
+        con.commit()
+        con.close()
+        result = profiler.reclassify_general()
+        assert result["total"] == 1
+        assert result["keyword"] == 1
+        topics = profiler.get_top_topics()
+        assert topics[0]["category"] == "coding"
+
+    def test_substring_match(self, tmp_path):
+        """Topics containing a category keyword as substring get reclassified."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        import sqlite3
+        con = sqlite3.connect(str(tmp_path / "test.db"))
+        con.execute(
+            "INSERT INTO user_profile_topics (topic, weight, category) VALUES (?, 1.0, 'general')",
+            ("python_debugging",),
+        )
+        con.commit()
+        con.close()
+        result = profiler.reclassify_general()
+        assert result["total"] == 1
+        assert result["substring"] == 1
+
+    def test_fallback_to_top_category(self, tmp_path):
+        """Unrecognized topics fall back to user's top non-general category."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        # Add some coding topics to establish a dominant category.
+        profiler.update_from_task("python code debug")
+        import sqlite3
+        con = sqlite3.connect(str(tmp_path / "test.db"))
+        con.execute(
+            "INSERT INTO user_profile_topics (topic, weight, category) VALUES (?, 1.0, 'general')",
+            ("xyzunknown",),
+        )
+        con.commit()
+        con.close()
+        result = profiler.reclassify_general()
+        assert result["total"] == 1
+        assert result["fallback"] == 1
+        topics = profiler.get_top_topics(100)
+        unknown = [t for t in topics if t["topic"] == "xyzunknown"]
+        assert unknown[0]["category"] == "coding"
+
+    def test_idempotent(self, tmp_path):
+        """Running reclassify twice does nothing the second time."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        import sqlite3
+        con = sqlite3.connect(str(tmp_path / "test.db"))
+        con.execute(
+            "INSERT INTO user_profile_topics (topic, weight, category) VALUES (?, 1.0, 'general')",
+            ("python",),
+        )
+        con.commit()
+        con.close()
+        profiler.reclassify_general()
+        result = profiler.reclassify_general()
+        assert result["total"] == 0
+
+    def test_no_general_topics(self, tmp_path):
+        """Returns zero counts when there are no 'general' topics."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("python code debug")
+        result = profiler.reclassify_general()
+        assert result["total"] == 0
+
+
+class TestPreferenceStoreReclassifyGeneral:
+    """Tests for PreferenceStore.reclassify_general()."""
+
+    def test_moments_reclassified(self, tmp_path):
+        """Moments with category='general' get reclassified by keyword match."""
+        store = PreferenceStore(tmp_path / "test.db")
+        store.store_moment("interest", "python coding skills", "general", "python coding")
+        result = store.reclassify_general()
+        assert result["moments"] == 1
+        pending = store.get_pending_moments()
+        assert pending[0]["category"] != "general"
+
+    def test_preferences_reclassified(self, tmp_path):
+        """Preferences with category='general' get reclassified."""
+        store = PreferenceStore(tmp_path / "test.db")
+        store.record_explicit("test:python", "python coding", "general")
+        result = store.reclassify_general()
+        assert result["preferences"] == 1
+        prefs = store.get_preferences()
+        assert prefs[0]["category"] != "general"
+
+    def test_idempotent(self, tmp_path):
+        """Running reclassify twice does nothing the second time."""
+        store = PreferenceStore(tmp_path / "test.db")
+        store.store_moment("interest", "python coding", "general", "python")
+        store.reclassify_general()
+        result = store.reclassify_general()
+        assert result["moments"] == 0
 
 
 class TestSharedDatabase:

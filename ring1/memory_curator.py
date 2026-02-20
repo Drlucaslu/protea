@@ -194,9 +194,9 @@ class MemoryCurator:
                     continue
 
                 category_map = {
-                    "correlation": "general",
+                    "correlation": "research",
                     "behavior": "lifestyle",
-                    "interest_shift": "general",
+                    "interest_shift": "lifestyle",
                 }
 
                 try:

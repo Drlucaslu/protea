@@ -762,10 +762,11 @@ class TaskExecutor:
                 except Exception:
                     log.debug("Failed to record task in memory", exc_info=True)
             # Update user profile (reuse english_intent from skill matching).
+            dominant_category = ""
             if self.user_profiler:
                 try:
                     profile_text = english_intent if english_intent else self._extract_profile_intent(memory_text)
-                    self.user_profiler.update_from_task(profile_text)
+                    dominant_category = self.user_profiler.update_from_task(profile_text) or ""
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
             # Extract implicit preferences.
@@ -774,6 +775,7 @@ class TaskExecutor:
                     self.preference_extractor.extract_and_store(
                         task_text=memory_text,
                         response_text=response[:200],
+                        category_hint=dominant_category,
                     )
                 except Exception:
                     log.debug("Failed to extract preferences", exc_info=True)

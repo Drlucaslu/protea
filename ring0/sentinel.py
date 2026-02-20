@@ -974,6 +974,24 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Skill lineage backfill failed (non-fatal): %s", exc)
 
+    # Reclassify 'general' topics and preferences to specific categories.
+    if user_profiler:
+        try:
+            reclass = user_profiler.reclassify_general()
+            if reclass["total"]:
+                log.info("Reclassified %d 'general' topics: %s", reclass["total"], reclass)
+        except Exception as exc:
+            log.debug("Profile reclassify failed (non-fatal): %s", exc)
+    if preference_store and user_profiler:
+        try:
+            cats = user_profiler.get_category_distribution()
+            top_cat = next(iter(cats), "lifestyle")
+            pref_reclass = preference_store.reclassify_general(fallback_category=top_cat)
+            if pref_reclass["moments"] or pref_reclass["preferences"]:
+                log.info("Preference reclassified: %s", pref_reclass)
+        except Exception as exc:
+            log.debug("Preference reclassify failed (non-fatal): %s", exc)
+
     # Post-backfill attribution: credit historical tasks.
     if lineage_backfilled and memory_store:
         try:

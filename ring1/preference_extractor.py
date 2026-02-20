@@ -156,9 +156,9 @@ class PreferenceExtractor:
         """Map moment type to UserProfiler category taxonomy."""
         mapping = {
             "communication": "lifestyle",
-            "interest": "general",
+            "interest": "lifestyle",
             "workflow": "system",
             "tool_preference": "coding",
             "behavior": "lifestyle",
         }
-        return mapping.get(moment_type, "general")
+        return mapping.get(moment_type, "lifestyle")

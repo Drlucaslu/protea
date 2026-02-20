@@ -286,8 +286,11 @@ class UserProfiler:
         con.row_factory = sqlite3.Row
         return con
 
-    def update_from_task(self, task_text: str, response_summary: str = "") -> None:
-        """Extract topics from a completed task and update the profile."""
+    def update_from_task(self, task_text: str, response_summary: str = "") -> str:
+        """Extract topics from a completed task and update the profile.
+
+        Returns the dominant category for this task (empty string if no match).
+        """
         combined = f"{task_text} {response_summary}"
         tokens = _tokenize(combined)
         bigrams = _extract_bigrams(tokens)
@@ -307,16 +310,23 @@ class UserProfiler:
                     matched_topics.append((bigram, _KEYWORD_TO_CATEGORY[part]))
                     break
 
-        # Unmatched English tokens with length >= 5 go to 'general'
-        # Chinese bigrams and underscore bigrams excluded — too noisy
+        # Unmatched English tokens → assign to this task's dominant category
+        # (majority vote). If no tokens matched any category, discard them.
         matched_words = {t for t, _ in matched_topics}
-        for token in tokens:
-            if token not in matched_words and token not in _NOISE_TOKENS:
-                if token[0] < "\u4e00" and len(token) >= 5:
-                    matched_topics.append((token, "general"))
+        if matched_topics:
+            cat_counts: dict[str, int] = {}
+            for _, cat in matched_topics:
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+            dominant = max(cat_counts, key=cat_counts.get)  # type: ignore[arg-type]
+            for token in tokens:
+                if token not in matched_words and token not in _NOISE_TOKENS:
+                    if token[0] < "\u4e00" and len(token) >= 5:
+                        matched_topics.append((token, dominant))
+        else:
+            dominant = ""
 
         if not matched_topics:
-            return
+            return ""
 
         with self._connect() as con:
             for topic, category in matched_topics:
@@ -338,6 +348,8 @@ class UserProfiler:
                 "stat_value = CAST(CAST(stat_value AS INTEGER) + 1 AS TEXT), "
                 "updated_at = CURRENT_TIMESTAMP",
             )
+
+        return dominant
 
     def apply_decay(self, decay_factor: float = 0.95) -> int:
         """Decay all topic weights and remove topics below threshold.
@@ -414,6 +426,66 @@ class UserProfiler:
                 "earliest_interaction": earliest,
                 "latest_interaction": latest,
             }
+
+    def reclassify_general(self) -> dict:
+        """Reclassify all 'general' topics to specific categories.
+
+        Strategy (priority order):
+        1. Exact keyword match in _KEYWORD_TO_CATEGORY
+        2. Substring match: any category keyword (>=3 chars) is a substring of topic
+        3. Fallback: user's highest-weight non-general category; ultimate fallback "lifestyle"
+
+        Returns dict with counts: {"total": int, "keyword": int, "substring": int, "fallback": int}
+        """
+        result = {"total": 0, "keyword": 0, "substring": 0, "fallback": 0}
+
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, topic FROM user_profile_topics WHERE category = 'general'",
+            ).fetchall()
+
+            if not rows:
+                return result
+
+            # Determine fallback category from user's distribution.
+            cats = self.get_category_distribution()
+            fallback = "lifestyle"
+            for cat in cats:
+                if cat != "general":
+                    fallback = cat
+                    break
+
+            for row in rows:
+                topic = row["topic"]
+                new_cat = None
+                method = ""
+
+                # 1. Exact keyword match.
+                if topic in _KEYWORD_TO_CATEGORY:
+                    new_cat = _KEYWORD_TO_CATEGORY[topic]
+                    method = "keyword"
+
+                # 2. Substring match: check if any category keyword is a substring.
+                if not new_cat:
+                    for kw, cat in _KEYWORD_TO_CATEGORY.items():
+                        if len(kw) >= 3 and kw in topic:
+                            new_cat = cat
+                            method = "substring"
+                            break
+
+                # 3. Fallback.
+                if not new_cat:
+                    new_cat = fallback
+                    method = "fallback"
+
+                con.execute(
+                    "UPDATE user_profile_topics SET category = ? WHERE id = ?",
+                    (new_cat, row["id"]),
+                )
+                result[method] += 1
+                result["total"] += 1
+
+        return result
 
     def get_profile_summary(self) -> str:
         """Generate a compact text summary for injection into evolution prompts."""
@@ -734,8 +806,64 @@ class PreferenceStore:
 
     # ---- Explicit Preference Recording ----
 
+    @staticmethod
+    def _infer_category(text: str, fallback: str = "lifestyle") -> str:
+        """Infer a category from text using keyword matching.
+
+        Checks if any keyword from _KEYWORD_TO_CATEGORY appears in the text.
+        Returns the matched category or the fallback.
+        """
+        text_lower = text.lower()
+        # Exact token match first.
+        for word in text_lower.split():
+            if word in _KEYWORD_TO_CATEGORY:
+                return _KEYWORD_TO_CATEGORY[word]
+        # Substring match.
+        for kw, cat in _KEYWORD_TO_CATEGORY.items():
+            if len(kw) >= 3 and kw in text_lower:
+                return cat
+        return fallback
+
+    def reclassify_general(self, fallback_category: str = "lifestyle") -> dict:
+        """Reclassify all 'general' rows in preference_moments and user_preferences.
+
+        Returns {"moments": int, "preferences": int}.
+        """
+        result = {"moments": 0, "preferences": 0}
+
+        with self._connect() as con:
+            # Reclassify moments.
+            rows = con.execute(
+                "SELECT id, content, extracted_signal FROM preference_moments "
+                "WHERE category = 'general'",
+            ).fetchall()
+            for row in rows:
+                text = row["extracted_signal"] or row["content"]
+                new_cat = self._infer_category(text, fallback_category)
+                con.execute(
+                    "UPDATE preference_moments SET category = ? WHERE id = ?",
+                    (new_cat, row["id"]),
+                )
+                result["moments"] += 1
+
+            # Reclassify preferences.
+            rows = con.execute(
+                "SELECT id, preference_key, value FROM user_preferences "
+                "WHERE category = 'general'",
+            ).fetchall()
+            for row in rows:
+                text = f"{row['preference_key']} {row['value']}"
+                new_cat = self._infer_category(text, fallback_category)
+                con.execute(
+                    "UPDATE user_preferences SET category = ? WHERE id = ?",
+                    (new_cat, row["id"]),
+                )
+                result["preferences"] += 1
+
+        return result
+
     def record_explicit(
-        self, preference_key: str, value: str, category: str = "general",
+        self, preference_key: str, value: str, category: str = "lifestyle",
     ) -> None:
         """Record an explicit user preference (from feedback or statement)."""
         with self._connect() as con:

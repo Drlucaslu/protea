@@ -100,9 +100,9 @@ class TestMemoryToProfile:
 
         categories = profiler.get_category_distribution()
         assert len(categories) > 0
-        # "coding" or "general" should appear as a category.
+        # "coding" or "ai" should appear as a category.
         cat_names = list(categories.keys())
-        assert any(c in ("coding", "general", "ai") for c in cat_names)
+        assert any(c in ("coding", "ai") for c in cat_names)
 
     def test_multiple_tasks_build_profile(self, tmp_path):
         """Multiple tasks from the same domain should strengthen topic weights."""
@@ -289,7 +289,7 @@ class TestDriftDetection:
         _, _, _, prefs, *_ = _make_db(tmp_path)
 
         for _ in range(3):
-            prefs.store_moment("interest", "random", "general", "signal")
+            prefs.store_moment("interest", "random", "lifestyle", "signal")
 
         drifts = prefs.detect_drift()
         assert len(drifts) == 0
