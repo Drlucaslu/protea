@@ -99,3 +99,6 @@ ring2/trade_history/
 ring2/trading_signals/
 
 heartbeat.txt
+
+# Convergence corrections (auto-extracted rules)
+corrections/
