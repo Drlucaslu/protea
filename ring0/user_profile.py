@@ -94,6 +94,12 @@ CATEGORY_KEYWORDS: dict[str, set[str]] = {
         "review", "abstract", "conclusion", "reference",
         "论文", "研究", "学术", "文献", "摘要", "综述",
     },
+    "lifestyle": {
+        "fitness", "exercise", "workout", "running", "health", "diet",
+        "sleep", "schedule", "daily", "routine", "habit", "calendar",
+        "travel", "recipe", "cooking", "weather", "reminder",
+        "健身", "运动", "跑步", "健康", "饮食", "睡眠", "日程", "习惯",
+    },
 }
 
 # Inverted index: keyword → category
