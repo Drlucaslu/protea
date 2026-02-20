@@ -1470,3 +1470,46 @@ class TestSemanticRulesContext:
         assert len(captured) == 1
         assert "Correction Rules" in captured[0]
         assert "你应该用中文回复" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# TestExtractProfileIntent
+# ---------------------------------------------------------------------------
+
+class TestExtractProfileIntent:
+    def test_returns_llm_translation(self):
+        executor = _make_executor()
+        executor.client.send_message.return_value = "Analyze stock data"
+        result = executor._extract_profile_intent("帮我分析股票数据")
+        assert result == "Analyze stock data"
+        executor.client.send_message.assert_called_once()
+
+    def test_unclear_returns_empty(self):
+        executor = _make_executor()
+        executor.client.send_message.return_value = "unclear"
+        result = executor._extract_profile_intent("好的，谢谢你的帮助")
+        assert result == ""
+
+    def test_short_text_skips_llm(self):
+        executor = _make_executor()
+        result = executor._extract_profile_intent("ok")
+        assert result == "ok"
+        executor.client.send_message.assert_not_called()
+
+    def test_fallback_on_llm_failure(self):
+        executor = _make_executor()
+        executor.client.send_message.side_effect = RuntimeError("API down")
+        result = executor._extract_profile_intent("帮我分析股票数据")
+        assert result == "帮我分析股票数据"
+
+    def test_no_client_returns_raw(self):
+        executor = _make_executor()
+        executor.client = None
+        result = executor._extract_profile_intent("analyze data")
+        assert result == "analyze data"
+
+    def test_truncates_long_response(self):
+        executor = _make_executor()
+        executor.client.send_message.return_value = "x" * 300
+        result = executor._extract_profile_intent("some long input text here")
+        assert len(result) == 200

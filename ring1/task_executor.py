@@ -708,9 +708,48 @@ class TaskExecutor:
             # Update user profile.
             if self.user_profiler:
                 try:
-                    self.user_profiler.update_from_task(memory_text, response[:200])
+                    profile_text = self._extract_profile_intent(memory_text)
+                    self.user_profiler.update_from_task(profile_text)
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
+
+    _PROFILE_INTENT_PROMPT = (
+        "You are a concise intent extractor. Given a user message, do two things:\n"
+        "1. Identify ONLY the user's core intent (what they want to do). "
+        "Ignore any pasted articles, URLs, reference material, code blocks, "
+        "stack traces, or quoted text — those are context, not intent.\n"
+        "2. Output the intent as a single English sentence (max 20 words). "
+        "If the message is already in English, just clean and shorten it.\n"
+        "If the intent is unclear or the message is just an acknowledgement "
+        '(e.g. "ok", "好的", "thanks"), output: unclear\n'
+        "Output ONLY the English sentence, nothing else."
+    )
+
+    def _extract_profile_intent(self, text: str) -> str:
+        """Use LLM to extract the user's core intent in English.
+
+        Falls back to the original text if the LLM call fails.
+        """
+        if not self.client:
+            return text
+        # Skip very short texts (acknowledgements, single words)
+        stripped = text.strip()
+        if len(stripped) < 5:
+            return text
+        try:
+            result = self.client.send_message(
+                self._PROFILE_INTENT_PROMPT, stripped,
+            )
+            result = result.strip()
+            if not result or result.lower() == "unclear":
+                return ""
+            # Sanity check: LLM should return a short sentence
+            if len(result) > 200:
+                result = result[:200]
+            return result
+        except Exception:
+            log.debug("LLM intent extraction failed, using raw text", exc_info=True)
+            return text
 
     def _check_and_store_correction(self, task_text: str) -> None:
         """If *task_text* contains a correction pattern, store as semantic_rule."""

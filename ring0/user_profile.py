@@ -133,10 +133,15 @@ _NOISE_TOKENS = frozenset({
     "protea", "sentinel", "ring0", "ring1", "ring2", "ring",
     "telegram", "message", "generation", "evolution", "evolver",
     "openclaw", "openviking", "bytefuture",
-    "dashboard", "skill", "memory", "agent", "task",
-    # Context prefix residuals
-    "context", "previous", "sent", "says", "reply",
+    "dashboard", "skill", "skills", "memory", "memories", "agent", "task", "tasks",
+    "commit", "report", "output", "error", "system", "token",
+    "phase", "summary", "notes", "research",
+    # Context / response residuals
+    "context", "previous", "sent", "says", "reply", "sorry", "couldn",
     "user", "users", "last",
+    # System / ops terms
+    "timeout", "operation", "shutdown", "cooldown", "repair", "archive",
+    "compacted", "entries", "recalled", "timed",
     # Timestamps / IDs
     "2024", "2025", "2026",
 })
@@ -203,7 +208,8 @@ class UserProfiler:
             if token in _KEYWORD_TO_CATEGORY:
                 matched_topics.append((token, _KEYWORD_TO_CATEGORY[token]))
 
-        # Check bigrams against known patterns
+        # Check bigrams against known category patterns (only categorized
+        # bigrams are kept — unmatched bigrams are dropped, not sent to general)
         for bigram in bigrams:
             parts = bigram.split("_")
             for part in parts:
@@ -212,7 +218,7 @@ class UserProfiler:
                     break
 
         # Unmatched English tokens with length >= 5 go to 'general'
-        # Chinese bigrams excluded — too noisy without category match
+        # Chinese bigrams and underscore bigrams excluded — too noisy
         matched_words = {t for t, _ in matched_topics}
         for token in tokens:
             if token not in matched_words and token not in _NOISE_TOKENS:
