@@ -1391,10 +1391,13 @@ def run(project_root: pathlib.Path) -> None:
 
 
 def main() -> None:
+    debug = os.environ.get("PROTEA_DEBUG", "").strip() not in ("", "0", "false")
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
         datefmt="%H:%M:%S",
     )
+    if debug:
+        logging.getLogger("protea").info("Debug mode enabled (PROTEA_DEBUG=1)")
     project_root = pathlib.Path(__file__).resolve().parent.parent
     run(project_root)

@@ -816,6 +816,7 @@ class TaskExecutor:
             self._last_habit_check = now
             try:
                 patterns = self.habit_detector.detect()
+                log.info("Habit detection: found %d patterns", len(patterns))
                 if patterns:
                     self._propose_habit(patterns[0])  # max 1 proposal at a time
             except Exception:

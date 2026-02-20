@@ -197,19 +197,26 @@ class HabitDetector:
         """Scan recent task history and return detected habit patterns."""
         tasks = self._get_tasks(limit)
         if not tasks:
+            log.debug("No tasks to analyse")
             return []
 
+        log.debug("Analysing %d tasks for habits", len(tasks))
         existing_scheduled = self._get_existing_scheduled_names()
 
         # Layer 1: Template matching
         patterns = self._detect_template_matches(tasks, existing_scheduled)
+        log.debug("L1 template matching: %d patterns", len(patterns))
 
         # Layer 2: High-threshold repetitive detection (only if L1 found nothing)
         if not patterns:
             patterns = self._detect_repetitive_patterns(tasks, existing_scheduled)
+            log.debug("L2 tool-sequence detection: %d patterns", len(patterns))
 
         # Filter out proposed/dismissed
+        before = len(patterns)
         patterns = [p for p in patterns if self._should_propose(p.pattern_key)]
+        if before != len(patterns):
+            log.debug("Filtered %d → %d patterns (cooldown/dismissed)", before, len(patterns))
 
         return patterns
 
@@ -364,16 +371,22 @@ class HabitDetector:
         """
         # Step 1: Filter — repeatable tasks with tool_sequence
         candidates: list[tuple[dict, dict[str, float], str]] = []
+        skipped_no_seq = 0
+        skipped_not_rep = 0
         for task in tasks:
             seq = _get_tool_sequence(task)
             if not seq:
+                skipped_no_seq += 1
                 continue
             intent, repeatable = classify_task_intent(task)
             if not repeatable:
+                skipped_not_rep += 1
                 continue
             profile = _tool_profile(task)
             candidates.append((task, profile, intent))
 
+        log.debug("L2 candidates: %d (skipped: %d no seq, %d not repeatable)",
+                  len(candidates), skipped_no_seq, skipped_not_rep)
         if not candidates:
             return []
 
