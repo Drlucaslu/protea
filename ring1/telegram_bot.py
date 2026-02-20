@@ -13,7 +13,6 @@ import pathlib
 import queue
 import threading
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from uuid import uuid4

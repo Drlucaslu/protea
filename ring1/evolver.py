@@ -16,8 +16,6 @@ from ring1.prompts import build_evolution_prompt, extract_python_code, extract_r
 
 log = logging.getLogger("protea.evolver")
 
-_REQUIRED_PATTERNS = ("PROTEA_HEARTBEAT", "write_heartbeat", "def main")
-
 
 class EvolutionResult(NamedTuple):
     success: bool

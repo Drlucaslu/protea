@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta
 
 from ring1.llm_base import LLMClient, LLMError
 from ring1.prompts import build_memory_curation_prompt

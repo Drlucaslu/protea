@@ -118,7 +118,6 @@ def next_run(cron_expr: str, after: datetime | None = None) -> datetime:
 # ---------------------------------------------------------------------------
 
 _WEEKDAY_NAMES = {0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
-_WEEKDAY_NAMES_ZH = {0: "日", 1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六"}
 
 
 def describe(cron_expr: str) -> str:

@@ -18,7 +18,8 @@ import pytest
 from ring0.fitness import FitnessTracker
 from ring0.gene_pool import GenePool
 from ring0.memory import MemoryStore, _compute_importance
-from ring0.user_profile import PreferenceStore, UserProfiler
+from ring0.preference_store import PreferenceStore
+from ring0.user_profile import UserProfiler
 from ring1.memory_curator import MemoryCurator
 from ring1.prompts import build_evolution_prompt
 

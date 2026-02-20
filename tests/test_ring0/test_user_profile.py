@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from ring0.preference_store import PreferenceStore
 from ring0.user_profile import (
-    PreferenceStore,
     UserProfiler,
     _tokenize,
     _extract_bigrams,

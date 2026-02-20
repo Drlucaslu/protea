@@ -15,7 +15,6 @@ import json
 import logging
 import threading
 import time
-import urllib.error
 import urllib.request
 
 log = logging.getLogger("protea.matrix_bot")

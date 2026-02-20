@@ -14,7 +14,6 @@ import json
 import logging
 import pathlib
 import re
-from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
