@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from ring0.user_profile import UserProfiler, _tokenize, _extract_bigrams
+from ring0.user_profile import (
+    UserProfiler,
+    _tokenize,
+    _extract_bigrams,
+    _NOISE_TOKENS,
+)
 
 
 class TestTokenize:
@@ -26,6 +31,36 @@ class TestTokenize:
         assert "python" in tokens
         assert "javascript" in tokens
         assert "class" in tokens
+
+    def test_tokenize_chinese(self):
+        # Sliding window bigrams: 分析, 析销, 销售, 售数, 数据
+        tokens = _tokenize("分析销售数据")
+        assert "分析" in tokens
+        assert "销售" in tokens
+        assert "数据" in tokens
+        assert len(tokens) == 5
+
+    def test_tokenize_mixed(self):
+        tokens = _tokenize("搜索Python论文")
+        assert "python" in tokens
+        assert "搜索" in tokens  # from "搜索"
+        assert "论文" in tokens  # from "论文"
+
+    def test_noise_tokens_filtered(self):
+        tokens = _tokenize("protea sentinel ring0 generation")
+        assert len(tokens) == 0
+
+    def test_chinese_noise_filtered(self):
+        tokens = _tokenize("消息用户回复")
+        # All bigrams are noise: 消息, 息用, 用户, 户回, 回复
+        # "消息", "用户", "回复" are in _NOISE_TOKENS_ZH
+        noise_count = sum(1 for t in tokens if t in {"消息", "用户", "回复"})
+        assert noise_count == 0
+
+    def test_single_chinese_char_no_bigram(self):
+        # Single CJK char produces no bigrams
+        tokens = _tokenize("码")
+        assert tokens == []
 
 
 class TestExtractBigrams:
@@ -70,10 +105,39 @@ class TestUpdateFromTask:
 
     def test_unmatched_words_go_to_general(self, tmp_path):
         profiler = UserProfiler(tmp_path / "test.db")
+        # "xylophone" (len=9) qualifies for general; "something" (len=9) too
         profiler.update_from_task("xylophone something")
         topics = profiler.get_top_topics()
         general = [t for t in topics if t["category"] == "general"]
         assert len(general) >= 1
+
+    def test_general_threshold_raised(self, tmp_path):
+        """Short tokens (len < 5) no longer go to general."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("ring main last")  # all len <= 4
+        topics = profiler.get_top_topics()
+        general = [t for t in topics if t["category"] == "general"]
+        assert len(general) == 0
+
+    def test_chinese_not_in_general(self, tmp_path):
+        """Chinese bigrams that don't match a category should NOT go to general."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("吃饭睡觉打豆豆")
+        topics = profiler.get_top_topics()
+        general = [t for t in topics if t["category"] == "general"]
+        assert len(general) == 0
+
+    def test_chinese_category_match(self, tmp_path):
+        """Chinese bigrams that match categories should be profiled."""
+        profiler = UserProfiler(tmp_path / "test.db")
+        profiler.update_from_task("帮我分析股票数据")
+        topics = profiler.get_top_topics()
+        topic_names = {t["topic"] for t in topics}
+        categories = {t["category"] for t in topics}
+        assert "股票" in topic_names
+        assert "finance" in categories
+        # "分析" -> data, "数据" -> data
+        assert "data" in categories
 
     def test_empty_text_no_crash(self, tmp_path):
         profiler = UserProfiler(tmp_path / "test.db")

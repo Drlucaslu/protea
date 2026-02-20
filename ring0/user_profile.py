@@ -44,46 +44,55 @@ CATEGORY_KEYWORDS: dict[str, set[str]] = {
         "python", "javascript", "code", "debug", "function", "class", "api",
         "git", "bug", "refactor", "compile", "syntax", "variable", "loop",
         "algorithm",
+        "代码", "编程", "调试", "函数", "变量", "算法", "重构",
     },
     "math": {
         "equation", "calculate", "matrix", "statistics", "probability",
         "algebra", "geometry", "integral", "derivative", "theorem",
         "formula", "vector", "linear", "optimization", "numerical",
+        "计算", "方程", "矩阵", "统计", "概率", "公式",
     },
     "data": {
         "csv", "json", "database", "sql", "pandas", "analysis",
         "visualization", "dataset", "dataframe", "query", "table",
         "schema", "etl", "pipeline", "warehouse",
+        "数据", "数据库", "分析", "可视化", "查询", "报表",
     },
     "web": {
         "http", "html", "css", "scrape", "fetch", "url", "browser",
         "request", "endpoint", "websocket", "server", "client",
         "rest", "graphql", "cors",
+        "网页", "爬虫", "浏览器", "请求", "链接", "网站",
     },
     "ai": {
         "model", "llm", "neural", "machine", "learning", "transformer",
         "embedding", "training", "inference", "prompt", "gpt", "claude",
         "chatbot", "nlp", "classification",
+        "模型", "训练", "推理", "神经", "智能", "机器",
     },
     "system": {
         "file", "process", "shell", "command", "docker", "deploy",
         "server", "linux", "terminal", "daemon", "cron", "systemd",
         "container", "kubernetes", "nginx",
+        "文件", "进程", "命令", "部署", "服务器", "终端",
     },
     "creative": {
         "write", "story", "poem", "generate", "image", "music", "design",
         "art", "creative", "narrative", "compose", "sketch", "animation",
         "illustration", "game",
+        "写作", "故事", "设计", "创意", "生成", "图片",
     },
     "finance": {
         "stock", "market", "trade", "price", "portfolio", "crypto",
         "investment", "dividend", "forex", "bond", "revenue", "profit",
         "accounting", "budget", "tax",
+        "股票", "市场", "交易", "价格", "投资", "收益", "充值", "金额",
     },
     "research": {
         "paper", "study", "survey", "literature", "academic", "journal",
         "citation", "hypothesis", "experiment", "methodology", "thesis",
         "review", "abstract", "conclusion", "reference",
+        "论文", "研究", "学术", "文献", "摘要", "综述",
     },
 }
 
@@ -110,13 +119,45 @@ _STOP_WORDS = {
     "make", "like", "use", "help", "want", "need", "please", "thanks",
 }
 
-_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+_WORD_RE = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+")
+
+# Known system/noise tokens to exclude from profiling
+_NOISE_TOKENS = frozenset({
+    # Protea internal terms
+    "protea", "sentinel", "ring0", "ring1", "ring2", "ring",
+    "telegram", "message", "generation", "evolution", "evolver",
+    "openclaw", "openviking", "bytefuture",
+    "dashboard", "skill", "memory", "agent", "task",
+    # Context prefix residuals
+    "context", "previous", "sent", "says", "reply",
+    "user", "users", "last",
+    # Timestamps / IDs
+    "2024", "2025", "2026",
+})
+
+# Chinese noise bigrams (system terms)
+_NOISE_TOKENS_ZH = frozenset({
+    "消息", "用户", "回复", "发送", "系统", "进程",
+})
 
 
 def _tokenize(text: str) -> list[str]:
-    """Split text into lowercase tokens, filtering stop words and short tokens."""
-    tokens = _WORD_RE.findall(text.lower())
-    return [t for t in tokens if len(t) >= 3 and t not in _STOP_WORDS]
+    """Split text into lowercase tokens, filtering stop words and noise.
+
+    English tokens: len >= 3, not in stop words or noise list.
+    Chinese tokens: extracted as bigrams (2-char sliding window).
+    """
+    raw = _WORD_RE.findall(text.lower())
+    tokens: list[str] = []
+    for t in raw:
+        if t[0] >= "\u4e00":  # CJK range
+            for i in range(len(t) - 1):
+                bigram = t[i : i + 2]
+                if bigram not in _NOISE_TOKENS_ZH:
+                    tokens.append(bigram)
+        elif len(t) >= 3 and t not in _STOP_WORDS and t not in _NOISE_TOKENS:
+            tokens.append(t)
+    return tokens
 
 
 def _extract_bigrams(tokens: list[str]) -> list[str]:
@@ -164,11 +205,13 @@ class UserProfiler:
                     matched_topics.append((bigram, _KEYWORD_TO_CATEGORY[part]))
                     break
 
-        # Unmatched tokens with length >= 4 go to 'general'
+        # Unmatched English tokens with length >= 5 go to 'general'
+        # Chinese bigrams excluded — too noisy without category match
         matched_words = {t for t, _ in matched_topics}
         for token in tokens:
-            if token not in matched_words and len(token) >= 4:
-                matched_topics.append((token, "general"))
+            if token not in matched_words and token not in _NOISE_TOKENS:
+                if token[0] < "\u4e00" and len(token) >= 5:
+                    matched_topics.append((token, "general"))
 
         if not matched_topics:
             return
