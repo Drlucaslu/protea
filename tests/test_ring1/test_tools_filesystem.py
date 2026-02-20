@@ -7,7 +7,11 @@ import pathlib
 
 import pytest
 
-from ring1.tools.filesystem import _resolve_safe, make_filesystem_tools
+from ring1.tools.filesystem import (
+    _check_write_allowed,
+    _resolve_safe,
+    make_filesystem_tools,
+)
 
 
 @pytest.fixture
@@ -146,6 +150,34 @@ class TestWriteFile:
         assert "Error" in result
         assert "outside home" in result
 
+    def test_write_ring0_blocked(self, tools):
+        result = tools["write_file"].execute(
+            {"path": "ring0/memory.py", "content": "hacked"}
+        )
+        assert "Error" in result
+        assert "protected source" in result
+
+    def test_write_ring1_blocked(self, tools):
+        result = tools["write_file"].execute(
+            {"path": "ring1/sentinel.py", "content": "hacked"}
+        )
+        assert "Error" in result
+        assert "protected source" in result
+
+    def test_write_tests_blocked(self, tools):
+        result = tools["write_file"].execute(
+            {"path": "tests/test_foo.py", "content": "hacked"}
+        )
+        assert "Error" in result
+        assert "protected source" in result
+
+    def test_write_output_allowed(self, tools, workspace):
+        """output/ and other dirs are not protected."""
+        result = tools["write_file"].execute(
+            {"path": "output/report.txt", "content": "data"}
+        )
+        assert "Written" in result
+
 
 # ---------------------------------------------------------------------------
 # edit_file
@@ -196,6 +228,19 @@ class TestEditFile:
         })
         assert "Error" in result
         assert "outside home" in result
+
+    def test_edit_ring0_blocked(self, tools, workspace):
+        (workspace / "ring0").mkdir(exist_ok=True)
+        (workspace / "ring0" / "memory.py").write_text("original")
+        result = tools["edit_file"].execute({
+            "path": "ring0/memory.py",
+            "old_string": "original",
+            "new_string": "modified",
+        })
+        assert "Error" in result
+        assert "protected source" in result
+        # File unchanged
+        assert (workspace / "ring0" / "memory.py").read_text() == "original"
 
 
 # ---------------------------------------------------------------------------

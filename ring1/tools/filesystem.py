@@ -23,6 +23,10 @@ _SENSITIVE_DIRS = frozenset({
     "Library/Keychains",
 })
 
+# Source directories that are read-only (relative to workspace).
+# Task executor LLM must not modify core source code.
+_READONLY_SOURCE_DIRS = frozenset({"ring0", "ring1", "tests"})
+
 # Sensitive file names (exact match, case-insensitive) blocked anywhere.
 _SENSITIVE_FILES = frozenset({
     ".env", ".netrc", ".npmrc", ".pypirc",
@@ -78,6 +82,18 @@ def _resolve_safe(workspace: pathlib.Path, path_str: str) -> pathlib.Path:
         raise ValueError(f"Access denied: ~/{target.name} is a protected file")
 
     return target
+
+
+def _check_write_allowed(workspace: pathlib.Path, target: pathlib.Path) -> str | None:
+    """Return an error message if *target* is inside a read-only source dir."""
+    try:
+        rel = target.relative_to(workspace)
+    except ValueError:
+        return None  # outside workspace — handled by _resolve_safe
+    top_dir = rel.parts[0] if rel.parts else ""
+    if top_dir in _READONLY_SOURCE_DIRS:
+        return f"Error: {rel} is in protected source directory '{top_dir}/' (read-only)"
+    return None
 
 
 def make_filesystem_tools(workspace_path: str) -> list[Tool]:
@@ -148,6 +164,10 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
         except ValueError as exc:
             return f"Error: {exc}"
 
+        err = _check_write_allowed(workspace, target)
+        if err:
+            return err
+
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(inp["content"])
@@ -188,6 +208,10 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
             target = _resolve_safe(workspace, inp["path"])
         except ValueError as exc:
             return f"Error: {exc}"
+
+        err = _check_write_allowed(workspace, target)
+        if err:
+            return err
 
         if not target.is_file():
             return f"Error: not a file: {inp['path']}"
