@@ -367,3 +367,37 @@ class TestAttributionUsesSkillsMatched:
         gene_b = next(g for g in genes if g["id"] == gene_b_id)
         assert gene_a["task_hit_count"] == 1
         assert gene_b["task_hit_count"] == 1
+
+
+class TestLineageViaSourceHashLookup:
+    """Simulates the sentinel flow: add gene → get_id_by_hash → record_lineage → verify."""
+
+    def test_lineage_recorded_via_source_hash_lookup(self, tmp_path):
+        import hashlib
+
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        ss = SkillStore(db)
+
+        # 1. Sentinel adds gene to pool (happens in gene_pool.add)
+        gp.add(1, 0.80, SAMPLE_SOURCE)
+
+        # 2. Compute source_hash (same as sentinel does)
+        source_hash = hashlib.sha256(SAMPLE_SOURCE.encode()).hexdigest()
+
+        # 3. Look up gene_id by hash (the new path)
+        gene_id = gp.get_id_by_hash(source_hash)
+        assert gene_id is not None
+
+        # 4. Record lineage with the looked-up gene_id
+        ss.record_lineage("my_skill", [gene_id], generation=1)
+
+        # 5. Verify lineage exists
+        lineage = ss.get_lineage("my_skill")
+        assert len(lineage) == 1
+        assert lineage[0]["gene_id"] == gene_id
+
+        # 6. Verify attribution works end-to-end
+        gp.record_task_hits([gene_id], generation=5)
+        top = gp.get_top(1)
+        assert top[0]["task_hit_count"] == 1

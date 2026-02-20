@@ -1144,13 +1144,19 @@ def run(project_root: pathlib.Path) -> None:
                     import hashlib
                     source_hash = hashlib.sha256(source.encode()).hexdigest()
                     if source_hash != last_crystallized_hash:
+                        # Build gene_ids: current gene + any injected parent genes.
+                        crystallize_gene_ids = list(last_injected_gene_ids)
+                        if gene_pool:
+                            current_gene_id = gene_pool.get_id_by_hash(source_hash)
+                            if current_gene_id is not None and current_gene_id not in crystallize_gene_ids:
+                                crystallize_gene_ids.append(current_gene_id)
                         log.info("Crystallizing gen-%d (hash=%s…)", generation, source_hash[:12])
                         _try_crystallize(
                             project_root, skill_store, source, output,
                             generation, skill_cap=skill_cap,
                             registry_client=registry_client,
                             fitness=fitness,
-                            gene_ids=last_injected_gene_ids,
+                            gene_ids=crystallize_gene_ids,
                         )
                         last_crystallized_hash = source_hash
                     else:

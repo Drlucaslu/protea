@@ -804,6 +804,23 @@ class TestBlacklist:
         assert added is False
 
 
+class TestGetIdByHash:
+    def test_found(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE)
+        import hashlib
+        source_hash = hashlib.sha256(SAMPLE_SOURCE.encode()).hexdigest()
+        gene_id = gp.get_id_by_hash(source_hash)
+        assert gene_id is not None
+        assert gene_id == gp.get_top(1)[0]["id"]
+
+    def test_not_found(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        assert gp.get_id_by_hash("nonexistent_hash") is None
+
+
 class TestSimilarityDedup:
     """Near-duplicate detection via tag Jaccard similarity."""
 

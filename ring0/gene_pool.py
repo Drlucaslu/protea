@@ -177,6 +177,15 @@ class GenePool(SQLiteStore):
 
             return False
 
+    def get_id_by_hash(self, source_hash: str) -> int | None:
+        """Look up gene ID by source hash. Returns None if not found."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT id FROM gene_pool WHERE source_hash = ?",
+                (source_hash,),
+            ).fetchone()
+            return row["id"] if row else None
+
     def get_top(self, n: int = 3) -> list[dict]:
         """Return top N genes by score (then generation DESC as tiebreaker).
 
