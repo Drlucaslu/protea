@@ -175,20 +175,20 @@ def _compute_importance(entry_type: str, content: str) -> float:
         return round(base, 2)
 
     # Content quality filtering for crash_log entries.
+    # Most crash logs are routine SIGTERM/heartbeat — score below quality gate.
+    # Only novel crashes with real tracebacks pass at minimal weight.
     if entry_type == "crash_log":
         content_lower = content.lower()
-        
-        # Generic/repetitive failures → lower importance
+
+        # Routine exits → below quality gate, rejected
         if "clean exit but heartbeat lost" in content_lower:
-            return 0.30  # Very common, not actionable
-
+            return 0.1
         if "killed by signal sigterm" in content_lower:
-            return 0.30  # Normal shutdown
-
+            return 0.1
         if "timeout" in content_lower or "timed out" in content_lower:
-            return 0.35
+            return 0.1
 
-        # Novel crashes with tracebacks → slightly higher
+        # Novel crashes with tracebacks → barely pass, age out quickly
         novel_indicators = [
             "traceback",
             "exception:",
@@ -198,9 +198,9 @@ def _compute_importance(entry_type: str, content: str) -> float:
         ]
 
         if any(indicator in content_lower for indicator in novel_indicators):
-            base = min(base + 0.10, 0.55)
-        
-        return round(base, 2)
+            return 0.2
+
+        return 0.1  # Default: reject
 
     # Non-task/special types: original logic.
     if len(content) > 500:
@@ -220,7 +220,12 @@ def _is_system_noise(entry_type: str, content: str) -> bool:
     # CRITICAL: Never filter user tasks or directives
     if entry_type in ("task", "directive"):
         return False
-    
+
+    # Reflections are machine-generated and consumed in-context by the evolver.
+    # They don't need to persist in long-term memory.
+    if entry_type == "reflection":
+        return True
+
     # Additional heuristics for crash_log (special handling before general pattern matching)
     if entry_type == "crash_log":
         content_lower = content.lower()
