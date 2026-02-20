@@ -234,22 +234,22 @@ class TestTemplateMatching:
 class TestRepetitiveDetection:
     """Layer 2: tool-sequence + intent based detection."""
 
-    def _search_tasks(self, n: int, base: datetime | None = None) -> list[dict]:
-        """Helper: create n search-like tasks across different days."""
+    def _skill_tasks(self, n: int, base: datetime | None = None) -> list[dict]:
+        """Helper: create n skill-like tasks across different days."""
         if base is None:
             base = datetime(2026, 2, 10, 9, 0)
         return [
             _make_task(
-                "搜索最新AI研究论文",
+                "运行每日数据分析技能",
                 timestamp=(base + timedelta(days=i)).isoformat(),
-                tool_sequence=["web_search", "web_search", "web_fetch", "message"],
+                tool_sequence=["run_skill", "run_skill", "message"],
             )
             for i in range(n)
         ]
 
     def test_similar_tool_sequences_detected(self):
         """3+ similar tool sequences across 2+ days → detected."""
-        tasks = self._search_tasks(4)
+        tasks = self._skill_tasks(4)
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem)
         patterns = detector.detect()
@@ -313,8 +313,8 @@ class TestRepetitiveDetection:
         """3 tasks on same day (need 2 days) → no pattern."""
         ts = datetime(2026, 2, 15, 9, 0).isoformat()
         tasks = [
-            _make_task("搜索论文", timestamp=ts,
-                       tool_sequence=["web_search", "web_fetch", "message"])
+            _make_task("运行数据分析", timestamp=ts,
+                       tool_sequence=["run_skill", "run_skill", "message"])
             for _ in range(4)
         ]
         mem = _make_memory_store(tasks)
@@ -325,7 +325,7 @@ class TestRepetitiveDetection:
 
     def test_no_llm_still_works(self):
         """L2 works without LLM client (no longer requires it)."""
-        tasks = self._search_tasks(4)
+        tasks = self._skill_tasks(4)
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem, llm_client=None)
         patterns = detector.detect()
@@ -336,9 +336,9 @@ class TestRepetitiveDetection:
         """L1 template patterns appear first; L2 always runs but deduplicates."""
         tasks = [
             _make_task("查一下机票",
-                       tool_sequence=["web_search", "web_search", "message"]),
+                       tool_sequence=["run_skill", "message"]),
             _make_task("帮我查航班",
-                       tool_sequence=["web_search", "web_search", "message"]),
+                       tool_sequence=["run_skill", "message"]),
         ]
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem, templates=[FLIGHT_TEMPLATE])
@@ -350,7 +350,7 @@ class TestRepetitiveDetection:
 
     def test_pattern_key_format(self):
         """pattern_key has format 'tool_pattern:{intent}:{tools}'."""
-        tasks = self._search_tasks(4)
+        tasks = self._skill_tasks(4)
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem)
         patterns = detector.detect()
@@ -360,11 +360,11 @@ class TestRepetitiveDetection:
         assert key.startswith("tool_pattern:")
         parts = key.split(":")
         assert len(parts) == 3
-        assert parts[1] == "search"
+        assert parts[1] == "skill"
 
     def test_all_samples_populated(self):
         """all_samples filled with cluster task contents."""
-        tasks = self._search_tasks(4)
+        tasks = self._skill_tasks(4)
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem)
         patterns = detector.detect()
@@ -374,7 +374,24 @@ class TestRepetitiveDetection:
 
     def test_below_occurrence_threshold(self):
         """Only 2 tasks (need 3) → no repetitive pattern."""
-        tasks = self._search_tasks(2)
+        tasks = self._skill_tasks(2)
+        mem = _make_memory_store(tasks)
+        detector = HabitDetector(mem)
+        patterns = detector.detect()
+        rep = [p for p in patterns if p.pattern_type == "repetitive"]
+        assert len(rep) == 0
+
+    def test_search_tasks_excluded_from_l2(self):
+        """Search-dominant tasks are excluded from L2 (varied topics)."""
+        base = datetime(2026, 2, 10, 9, 0)
+        tasks = [
+            _make_task(
+                "搜索最新AI研究论文",
+                timestamp=(base + timedelta(days=i)).isoformat(),
+                tool_sequence=["web_search", "web_search", "web_fetch", "message"],
+            )
+            for i in range(5)
+        ]
         mem = _make_memory_store(tasks)
         detector = HabitDetector(mem)
         patterns = detector.detect()
@@ -477,11 +494,12 @@ class TestToolSequenceValidation:
 # ---------------------------------------------------------------------------
 
 class TestClassifyTaskIntent:
-    def test_search_task_repeatable(self):
+    def test_search_task_not_repeatable(self):
+        """Search-dominant tasks are not repeatable (varied topics each time)."""
         task = _make_task("搜索论文", tool_sequence=["web_search", "web_fetch", "message"])
         intent, rep = classify_task_intent(task)
         assert intent == "search"
-        assert rep is True
+        assert rep is False
 
     def test_create_task_not_repeatable(self):
         task = _make_task("写代码", tool_sequence=["write_file", "edit_file", "exec"])
@@ -513,18 +531,20 @@ class TestClassifyTaskIntent:
         assert intent == "unknown"
         assert rep is False
 
-    def test_mixed_search_exec_repeatable(self):
+    def test_mixed_search_exec_not_repeatable(self):
+        """Search + exec mix: search weight=0 makes it not repeatable."""
         task = _make_task("搜索并执行",
                           tool_sequence=["web_search", "web_search", "exec", "message"])
         intent, rep = classify_task_intent(task)
         assert intent == "search"
-        assert rep is True
+        assert rep is False
 
     def test_metadata_as_json_string(self):
-        task = _make_task("搜索")
-        task["metadata"] = json.dumps({"tool_sequence": ["web_search", "message"]})
+        """JSON-string metadata is correctly parsed."""
+        task = _make_task("运行技能")
+        task["metadata"] = json.dumps({"tool_sequence": ["run_skill", "message"]})
         intent, rep = classify_task_intent(task)
-        assert intent == "search"
+        assert intent == "skill"
         assert rep is True
 
 
@@ -587,11 +607,10 @@ class TestHelpers:
         assert "forecast" in kw
         assert "today" in kw
 
-    def test_simple_keywords_chinese(self):
+    def test_simple_keywords_chinese_skipped(self):
+        """Chinese text produces no tokens (bigrams are meaningless)."""
         kw = HabitDetector._simple_keywords("分析销售数据")
-        assert "分析" in kw
-        assert "销售" in kw
-        assert "数据" in kw
+        assert len(kw) == 0
 
     def test_jaccard_identical(self):
         assert HabitDetector._jaccard({"a", "b"}, {"a", "b"}) == 1.0

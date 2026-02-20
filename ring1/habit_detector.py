@@ -52,8 +52,8 @@ _TIME_CONCENTRATION_THRESHOLD = 0.6
 
 # Tool → (intent_category, repeatability_weight)
 _TOOL_INTENT_MAP: dict[str, tuple[str, float]] = {
-    "web_search":      ("search",  1.0),
-    "web_fetch":       ("search",  0.8),
+    "web_search":      ("search",  0.0),
+    "web_fetch":       ("search",  0.0),
     "run_skill":       ("skill",   1.0),
     "exec":            ("process", 0.5),
     "read_file":       ("process", 0.3),
@@ -587,17 +587,11 @@ class HabitDetector:
     def _simple_keywords(text: str) -> set[str]:
         """Extract simple keyword tokens from text.
 
-        English: words of 3+ chars.  Chinese: bigrams (2-char segments).
+        English: words of 3+ chars.  Chinese tokens are skipped because
+        naive bigram splitting produces meaningless fragments.
         """
-        raw = re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+", text.lower())
-        tokens: set[str] = set()
-        for t in raw:
-            if t[0] >= "\u4e00":
-                for i in range(len(t) - 1):
-                    tokens.add(t[i : i + 2])
-            elif len(t) >= 3:
-                tokens.add(t)
-        return tokens
+        raw = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        return {t for t in raw if len(t) >= 3}
 
     @staticmethod
     def _jaccard(a: set[str], b: set[str]) -> float:
