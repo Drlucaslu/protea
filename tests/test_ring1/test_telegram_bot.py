@@ -712,7 +712,7 @@ class TestMemoryCommand:
             bot = _make_bot(port, tmp_path, monkeypatch)
             ms = MemoryStore(tmp_path / "mem.db")
             ms.add(1, "observation", "Gen 1 survived 60s")
-            ms.add(2, "reflection", "CA patterns are stable")
+            ms.add(2, "observation", "CA patterns are stable")
             bot.state.memory_store = ms
             reply = bot._handle_command("/memory")
             assert "[第 1 代," in reply

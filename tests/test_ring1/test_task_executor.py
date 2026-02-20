@@ -417,7 +417,7 @@ class TestTaskExecutorWithMemory:
         (ring2 / "main.py").write_text("code")
 
         ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "reflection", "threads cause crashes")
+        ms.add(1, "observation", "threads cause crashes")
 
         captured_messages = []
         def capture_send(system, user, *args, **kwargs):
@@ -668,7 +668,7 @@ class TestP1IdleDetection:
         ring2.mkdir()
 
         ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "task", "test task")
+        ms.add(1, "task", "test task", importance=0.5)
 
         executor = TaskExecutor(
             state, client, ring2, reply_fn,

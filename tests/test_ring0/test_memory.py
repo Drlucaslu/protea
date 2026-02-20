@@ -16,7 +16,7 @@ class TestAdd:
     def test_successive_inserts_increment_rowid(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         r1 = store.add(1, "observation", "first")
-        r2 = store.add(2, "reflection", "second")
+        r2 = store.add(2, "directive", "second")
         assert r2 == r1 + 1
 
     def test_metadata_stored_as_json(self, tmp_path):
@@ -39,7 +39,7 @@ class TestGetRecent:
     def test_returns_reverse_order(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "first")
-        store.add(2, "reflection", "second")
+        store.add(2, "observation", "second")
         store.add(3, "directive", "third")
 
         recent = store.get_recent(10)
@@ -61,11 +61,11 @@ class TestGetRecent:
 
     def test_returns_all_fields(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(5, "reflection", "interesting pattern")
+        store.add(5, "observation", "interesting pattern")
         entries = store.get_recent(1)
         e = entries[0]
         assert e["generation"] == 5
-        assert e["entry_type"] == "reflection"
+        assert e["entry_type"] == "observation"
         assert e["content"] == "interesting pattern"
         assert "timestamp" in e
         assert "id" in e
@@ -77,7 +77,7 @@ class TestGetByType:
     def test_filters_by_type(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "obs1")
-        store.add(2, "reflection", "ref1")
+        store.add(2, "semantic_rule", "ref1")
         store.add(3, "observation", "obs2")
         store.add(4, "directive", "dir1")
 
@@ -87,10 +87,10 @@ class TestGetByType:
 
     def test_returns_most_recent_first(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "first")
-        store.add(2, "reflection", "second")
+        store.add(1, "observation", "first")
+        store.add(2, "observation", "second")
 
-        refs = store.get_by_type("reflection")
+        refs = store.get_by_type("observation")
         assert refs[0]["content"] == "second"
         assert refs[1]["content"] == "first"
 
@@ -105,7 +105,7 @@ class TestGetByType:
     def test_empty_for_missing_type(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "test")
-        assert store.get_by_type("reflection") == []
+        assert store.get_by_type("nonexistent") == []
 
 
 class TestCount:
@@ -118,7 +118,7 @@ class TestCount:
     def test_after_inserts(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "a")
-        store.add(2, "reflection", "b")
+        store.add(2, "observation", "b")
         store.add(3, "directive", "c")
         assert store.count() == 3
 
@@ -129,7 +129,7 @@ class TestClear:
     def test_clears_all(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(1, "observation", "a")
-        store.add(2, "reflection", "b")
+        store.add(2, "observation", "b")
         assert store.count() == 2
 
         store.clear()
@@ -179,7 +179,7 @@ class TestImportance:
         assert _compute_importance("directive", "short") == 0.9
 
     def test_crash_log(self):
-        assert _compute_importance("crash_log", "short") == 0.4
+        assert _compute_importance("crash_log", "short") == 0.1
 
     def test_task_substantive(self):
         """Substantive task with enough length gets high importance."""
@@ -187,7 +187,7 @@ class TestImportance:
 
     def test_task_short_followup(self):
         """Very short task messages get low importance."""
-        assert _compute_importance("task", "好的") == 0.2
+        assert _compute_importance("task", "好的") == 0.1
 
     def test_task_operational_chinese(self):
         """Chinese operational commands get low importance."""
@@ -199,8 +199,8 @@ class TestImportance:
 
     def test_task_confirmation(self):
         """Simple confirmations get minimal importance."""
-        assert _compute_importance("task", "yes") == 0.2
-        assert _compute_importance("task", "可以") == 0.2
+        assert _compute_importance("task", "yes") == 0.1
+        assert _compute_importance("task", "可以") == 0.1
 
     def test_task_substantive_long(self):
         """Long substantive requests get boosted importance."""
@@ -337,9 +337,9 @@ class TestGetStats:
 
     def test_counts_by_tier_and_type(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "task", "task1")
-        store.add(2, "task", "task2")
-        store.add(3, "observation", "obs1")
+        store.add(1, "task", "task1", importance=0.5)
+        store.add(2, "task", "task2", importance=0.5)
+        store.add(3, "observation", "obs1", importance=0.5)
         stats = store.get_stats()
         assert stats["total"] == 3
         assert stats["by_tier"]["hot"] == 3
@@ -374,7 +374,7 @@ class TestEmbedding:
 
     def test_add_with_embedding(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add_with_embedding(1, "task", "test", embedding=[0.1, 0.2, 0.3])
+        store.add_with_embedding(1, "task", "test", importance=0.5, embedding=[0.1, 0.2, 0.3])
         entries = store.get_recent(1)
         assert entries[0]["content"] == "test"
 
@@ -391,8 +391,8 @@ class TestEmbedding:
 
     def test_search_similar_min_threshold(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add_with_embedding(1, "task", "a", embedding=[1.0, 0.0])
-        store.add_with_embedding(2, "task", "b", embedding=[0.0, 1.0])
+        store.add_with_embedding(1, "task", "a", importance=0.5, embedding=[1.0, 0.0])
+        store.add_with_embedding(2, "task", "b", importance=0.5, embedding=[0.0, 1.0])
 
         results = store.search_similar([1.0, 0.0], min_similarity=0.9)
         assert len(results) == 1
@@ -557,7 +557,7 @@ class TestMigration:
     def test_migration_idempotent(self, tmp_path):
         db = tmp_path / "test.db"
         store1 = MemoryStore(db)
-        store1.add(1, "task", "test")
+        store1.add(1, "task", "test", importance=0.5)
         # Re-open should not fail.
         store2 = MemoryStore(db)
         assert store2.count() == 1
@@ -708,23 +708,23 @@ class TestIsRecentDuplicate:
 
     def test_exact_duplicate_rejected(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "server crashed due to OOM")
-        assert store._is_recent_duplicate("reflection", "server crashed due to OOM")
+        store.add(1, "observation", "server crashed due to OOM")
+        assert store._is_recent_duplicate("observation", "server crashed due to OOM")
 
     def test_case_insensitive_match(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "Server Crashed")
-        assert store._is_recent_duplicate("reflection", "server crashed")
+        store.add(1, "observation", "Server Crashed")
+        assert store._is_recent_duplicate("observation", "server crashed")
 
     def test_fuzzy_match_for_non_task(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
         store.add(
-            1, "reflection",
+            1, "observation",
             "tasks.jsonl not found in the working directory, this caused generation failure",
         )
         # Similar but not identical (>50 chars to trigger fuzzy)
         assert store._is_recent_duplicate(
-            "reflection",
+            "observation",
             "tasks.jsonl not found in the current working directory, this caused generation failure",
         )
 
@@ -750,25 +750,25 @@ class TestIsRecentDuplicate:
 
     def test_different_type_not_duplicate(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "OOM crash on gen 100")
+        store.add(1, "observation", "OOM crash on gen 100")
         # Same content but different type → not a duplicate
         assert not store._is_recent_duplicate("crash_log", "OOM crash on gen 100")
 
     def test_no_entries_not_duplicate(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        assert not store._is_recent_duplicate("reflection", "anything")
+        assert not store._is_recent_duplicate("observation", "anything")
 
     def test_add_rejects_duplicate(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        rid1 = store.add(1, "reflection", "ring2 timed out after 600s")
-        rid2 = store.add(2, "reflection", "ring2 timed out after 600s")
+        rid1 = store.add(1, "observation", "ring2 timed out after 600s")
+        rid2 = store.add(2, "observation", "ring2 timed out after 600s")
         assert rid1 > 0
         assert rid2 == -1  # Rejected
 
     def test_add_with_embedding_rejects_duplicate(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        rid1 = store.add_with_embedding(1, "reflection", "ring2 timed out", embedding=[0.1, 0.2])
-        rid2 = store.add_with_embedding(2, "reflection", "ring2 timed out", embedding=[0.3, 0.4])
+        rid1 = store.add_with_embedding(1, "observation", "ring2 timed out", embedding=[0.1, 0.2])
+        rid2 = store.add_with_embedding(2, "observation", "ring2 timed out", embedding=[0.3, 0.4])
         assert rid1 > 0
         assert rid2 == -1
 
@@ -797,8 +797,8 @@ class TestDeduplicate:
 
     def test_no_duplicates_returns_zero(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "unique entry one")
-        store.add(2, "reflection", "unique entry two is different")
+        store.add(1, "observation", "unique entry one")
+        store.add(2, "observation", "unique entry two is different")
         assert store.deduplicate() == 0
 
     def test_keeps_newest(self, tmp_path):
@@ -849,7 +849,7 @@ class TestCompactThresholds:
     def test_importance_060_stays_hot(self, tmp_path):
         """Entries with importance >= 0.6 should remain hot."""
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "reflection", "moderate importance", importance=0.6)
+        store.add(1, "observation", "moderate importance", importance=0.6)
         result = store.compact(current_generation=10)
         hot = store.get_by_tier("hot")
         assert any(e["content"] == "moderate importance" for e in hot)
@@ -913,8 +913,8 @@ class TestSemanticRule:
 
     def test_apply_curation_extract_rule(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        id1 = store.add(10, "reflection", "CA patterns survive")
-        id2 = store.add(12, "reflection", "CA with heartbeat is robust")
+        id1 = store.add(10, "observation", "CA patterns survive")
+        id2 = store.add(12, "observation", "CA with heartbeat is robust")
         id3 = store.add(15, "observation", "unrelated observation")
 
         decisions = [
@@ -956,26 +956,26 @@ class TestVectorDedup:
         """Cosine > 0.95 on second insert → rejected (return -1)."""
         store = MemoryStore(tmp_path / "mem.db")
         emb = [1.0, 0.0, 0.0]
-        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=emb)
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", importance=0.5, embedding=emb)
         # Nearly identical embedding (cosine ≈ 1.0).
-        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究", embedding=[1.0, 0.001, 0.0])
+        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究", importance=0.5, embedding=[1.0, 0.001, 0.0])
         assert rid1 > 0
         assert rid2 == -1
 
     def test_vector_similar_but_different_allowed(self, tmp_path):
         """Cosine ~0.8 should NOT be rejected at storage time (threshold 0.95)."""
         store = MemoryStore(tmp_path / "mem.db")
-        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=[1.0, 0.0, 0.0])
-        rid2 = store.add_with_embedding(2, "task", "查找量子计算研究", embedding=[0.6, 0.8, 0.0])
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", importance=0.5, embedding=[1.0, 0.0, 0.0])
+        rid2 = store.add_with_embedding(2, "task", "查找量子计算研究", importance=0.5, embedding=[0.6, 0.8, 0.0])
         assert rid1 > 0
         assert rid2 > 0
 
     def test_vector_dedup_without_embedding_skipped(self, tmp_path):
         """No embedding → vector dedup phase is skipped entirely."""
         store = MemoryStore(tmp_path / "mem.db")
-        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", embedding=[1.0, 0.0, 0.0])
+        rid1 = store.add_with_embedding(1, "task", "搜索AI论文", importance=0.5, embedding=[1.0, 0.0, 0.0])
         # Second entry has no embedding — should NOT trigger vector dedup.
-        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究")
+        rid2 = store.add_with_embedding(2, "task", "查找人工智能最新研究", importance=0.5)
         assert rid1 > 0
         assert rid2 > 0
 
@@ -996,7 +996,7 @@ class TestVectorDedup:
         con.close()
 
         # New entry with identical embedding should NOT be blocked.
-        rid = store.add_with_embedding(2, "task", "搜索AI论文", embedding=emb)
+        rid = store.add_with_embedding(2, "task", "搜索AI论文", importance=0.5, embedding=emb)
         assert rid > 0
 
 
