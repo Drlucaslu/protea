@@ -109,8 +109,19 @@ def _match_skills(task_text: str, skills: list[dict]) -> tuple[list[dict], list[
     """Split skills into (recommended, other) based on keyword overlap with task.
 
     Returns recommended skills sorted by match score (descending).
+    Uses three-way filtering to reduce false positives:
+    - At least _MIN_SCORE tokens must match
+    - Matched ratio must be >= _MIN_RATIO
+    - At most _MAX_RECOMMENDED skills are recommended
     """
     tokens = _tokenize_for_matching(task_text)
+    if not tokens:
+        return [], list(skills)
+
+    total_tokens = len(tokens)
+    _MIN_SCORE = 2
+    _MIN_RATIO = 0.15
+    _MAX_RECOMMENDED = 10
 
     scored: list[tuple[int, dict]] = []
     for skill in skills:
@@ -122,8 +133,14 @@ def _match_skills(task_text: str, skills: list[dict]) -> tuple[list[dict], list[
         score = sum(1 for t in tokens if t in haystack)
         scored.append((score, skill))
 
-    recommended = [s for score, s in sorted(scored, key=lambda x: -x[0]) if score > 0]
-    other = [s for score, s in scored if score == 0]
+    recommended: list[dict] = []
+    other: list[dict] = []
+    for score, skill in sorted(scored, key=lambda x: -x[0]):
+        ratio = score / total_tokens if total_tokens else 0
+        if score >= _MIN_SCORE and ratio >= _MIN_RATIO and len(recommended) < _MAX_RECOMMENDED:
+            recommended.append(skill)
+        else:
+            other.append(skill)
     return recommended, other
 
 
@@ -594,6 +611,11 @@ class TaskExecutor:
                 else:
                     other_skills = skills
             skills_matched = [s["name"] for s in recommended_skills]
+            if skills_matched and self.skill_store:
+                try:
+                    self.skill_store.record_matches(skills_matched)
+                except Exception:
+                    pass
 
             semantic_rules: list[dict] = []
             if self.memory_store:
@@ -1090,6 +1112,11 @@ class TaskExecutor:
                 else:
                     other_skills_p1 = skills
             skills_matched = [s["name"] for s in recommended_skills_p1]
+            if skills_matched and self.skill_store:
+                try:
+                    self.skill_store.record_matches(skills_matched)
+                except Exception:
+                    pass
 
             semantic_rules_p1: list[dict] = []
             if self.memory_store:

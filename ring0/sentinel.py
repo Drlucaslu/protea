@@ -964,6 +964,37 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
 
+    # Backfill skill lineage (one-time heuristic).
+    lineage_backfilled = 0
+    if skill_store and gene_pool:
+        try:
+            lineage_backfilled = skill_store.backfill_lineage(gene_pool)
+            if lineage_backfilled:
+                log.info("Skill lineage backfilled for %d skills", lineage_backfilled)
+        except Exception as exc:
+            log.debug("Skill lineage backfill failed (non-fatal): %s", exc)
+
+    # Post-backfill attribution: credit historical tasks.
+    if lineage_backfilled and memory_store:
+        try:
+            recent_tasks = memory_store.get_by_type("task", limit=50)
+            attributed_gene_ids: set[int] = set()
+            for task in recent_tasks:
+                meta = task.get("metadata", {})
+                if isinstance(meta, str):
+                    meta = json.loads(meta) if meta else {}
+                for skill_name in meta.get("skills_used", []):
+                    for entry in skill_store.get_lineage(skill_name):
+                        attributed_gene_ids.add(entry["gene_id"])
+                for skill_name in meta.get("skills_matched", []):
+                    for entry in skill_store.get_lineage(skill_name):
+                        attributed_gene_ids.add(entry["gene_id"])
+            if attributed_gene_ids:
+                gene_pool.record_task_hits(list(attributed_gene_ids), 0)
+                log.info("Post-backfill attribution: %d genes credited", len(attributed_gene_ids))
+        except Exception as exc:
+            log.debug("Post-backfill attribution failed (non-fatal): %s", exc)
+
     # Task executor for P0 user tasks.
     # Wrap reply_fn to trigger feedback prompts after replies.
     if bot:

@@ -846,3 +846,104 @@ class TestSchemaMigrationDependenciesPermanent:
         assert store.get_by_name("new")["dependencies"] == ["requests"]
         store.mark_permanent("new")
         assert store.get_by_name("new")["permanent"] == 1
+
+
+class TestMatchCount:
+    """match_count column and record_matches() method."""
+
+    def test_default_zero(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        skill = store.get_by_name("s1")
+        assert skill["match_count"] == 0
+
+    def test_record_matches_increments(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        store.record_matches(["s1"])
+        assert store.get_by_name("s1")["match_count"] == 1
+        store.record_matches(["s1"])
+        assert store.get_by_name("s1")["match_count"] == 2
+
+    def test_record_matches_multiple_names(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("a", "desc", "tmpl")
+        store.add("b", "desc", "tmpl")
+        store.record_matches(["a", "b"])
+        assert store.get_by_name("a")["match_count"] == 1
+        assert store.get_by_name("b")["match_count"] == 1
+
+    def test_record_matches_empty_list_safe(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.record_matches([])  # should not raise
+
+    def test_match_count_independent_of_usage_count(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl")
+        store.record_matches(["s1"])
+        store.update_usage("s1")
+        skill = store.get_by_name("s1")
+        assert skill["match_count"] == 1
+        assert skill["usage_count"] == 1
+
+    def test_nonexistent_skill_no_error(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.record_matches(["nonexistent"])  # should not raise
+
+
+class TestBackfillLineage:
+    """backfill_lineage() heuristic skill→gene traceability."""
+
+    def _mock_gene_pool(self, genes=None):
+        """Create a mock gene_pool with get_relevant."""
+        from unittest.mock import MagicMock
+        gp = MagicMock()
+        if genes is None:
+            genes = [{"id": 1}, {"id": 2}]
+        gp.get_relevant.return_value = genes
+        return gp
+
+    def test_backfills_crystallized_without_lineage(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "Summarize text", "Summarize: {{text}}", source="crystallized")
+        gp = self._mock_gene_pool()
+
+        count = store.backfill_lineage(gp)
+        assert count == 1
+        lineage = store.get_lineage("s1")
+        assert len(lineage) == 2
+        assert all(e["generation"] == 0 for e in lineage)
+
+    def test_idempotent(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "Summarize text", "tmpl", source="crystallized")
+        gp = self._mock_gene_pool()
+
+        store.backfill_lineage(gp)
+        count = store.backfill_lineage(gp)
+        assert count == 0  # already has lineage
+
+    def test_skips_non_crystallized(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="user")
+        gp = self._mock_gene_pool()
+
+        count = store.backfill_lineage(gp)
+        assert count == 0
+
+    def test_skips_skills_with_existing_lineage(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="crystallized")
+        store.record_lineage("s1", [99], generation=5)
+        gp = self._mock_gene_pool()
+
+        count = store.backfill_lineage(gp)
+        assert count == 0
+
+    def test_empty_gene_pool_results(self, tmp_path):
+        store = SkillStore(tmp_path / "skills.db")
+        store.add("s1", "desc", "tmpl", source="crystallized")
+        gp = self._mock_gene_pool(genes=[])
+
+        count = store.backfill_lineage(gp)
+        assert count == 0

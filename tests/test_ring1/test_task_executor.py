@@ -16,6 +16,7 @@ from ring1.task_executor import (
     P1_SYSTEM_PROMPT,
     TaskExecutor,
     _build_task_context,
+    _match_skills,
     _MAX_REPLY_LEN,
     create_executor,
     start_executor_thread,
@@ -1546,8 +1547,8 @@ class TestSkillsMatchedRecording:
             state, client, ring2, reply_fn,
             registry=registry, memory_store=ms, skill_store=ss,
         )
-        # Use text that matches "summarize" skill
-        task = Task(text="please summarize this article", chat_id="123")
+        # Use text that matches "summarize" skill (needs >=2 token matches)
+        task = Task(text="summarize this text for me", chat_id="123")
         executor._execute_task(task)
 
         tasks = ms.get_by_type("task")
@@ -1587,3 +1588,69 @@ class TestSkillsMatchedRecording:
         meta = tasks[0]["metadata"]
         assert "skills_matched" in meta
         assert meta["skills_matched"] == []
+
+
+# ---------------------------------------------------------------------------
+# TestMatchSkillsFiltering
+# ---------------------------------------------------------------------------
+
+class TestMatchSkillsFiltering:
+    """Test the three-way filtering in _match_skills()."""
+
+    def _skill(self, name, description="", tags=None):
+        return {"name": name, "description": description, "tags": tags or []}
+
+    def test_single_token_match_rejected(self):
+        """A single token overlap should not be enough to recommend."""
+        skills = [self._skill("stock_backtest", "Backtest stock strategies")]
+        recommended, other = _match_skills("check stock prices today", skills)
+        assert recommended == []
+        assert len(other) == 1
+
+    def test_two_token_match_accepted(self):
+        """Two matching tokens should recommend the skill."""
+        skills = [self._skill("summarize", "Summarize text")]
+        recommended, other = _match_skills("summarize this text for me", skills)
+        assert len(recommended) == 1
+        assert recommended[0]["name"] == "summarize"
+        assert other == []
+
+    def test_low_ratio_rejected(self):
+        """Two matches but too many tokens → low ratio → rejected."""
+        # 2 matches out of many tokens: "data" + "analysis" match,
+        # but 2/15 = 0.13 < 0.15 threshold
+        long_text = "please help me understand the data analysis of this very long complicated research paper about many topics"
+        skills = [self._skill("data_analysis", "Analyze data sets")]
+        recommended, other = _match_skills(long_text, skills)
+        assert recommended == []
+        assert len(other) == 1
+
+    def test_max_ten_recommended(self):
+        """At most 10 skills should be recommended."""
+        # Create 15 skills that all match "data analysis report"
+        skills = [
+            self._skill(f"skill_{i}", "data analysis report processing")
+            for i in range(15)
+        ]
+        recommended, other = _match_skills("data analysis report", skills)
+        assert len(recommended) == 10
+        assert len(other) == 5
+
+    def test_empty_task_returns_all_as_other(self):
+        """Empty task text should not recommend any skill."""
+        skills = [self._skill("s1", "desc"), self._skill("s2", "desc")]
+        recommended, other = _match_skills("", skills)
+        assert recommended == []
+        assert len(other) == 2
+
+    def test_sorted_by_score_descending(self):
+        """Recommended skills should be sorted by score descending."""
+        skills = [
+            self._skill("low_match", "text processing"),
+            self._skill("high_match", "summarize text document"),
+        ]
+        recommended, other = _match_skills("summarize this text document", skills)
+        # high_match: "summarize" + "text" + "document" = 3
+        # low_match: "text" + "processing"... "processing" not in task. "text" = 1? No, score=1 < 2
+        assert len(recommended) >= 1
+        assert recommended[0]["name"] == "high_match"

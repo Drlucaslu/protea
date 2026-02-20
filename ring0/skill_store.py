@@ -47,6 +47,8 @@ class SkillStore(SQLiteStore):
             con.execute("ALTER TABLE skills ADD COLUMN dependencies TEXT DEFAULT '[]'")
         if "permanent" not in cols:
             con.execute("ALTER TABLE skills ADD COLUMN permanent BOOLEAN DEFAULT 0")
+        if "match_count" not in cols:
+            con.execute("ALTER TABLE skills ADD COLUMN match_count INTEGER DEFAULT 0")
         con.execute(
             "CREATE TABLE IF NOT EXISTS skill_lineage ("
             "    id          INTEGER PRIMARY KEY,"
@@ -334,6 +336,17 @@ class SkillStore(SQLiteStore):
             )
             return cur.rowcount
 
+    def record_matches(self, names: list[str]) -> None:
+        """Increment match_count for each named skill."""
+        if not names:
+            return
+        with self._connect() as con:
+            for name in names:
+                con.execute(
+                    "UPDATE skills SET match_count = match_count + 1 WHERE name = ?",
+                    (name,),
+                )
+
     # ------------------------------------------------------------------
     # Skill lineage — gene → skill traceability
     # ------------------------------------------------------------------
@@ -367,4 +380,33 @@ class SkillStore(SQLiteStore):
                 (gene_id,),
             ).fetchall()
             return [r["skill_name"] for r in rows]
+
+    def backfill_lineage(self, gene_pool) -> int:
+        """Heuristic backfill: for crystallized skills without lineage,
+        use prompt_template+description as context to find relevant genes.
+
+        Uses generation=0 to mark entries as backfilled (not real-time).
+        Idempotent: skills that already have lineage are skipped.
+
+        Returns the number of skills that received new lineage entries.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT name, description, prompt_template FROM skills "
+                "WHERE source = 'crystallized' AND active = 1 "
+                "AND name NOT IN (SELECT DISTINCT skill_name FROM skill_lineage)"
+            ).fetchall()
+
+        count = 0
+        for row in rows:
+            context = f"{row['prompt_template']} {row['description']}"
+            try:
+                genes = gene_pool.get_relevant(context, 3)
+            except Exception:
+                continue
+            gene_ids = [g["id"] for g in genes if "id" in g]
+            if gene_ids:
+                self.record_lineage(row["name"], gene_ids, generation=0)
+                count += 1
+        return count
 
