@@ -88,18 +88,17 @@ def _clean_for_memory(text: str) -> str:
 
 
 def _tokenize_for_matching(text: str) -> set[str]:
-    """Extract match tokens from text. Handles both English and Chinese.
+    """Extract English match tokens from text (3+ chars).
 
-    English: words of 3+ chars.  Chinese: bigrams (two-char segments),
-    since Chinese words are typically 2 characters (e.g. 文件, 分析, 目录).
+    Chinese characters are ignored — callers should translate Chinese text
+    to English via LLM before calling this function, since all skill
+    names/descriptions/tags are in English.
     """
     raw_tokens = _SKILL_TOKEN_RE.findall(text.lower())
     tokens: set[str] = set()
     for t in raw_tokens:
-        if t[0] >= "\u4e00":  # CJK character
-            # Generate bigrams for Chinese text.
-            for i in range(len(t) - 1):
-                tokens.add(t[i : i + 2])
+        if t[0] >= "\u4e00":  # CJK — skip, not useful for English skill matching
+            continue
         elif len(t) >= 3:
             tokens.add(t)
     return tokens
@@ -598,6 +597,14 @@ class TaskExecutor:
                 except Exception:
                     pass
 
+            # Translate task text to English for skill matching (skills are English).
+            english_intent = ""
+            try:
+                english_intent = self._extract_profile_intent(task.text)
+            except Exception:
+                pass
+            match_text = english_intent if english_intent else task.text
+
             skills = []
             recommended_skills: list[dict] = []
             other_skills: list[dict] = []
@@ -607,7 +614,7 @@ class TaskExecutor:
                 except Exception:
                     pass
                 if skills and self.prefer_local_skills:
-                    recommended_skills, other_skills = _match_skills(task.text, skills)
+                    recommended_skills, other_skills = _match_skills(match_text, skills)
                 else:
                     other_skills = skills
             skills_matched = [s["name"] for s in recommended_skills]
@@ -753,10 +760,10 @@ class TaskExecutor:
                         )
                 except Exception:
                     log.debug("Failed to record task in memory", exc_info=True)
-            # Update user profile.
+            # Update user profile (reuse english_intent from skill matching).
             if self.user_profiler:
                 try:
-                    profile_text = self._extract_profile_intent(memory_text)
+                    profile_text = english_intent if english_intent else self._extract_profile_intent(memory_text)
                     self.user_profiler.update_from_task(profile_text)
                 except Exception:
                     log.debug("Failed to update user profile", exc_info=True)
@@ -797,6 +804,8 @@ class TaskExecutor:
             result = self.client.send_message(
                 self._PROFILE_INTENT_PROMPT, stripped,
             )
+            if not isinstance(result, str):
+                return text
             result = result.strip()
             if not result or result.lower() == "unclear":
                 return ""
@@ -1099,6 +1108,15 @@ class TaskExecutor:
                 except Exception:
                     pass
 
+            # P1 task descriptions are LLM-generated (English), but translate if needed.
+            p1_match_text = task_desc
+            try:
+                p1_intent = self._extract_profile_intent(task_desc)
+                if p1_intent:
+                    p1_match_text = p1_intent
+            except Exception:
+                pass
+
             skills = []
             recommended_skills_p1: list[dict] = []
             other_skills_p1: list[dict] = []
@@ -1108,7 +1126,7 @@ class TaskExecutor:
                 except Exception:
                     pass
                 if skills and self.prefer_local_skills:
-                    recommended_skills_p1, other_skills_p1 = _match_skills(task_desc, skills)
+                    recommended_skills_p1, other_skills_p1 = _match_skills(p1_match_text, skills)
                 else:
                     other_skills_p1 = skills
             skills_matched = [s["name"] for s in recommended_skills_p1]

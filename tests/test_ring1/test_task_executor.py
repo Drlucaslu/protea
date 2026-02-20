@@ -652,8 +652,8 @@ class TestP1IdleDetection:
         executor._last_p0_time = 0
         executor._check_p1_opportunity()
 
-        # Decision via send_message, execution via send_message_with_tools
-        assert client.send_message.call_count == 1
+        # Decision via send_message + intent extraction for skill matching
+        assert client.send_message.call_count == 2
         assert client.send_message_with_tools.call_count == 1
         # Should have reported via Telegram
         reply_fn.assert_called_once()
@@ -1654,3 +1654,26 @@ class TestMatchSkillsFiltering:
         # low_match: "text" + "processing"... "processing" not in task. "text" = 1? No, score=1 < 2
         assert len(recommended) >= 1
         assert recommended[0]["name"] == "high_match"
+
+    def test_chinese_text_no_match(self):
+        """Pure Chinese text should not match English skills.
+
+        Chinese bigrams are skipped; callers should translate to English first.
+        """
+        skills = [
+            self._skill("health_research", "Research health topics"),
+            self._skill("summarize", "Summarize text"),
+        ]
+        recommended, other = _match_skills("帮我研究NK细胞疗法的临床数据", skills)
+        assert recommended == []
+        assert len(other) == 2
+
+    def test_mixed_text_extracts_english_only(self):
+        """Mixed Chinese-English text should only use English tokens."""
+        skills = [
+            self._skill("health_research", "Research health topics and therapy"),
+        ]
+        # "HIIT" and "therapy" are English tokens that can match
+        recommended, other = _match_skills("帮我做HIIT训练 and look into therapy options", skills)
+        assert len(recommended) == 1
+        assert recommended[0]["name"] == "health_research"
