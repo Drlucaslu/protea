@@ -327,6 +327,7 @@ def _build_task_context(
     recommended_skills: list[dict] | None = None,
     other_skills: list[dict] | None = None,
     semantic_rules: list[dict] | None = None,
+    gene_patterns: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     parts = ["## Protea State"]
@@ -345,6 +346,17 @@ def _build_task_context(
         parts.append("```python")
         parts.append(truncated)
         parts.append("```")
+
+    if gene_patterns:
+        parts.append("")
+        parts.append("## Proven Code Patterns")
+        for gene in gene_patterns:
+            score = gene.get("score", 0)
+            task_hits = gene.get("total_task_hits", 0) or 0
+            summary = gene.get("gene_summary", "")
+            if len(summary) > 200:
+                summary = summary[:197] + "..."
+            parts.append(f"- [score={score:.2f}, tasks={task_hits}] {summary}")
 
     if memories:
         parts.append("")
@@ -437,6 +449,7 @@ class TaskExecutor:
         prefer_local_skills: bool = True,
         scheduled_store=None,
         preference_store=None,
+        gene_pool=None,
     ) -> None:
         """
         Args:
@@ -473,6 +486,7 @@ class TaskExecutor:
         self.prefer_local_skills = prefer_local_skills
         self.scheduled_store = scheduled_store
         self.preference_store = preference_store
+        self.gene_pool = gene_pool
         self.preference_extractor = None  # Initialized in create_executor()
         self.feedback_fn = None  # Called after complete task response
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
@@ -567,6 +581,7 @@ class TaskExecutor:
         response = ""
         skills_used: list[str] = []
         tool_sequence: list[str] = []
+        _gene_ids_used: list[int] = []
         try:
             # Build context
             snap = self.state.snapshot()
@@ -632,6 +647,14 @@ class TaskExecutor:
                 except Exception:
                     pass
 
+            gene_patterns: list[dict] = []
+            if self.gene_pool:
+                try:
+                    gene_patterns = self.gene_pool.get_relevant(match_text, 3)
+                    _gene_ids_used = [g["id"] for g in gene_patterns if "id" in g]
+                except Exception:
+                    log.debug("Gene retrieval for task failed", exc_info=True)
+
             history = self._get_recent_history()
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
@@ -639,6 +662,7 @@ class TaskExecutor:
                 recommended_skills=recommended_skills,
                 other_skills=other_skills,
                 semantic_rules=semantic_rules,
+                gene_patterns=gene_patterns,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -743,6 +767,7 @@ class TaskExecutor:
                         "skills_used": skills_used,
                         "skills_matched": skills_matched,
                         "tool_sequence": tool_sequence,
+                        "gene_ids_used": _gene_ids_used,
                     }
                     if embedding is not None:
                         self.memory_store.add_with_embedding(
@@ -1240,6 +1265,7 @@ def create_executor(
     scheduled_store=None,
     send_file_fn=None,
     preference_store=None,
+    gene_pool=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -1300,6 +1326,7 @@ def create_executor(
         prefer_local_skills=prefer_local_skills,
         scheduled_store=scheduled_store,
         preference_store=preference_store,
+        gene_pool=gene_pool,
     )
     executor.subagent_manager = subagent_mgr
 

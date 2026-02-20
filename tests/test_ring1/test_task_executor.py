@@ -1677,3 +1677,41 @@ class TestMatchSkillsFiltering:
         recommended, other = _match_skills("帮我做HIIT训练 and look into therapy options", skills)
         assert len(recommended) == 1
         assert recommended[0]["name"] == "health_research"
+
+
+class TestGenePatternContext:
+    """Test that gene_patterns are injected into task context."""
+
+    _snap = {"generation": 1, "alive": True, "paused": False,
+             "last_score": 0.9, "last_survived": True}
+
+    def test_gene_patterns_in_context(self):
+        """_build_task_context includes Proven Code Patterns section."""
+        genes = [
+            {"score": 0.85, "total_task_hits": 3, "gene_summary": "Use asyncio for I/O"},
+            {"score": 0.72, "total_task_hits": 1, "gene_summary": "Cache API responses"},
+        ]
+        ctx = _build_task_context(self._snap, "", gene_patterns=genes)
+        assert "## Proven Code Patterns" in ctx
+        assert "[score=0.85, tasks=3] Use asyncio for I/O" in ctx
+        assert "[score=0.72, tasks=1] Cache API responses" in ctx
+
+    def test_empty_gene_patterns_no_section(self):
+        """Empty gene_patterns -> no section in context."""
+        ctx = _build_task_context(self._snap, "", gene_patterns=[])
+        assert "Proven Code Patterns" not in ctx
+
+    def test_none_gene_patterns_no_section(self):
+        """gene_patterns=None -> no section in context."""
+        ctx = _build_task_context(self._snap, "", gene_patterns=None)
+        assert "Proven Code Patterns" not in ctx
+
+    def test_gene_summary_truncation(self):
+        """Gene summaries longer than 200 chars are truncated."""
+        long_summary = "A" * 250
+        genes = [{"score": 0.5, "total_task_hits": 0, "gene_summary": long_summary}]
+        ctx = _build_task_context(self._snap, "", gene_patterns=genes)
+        assert "Proven Code Patterns" in ctx
+        # Should be truncated to 197 chars + "..."
+        assert "A" * 197 + "..." in ctx
+        assert "A" * 200 not in ctx
