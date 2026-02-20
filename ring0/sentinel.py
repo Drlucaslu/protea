@@ -351,7 +351,7 @@ def _try_auto_directive(memory_store, user_profiler, project_root):
 
 
 def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None):
-    """Best-effort evolution.  Returns True if new code was written."""
+    """Best-effort evolution.  Returns (success, gene_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
         from ring1.evolver import Evolver
@@ -359,7 +359,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         r1_config = load_ring1_config(project_root)
         if not r1_config.has_llm_config():
             log.warning("LLM API key not configured — skipping evolution")
-            return False
+            return False, []
 
         # Compact context: directives and 1 reflection only.
         # Reflections/crash_logs are machine-generated with low priority;
@@ -398,6 +398,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
 
         # Get context-relevant genes for inheritance.
         genes = []
+        _injected_gene_ids: list[int] = []
         if gene_pool:
             try:
                 from ring0.gene_pool import GenePool as _GP
@@ -417,9 +418,9 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                 context = " ".join(context_parts)
                 genes = gene_pool.get_relevant(context, 3)
                 if genes:
-                    gene_ids = [g["id"] for g in genes if "id" in g]
-                    if gene_ids:
-                        gene_pool.record_hits(gene_ids, generation)
+                    _injected_gene_ids = [g["id"] for g in genes if "id" in g]
+                    if _injected_gene_ids:
+                        gene_pool.record_hits(_injected_gene_ids, generation)
             except Exception:
                 pass
 
@@ -557,20 +558,20 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                 except Exception:
                     pass
 
-            return True
+            return True, _injected_gene_ids
         else:
             log.warning("Evolution failed: %s", result.reason)
             if notifier:
                 notifier.notify_error(generation, result.reason)
-            return False
+            return False, []
     except Exception as exc:
         log.error("Evolution error (non-fatal): %s", exc)
         if notifier:
             notifier.notify_error(generation, str(exc))
-        return False
+        return False, []
 
 
-def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None, fitness=None):
+def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None, fitness=None, gene_ids=None):
     """Best-effort crystallization.  Returns action string or None."""
     try:
         from ring1.config import load_ring1_config
@@ -625,6 +626,13 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
                     log.info("Published skill %r to registry", result.skill_name)
             except Exception as pub_exc:
                 log.debug("Registry publish failed (non-fatal): %s", pub_exc)
+
+        # Record gene → skill lineage for task-hit attribution.
+        if result.action in ("create", "update") and result.skill_name and gene_ids:
+            try:
+                skill_store.record_lineage(result.skill_name, gene_ids, generation)
+            except Exception:
+                pass
 
         return result.action
     except Exception as exc:
@@ -978,6 +986,9 @@ def run(project_root: pathlib.Path) -> None:
     if notifier:
         notifier.notify_sentinel_online(generation)
 
+    last_injected_gene_ids: list[int] = []
+    last_attributed_task_id: int = 0
+
     try:
         params = generate_params(generation, seed)
         proc = _start_ring2(ring2_path, heartbeat_path)
@@ -1139,6 +1150,7 @@ def run(project_root: pathlib.Path) -> None:
                             generation, skill_cap=skill_cap,
                             registry_client=registry_client,
                             fitness=fitness,
+                            gene_ids=last_injected_gene_ids,
                         )
                         last_crystallized_hash = source_hash
                     else:
@@ -1205,7 +1217,7 @@ def run(project_root: pathlib.Path) -> None:
                             pref_summary = preference_store.get_preference_summary_text()
                         except Exception:
                             pass
-                    evolved = _try_evolve(
+                    evolved, last_injected_gene_ids = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
                         directive=directive,
@@ -1280,6 +1292,26 @@ def run(project_root: pathlib.Path) -> None:
                                         )
                         except Exception:
                             log.debug("Drift detection failed (non-fatal)", exc_info=True)
+                    # Task hit attribution: skill usage → lineage → gene scoring.
+                    if gene_pool and skill_store and memory_store:
+                        try:
+                            recent_tasks = memory_store.get_by_type("task", limit=30)
+                            new_tasks = [t for t in recent_tasks if t.get("id", 0) > last_attributed_task_id]
+                            attributed_gene_ids: set[int] = set()
+                            for task in new_tasks:
+                                meta = task.get("metadata", {})
+                                if isinstance(meta, str):
+                                    meta = json.loads(meta) if meta else {}
+                                for skill_name in meta.get("skills_used", []):
+                                    for entry in skill_store.get_lineage(skill_name):
+                                        attributed_gene_ids.add(entry["gene_id"])
+                            if attributed_gene_ids:
+                                gene_pool.record_task_hits(list(attributed_gene_ids), generation)
+                            if new_tasks:
+                                last_attributed_task_id = max(t.get("id", 0) for t in new_tasks)
+                        except Exception:
+                            log.debug("Task hit attribution failed (non-fatal)", exc_info=True)
+
                     if gene_pool:
                         try:
                             recent_tasks = []
@@ -1295,12 +1327,12 @@ def run(project_root: pathlib.Path) -> None:
                                         ids = [g["id"] for g in matched if "id" in g]
                                         if ids:
                                             gene_pool.record_hits(ids, generation)
+                            task_boosted = gene_pool.apply_task_boost()
                             boosted = gene_pool.apply_boost()
-                            decayed = 0
-                            if recent_tasks:
-                                decayed = gene_pool.apply_decay(generation)
-                            if boosted or decayed:
-                                log.info("Gene scoring: boosted=%d decayed=%d", boosted, decayed)
+                            decayed = gene_pool.apply_decay(generation)
+                            if task_boosted or boosted or decayed:
+                                log.info("Gene scoring: task_boost=%d code_boost=%d decayed=%d",
+                                         task_boosted, boosted, decayed)
                         except Exception:
                             log.debug("Gene scoring failed (non-fatal)", exc_info=True)
 
@@ -1454,7 +1486,7 @@ def run(project_root: pathlib.Path) -> None:
                         pref_summary = preference_store.get_preference_summary_text()
                     except Exception:
                         pass
-                evolved = _try_evolve(
+                evolved, last_injected_gene_ids = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
                     directive=directive,

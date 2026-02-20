@@ -47,6 +47,16 @@ class SkillStore(SQLiteStore):
             con.execute("ALTER TABLE skills ADD COLUMN dependencies TEXT DEFAULT '[]'")
         if "permanent" not in cols:
             con.execute("ALTER TABLE skills ADD COLUMN permanent BOOLEAN DEFAULT 0")
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS skill_lineage ("
+            "    id          INTEGER PRIMARY KEY,"
+            "    skill_name  TEXT NOT NULL,"
+            "    gene_id     INTEGER NOT NULL,"
+            "    generation  INTEGER NOT NULL,"
+            "    created_at  TEXT DEFAULT CURRENT_TIMESTAMP,"
+            "    UNIQUE(skill_name, gene_id)"
+            ")"
+        )
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -323,4 +333,38 @@ class SkillStore(SQLiteStore):
                 (f"-{min_age_days} days",),
             )
             return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Skill lineage — gene → skill traceability
+    # ------------------------------------------------------------------
+
+    def record_lineage(self, skill_name: str, gene_ids: list[int], generation: int) -> None:
+        """Record which genes contributed to a skill."""
+        if not gene_ids:
+            return
+        with self._connect() as con:
+            for gid in gene_ids:
+                con.execute(
+                    "INSERT OR IGNORE INTO skill_lineage (skill_name, gene_id, generation) "
+                    "VALUES (?, ?, ?)",
+                    (skill_name, gid, generation),
+                )
+
+    def get_lineage(self, skill_name: str) -> list[dict]:
+        """Return the source gene IDs for a skill."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT gene_id, generation FROM skill_lineage WHERE skill_name = ?",
+                (skill_name,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_gene_skills(self, gene_id: int) -> list[str]:
+        """Return skill names produced by a gene."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT skill_name FROM skill_lineage WHERE gene_id = ?",
+                (gene_id,),
+            ).fetchall()
+            return [r["skill_name"] for r in rows]
 

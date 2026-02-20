@@ -440,6 +440,8 @@ class TestGetTopWithId:
         top = gp.get_top(1)
         assert top[0]["hit_count"] == 0
         assert top[0]["last_hit_gen"] == 0
+        assert top[0]["task_hit_count"] == 0
+        assert top[0]["last_task_hit_gen"] == 0
 
 
 class TestGetRelevantWithId:
@@ -493,7 +495,7 @@ class TestApplyBoost:
         boosted = gp.apply_boost()
         assert boosted == 1
         top = gp.get_top(1)
-        assert abs(top[0]["score"] - 0.73) < 0.001
+        assert abs(top[0]["score"] - 0.71) < 0.001  # +0.01 per 3 hits
         assert top[0]["hit_count"] == 0  # remainder is 0
 
     def test_cap_at_1_0(self, tmp_path):
@@ -538,10 +540,11 @@ class TestApplyDecay:
         gp = GenePool(db, max_size=10)
         gp.add(1, 0.80, SAMPLE_SOURCE + "\n# decay1\n")
         # last_hit_gen=0, current_gen=20 → stale (0 < 20-10)
+        # task_hit_count=0 → accelerated decay at -0.03
         decayed = gp.apply_decay(current_generation=20)
         assert decayed == 1
         top = gp.get_top(1)
-        assert abs(top[0]["score"] - 0.78) < 0.001
+        assert abs(top[0]["score"] - 0.77) < 0.001
 
     def test_floor_respect(self, tmp_path):
         db = tmp_path / "test.db"

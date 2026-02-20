@@ -328,7 +328,7 @@ class TestTaskAlignment:
 
         bonus = fitness.score_task_alignment(output_lines, categories)
         assert bonus > 0  # Should get some alignment bonus.
-        assert bonus <= 0.10  # Capped at 0.10.
+        assert bonus <= 0.15  # Capped at 0.15.
 
 
 # ---------------------------------------------------------------------------

@@ -155,13 +155,13 @@ def evaluate_output(
     else:
         diversity = 0.0
 
-    # Novelty: how different is this output from recent generations.  Up to 0.10.
+    # Novelty: how different is this output from recent generations.  Up to 0.05.
     current_fp = _output_fingerprint(meaningful)
     if recent_fingerprints:
         novelty_raw = compute_novelty(current_fp, recent_fingerprints)
     else:
         novelty_raw = 1.0  # no history — full novelty
-    novelty = novelty_raw * 0.10
+    novelty = novelty_raw * 0.05
 
     # Structured output: proportion of lines matching structured patterns.
     structured_count = 0
@@ -470,7 +470,7 @@ class FitnessTracker(SQLiteStore):
             return 0.0
 
         alignment = total_score / total_weight
-        return round(min(alignment * 0.10, 0.10), 4)
+        return round(min(alignment * 0.15, 0.15), 4)
 
     def is_plateaued(self, window: int = 5, epsilon: float = 0.03) -> bool:
         """Check if recent survived scores are stagnant.

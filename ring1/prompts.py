@@ -383,10 +383,11 @@ def build_evolution_prompt(
         for gene in gene_pool[:3]:
             gen = gene.get("generation", "?")
             score = gene.get("score", 0)
+            task_hits = gene.get("task_hit_count", 0) or 0
             summary = gene.get("gene_summary", "")
             if len(summary) > 150:
                 summary = summary[:147] + "..."
-            parts.append(f"- [Gen {gen}, score={score:.2f}] {summary}")
+            parts.append(f"- [Gen {gen}, score={score:.2f}, task_hits={task_hits}] {summary}")
         parts.append("")
 
     # Recent crash logs — only on failure path or repair intent

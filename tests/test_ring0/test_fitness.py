@@ -124,12 +124,12 @@ class TestEvaluateOutput:
     """evaluate_output() multi-factor scoring."""
 
     def test_empty_output_survivor_gets_base_plus_novelty(self):
-        # Empty output: base=0.50 + novelty=0.10 (no history = full novelty)
+        # Empty output: base=0.50 + novelty=0.05 (no history = full novelty)
         score, detail = evaluate_output([], survived=True, elapsed=60, max_runtime=60)
-        assert score == 0.60
+        assert score == 0.55
         assert detail["basis"] == "survived"
         assert detail["volume"] == 0.0
-        assert detail["novelty"] == 0.10
+        assert detail["novelty"] == 0.05
 
     def test_rich_diverse_output_scores_high(self):
         lines = [f"result_{i}: {i * 3.14:.4f}" for i in range(60)]
@@ -287,7 +287,7 @@ class TestNoveltyInScoring:
             lines, survived=True, elapsed=60, max_runtime=60,
             recent_fingerprints=[],
         )
-        assert detail["novelty"] == 0.10  # full novelty (no history)
+        assert detail["novelty"] == 0.05  # full novelty (no history)
 
     def test_repeated_output_loses_novelty(self):
         lines = [f"result_{i}: value" for i in range(50)]
