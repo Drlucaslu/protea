@@ -51,11 +51,23 @@ _TRACEBACK_RE = _re.compile(
     r"Traceback \(most recent call last\):[\s\S]*?(?:\n\S+Error:.*)",
 )
 _LONG_URL_RE = _re.compile(r"https?://\S{80,}")
+# Redact credentials: "password/密码/token/secret/key" followed by separator and value,
+# or email-like + non-space token pairs that look like "user pass" login lines.
+_CREDENTIAL_PATTERNS: list[_re.Pattern[str]] = [
+    # Explicit labels: password=xxx, 密码：xxx, token: xxx, etc.
+    _re.compile(
+        r"(password|passwd|密码|口令|token|secret|api[_-]?key|credential)"
+        r"[\s:=：]+\S+",
+        _re.IGNORECASE,
+    ),
+    # "email password" pattern on same line (e.g. "user@host.com MyP@ss123")
+    _re.compile(r"\S+@\S+\.\S+\s+\S*[A-Z]\S*[0-9&!@#$%]\S*"),
+]
 _MAX_MEMORY_CONTENT_LEN = 200
 
 
 def _clean_for_memory(text: str) -> str:
-    """Strip code blocks, stack traces, and long URLs for memory storage.
+    """Strip code blocks, stack traces, long URLs, and credentials for memory storage.
 
     Keeps only the natural-language intent.  Truncates to 200 chars if
     still long after cleaning.
@@ -63,6 +75,8 @@ def _clean_for_memory(text: str) -> str:
     cleaned = _CODE_BLOCK_RE.sub("", text)
     cleaned = _TRACEBACK_RE.sub("", cleaned)
     cleaned = _LONG_URL_RE.sub("", cleaned)
+    for pat in _CREDENTIAL_PATTERNS:
+        cleaned = pat.sub("[REDACTED]", cleaned)
     # Collapse whitespace left by removals.
     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if len(cleaned) > _MAX_MEMORY_CONTENT_LEN:

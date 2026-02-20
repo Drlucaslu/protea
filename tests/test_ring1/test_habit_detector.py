@@ -1172,3 +1172,30 @@ class TestCleanForMemory:
         result = _clean_for_memory(text)
         # Should fall back to truncated original, not empty
         assert len(result) > 0
+
+    def test_redact_email_password_pair(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "用我的账号登录 lu@example.com Venus&9987"
+        result = _clean_for_memory(text)
+        assert "Venus&9987" not in result
+        assert "[REDACTED]" in result
+        assert "登录" in result
+
+    def test_redact_labeled_password(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "密码：MySecret123 帮我登录后台"
+        result = _clean_for_memory(text)
+        assert "MySecret123" not in result
+        assert "[REDACTED]" in result
+
+    def test_redact_token_and_key(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "用这个 api_key=sk-abc123xyz 调用接口"
+        result = _clean_for_memory(text)
+        assert "sk-abc123xyz" not in result
+        assert "[REDACTED]" in result
+
+    def test_no_false_redact_normal_text(self):
+        from ring1.task_executor import _clean_for_memory
+        text = "帮我搜索最新的AI论文"
+        assert _clean_for_memory(text) == text
