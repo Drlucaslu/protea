@@ -342,8 +342,8 @@ class TestDashboardServer:
     def test_genes_page(self):
         mock_gene_pool = MagicMock()
         mock_gene_pool.get_top.return_value = [
-            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness error", "hit_count": 7, "last_hit_gen": 42, "task_hit_count": 3, "last_task_hit_gen": 40},
-            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0, "task_hit_count": 0, "last_task_hit_gen": 0},
+            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness error", "hit_count": 7, "last_hit_gen": 42, "task_hit_count": 0, "last_task_hit_gen": 40, "total_task_hits": 3},
+            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0, "task_hit_count": 0, "last_task_hit_gen": 0, "total_task_hits": 0},
         ]
         mock_gene_pool.count.return_value = 10
         mock_skill_store = MagicMock()

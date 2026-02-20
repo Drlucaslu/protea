@@ -988,7 +988,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Summary cards.
         total = len(genes)
         avg_score = sum(g.get("score", 0) for g in genes) / total if total else 0
-        task_proven = sum(1 for g in genes if (g.get("task_hit_count") or 0) > 0)
+        task_proven = sum(1 for g in genes if (g.get("total_task_hits") or 0) > 0)
         linked = len(gene_skills)
         cards_html = (
             '<div class="cards">'
@@ -1013,7 +1013,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ) if tags_raw.strip() else '<span style="color:#555">—</span>'
             hits = g.get("hit_count", 0)
             last_hit = g.get("last_hit_gen", 0)
-            task_hits = g.get("task_hit_count", 0) or 0
+            task_hits = g.get("total_task_hits", 0) or 0
             last_task_hit = g.get("last_task_hit_gen", 0) or 0
             skills = gene_skills.get(gid, [])
             skills_html = ", ".join(_esc(s) for s in skills) if skills else '<span style="color:#555">—</span>'

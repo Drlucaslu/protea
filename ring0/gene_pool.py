@@ -63,6 +63,7 @@ class GenePool(SQLiteStore):
             "ALTER TABLE gene_pool ADD COLUMN last_hit_gen INTEGER DEFAULT 0",
             "ALTER TABLE gene_pool ADD COLUMN task_hit_count INTEGER DEFAULT 0",
             "ALTER TABLE gene_pool ADD COLUMN last_task_hit_gen INTEGER DEFAULT 0",
+            "ALTER TABLE gene_pool ADD COLUMN total_task_hits INTEGER DEFAULT 0",
         ]
         for sql in migrations:
             try:
@@ -195,13 +196,13 @@ class GenePool(SQLiteStore):
             if n <= 0:
                 rows = con.execute(
                     "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen, "
-                    "task_hit_count, last_task_hit_gen "
+                    "task_hit_count, last_task_hit_gen, total_task_hits "
                     "FROM gene_pool ORDER BY score DESC, generation DESC",
                 ).fetchall()
             else:
                 rows = con.execute(
                     "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen, "
-                    "task_hit_count, last_task_hit_gen "
+                    "task_hit_count, last_task_hit_gen, total_task_hits "
                     "FROM gene_pool ORDER BY score DESC, generation DESC LIMIT ?",
                     (n,),
                 ).fetchall()
@@ -242,7 +243,7 @@ class GenePool(SQLiteStore):
         with self._connect() as con:
             rows = con.execute(
                 "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen, "
-                "task_hit_count, last_task_hit_gen "
+                "task_hit_count, last_task_hit_gen, total_task_hits "
                 "FROM gene_pool"
             ).fetchall()
 
@@ -257,7 +258,7 @@ class GenePool(SQLiteStore):
             overlap = len(context_tags & gene_tags)
             if overlap > 0:
                 any_overlap = True
-            task_hits = gene.get("task_hit_count") or 0
+            task_hits = gene.get("total_task_hits") or 0
             relevance = overlap * 2 + gene["score"] + min(task_hits, 10) * 0.5
             scored.append((relevance, gene))
 
@@ -280,13 +281,14 @@ class GenePool(SQLiteStore):
                 )
 
     def record_task_hits(self, gene_ids: list[int], generation: int) -> None:
-        """Increment task_hit_count and update last_task_hit_gen for the given gene ids."""
+        """Increment task_hit_count (consumable) and total_task_hits (cumulative)."""
         if not gene_ids:
             return
         with self._connect() as con:
             for gid in gene_ids:
                 con.execute(
                     "UPDATE gene_pool SET task_hit_count = task_hit_count + 1, "
+                    "total_task_hits = total_task_hits + 1, "
                     "last_task_hit_gen = ? WHERE id = ?",
                     (generation, gid),
                 )
@@ -387,22 +389,21 @@ class GenePool(SQLiteStore):
         """Decay genes not hit in >10 generations (floor 0.10).
 
         Both last_hit_gen and last_task_hit_gen must be stale.
-        Genes with task_hit_count == 0 decay faster (-0.03) to accelerate
-        removal of genes that never produced user value.
-        Genes with task_hit_count > 0 decay gently (-0.01).
+        Genes with total_task_hits > 0 decay gently (-0.01) since they
+        have proven user value.  Others decay faster (-0.03).
 
         Returns number of genes decayed.
         """
         threshold_gen = current_generation - 10
         with self._connect() as con:
             rows = con.execute(
-                "SELECT id, score, task_hit_count FROM gene_pool "
+                "SELECT id, score, total_task_hits FROM gene_pool "
                 "WHERE last_hit_gen < ? AND last_task_hit_gen < ? AND score > 0.10",
                 (threshold_gen, threshold_gen),
             ).fetchall()
             decayed = 0
             for row in rows:
-                rate = 0.01 if (row["task_hit_count"] or 0) > 0 else 0.03
+                rate = 0.01 if (row["total_task_hits"] or 0) > 0 else 0.03
                 new_score = max(row["score"] - rate, 0.10)
                 con.execute(
                     "UPDATE gene_pool SET score = ? WHERE id = ?",

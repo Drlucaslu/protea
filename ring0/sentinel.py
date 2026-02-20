@@ -1375,6 +1375,30 @@ def run(project_root: pathlib.Path) -> None:
                 # Next generation.
                 generation += 1
 
+                # Task hit attribution: skill usage → lineage → gene scoring.
+                # Runs every generation so hits are never missed.
+                if gene_pool and skill_store and memory_store:
+                    try:
+                        recent_tasks = memory_store.get_by_type("task", limit=30)
+                        new_tasks = [t for t in recent_tasks if t.get("id", 0) > last_attributed_task_id]
+                        attributed_gene_ids: set[int] = set()
+                        for task in new_tasks:
+                            meta = task.get("metadata", {})
+                            if isinstance(meta, str):
+                                meta = json.loads(meta) if meta else {}
+                            for skill_name in meta.get("skills_used", []):
+                                for entry in skill_store.get_lineage(skill_name):
+                                    attributed_gene_ids.add(entry["gene_id"])
+                            for skill_name in meta.get("skills_matched", []):
+                                for entry in skill_store.get_lineage(skill_name):
+                                    attributed_gene_ids.add(entry["gene_id"])
+                        if attributed_gene_ids:
+                            gene_pool.record_task_hits(list(attributed_gene_ids), generation)
+                        if new_tasks:
+                            last_attributed_task_id = max(t.get("id", 0) for t in new_tasks)
+                    except Exception:
+                        log.debug("Task hit attribution failed (non-fatal)", exc_info=True)
+
                 # Periodic maintenance: compact memory + decay profile (every 10 generations).
                 if generation % 10 == 0:
                     if memory_store:
@@ -1419,28 +1443,6 @@ def run(project_root: pathlib.Path) -> None:
                                         )
                         except Exception:
                             log.debug("Drift detection failed (non-fatal)", exc_info=True)
-                    # Task hit attribution: skill usage → lineage → gene scoring.
-                    if gene_pool and skill_store and memory_store:
-                        try:
-                            recent_tasks = memory_store.get_by_type("task", limit=30)
-                            new_tasks = [t for t in recent_tasks if t.get("id", 0) > last_attributed_task_id]
-                            attributed_gene_ids: set[int] = set()
-                            for task in new_tasks:
-                                meta = task.get("metadata", {})
-                                if isinstance(meta, str):
-                                    meta = json.loads(meta) if meta else {}
-                                for skill_name in meta.get("skills_used", []):
-                                    for entry in skill_store.get_lineage(skill_name):
-                                        attributed_gene_ids.add(entry["gene_id"])
-                                for skill_name in meta.get("skills_matched", []):
-                                    for entry in skill_store.get_lineage(skill_name):
-                                        attributed_gene_ids.add(entry["gene_id"])
-                            if attributed_gene_ids:
-                                gene_pool.record_task_hits(list(attributed_gene_ids), generation)
-                            if new_tasks:
-                                last_attributed_task_id = max(t.get("id", 0) for t in new_tasks)
-                        except Exception:
-                            log.debug("Task hit attribution failed (non-fatal)", exc_info=True)
 
                     if gene_pool:
                         try:

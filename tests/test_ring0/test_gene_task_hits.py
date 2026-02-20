@@ -74,8 +74,10 @@ class TestMigrationAddsColumns:
         top = gp.get_top(1)
         assert "task_hit_count" in top[0]
         assert "last_task_hit_gen" in top[0]
+        assert "total_task_hits" in top[0]
         assert top[0]["task_hit_count"] == 0
         assert top[0]["last_task_hit_gen"] == 0
+        assert top[0]["total_task_hits"] == 0
 
 
 class TestRecordTaskHits:
@@ -88,11 +90,13 @@ class TestRecordTaskHits:
         gp.record_task_hits([gene_id], generation=5)
         top = gp.get_top(1)
         assert top[0]["task_hit_count"] == 1
+        assert top[0]["total_task_hits"] == 1
         assert top[0]["last_task_hit_gen"] == 5
 
         gp.record_task_hits([gene_id], generation=8)
         top = gp.get_top(1)
         assert top[0]["task_hit_count"] == 2
+        assert top[0]["total_task_hits"] == 2
         assert top[0]["last_task_hit_gen"] == 8
 
     def test_empty_list_no_error(self, tmp_path):
@@ -115,7 +119,8 @@ class TestApplyTaskBoost:
         assert boosted == 1
         top = gp.get_top(1)
         assert abs(top[0]["score"] - 0.80) < 0.001  # 0.70 + 2*0.05
-        assert top[0]["task_hit_count"] == 0  # reset
+        assert top[0]["task_hit_count"] == 0  # reset (consumable)
+        assert top[0]["total_task_hits"] == 2  # preserved (cumulative)
 
     def test_cap_at_1_0(self, tmp_path):
         db = tmp_path / "test.db"
@@ -172,26 +177,22 @@ class TestDecayZeroTaskHits:
 
 class TestDecayWithTaskHits:
     def test_gentle_decay(self, tmp_path):
-        """Genes with task_hit_count > 0 decay at -0.01."""
+        """Genes with total_task_hits > 0 decay at -0.01."""
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=10)
         gp.add(1, 0.80, SAMPLE_SOURCE)
         gene_id = gp.get_top(1)[0]["id"]
 
-        # Give it a task hit (but make both last_hit_gen and last_task_hit_gen stale)
+        # Give it a task hit then consume it via boost.
+        # total_task_hits stays > 0, which triggers gentle decay.
         gp.record_task_hits([gene_id], generation=1)
-        # Apply task boost to process the hit but keep task_hit_count > 0
-        # Actually, apply_task_boost resets count to 0. Let's add hits
-        # after the stale window check for correct setup.
-        # Instead: we need task_hit_count > 0, but last_task_hit_gen stale.
-        # record_task_hits sets last_task_hit_gen=1, which is < 20-10=10, so stale.
-        # But apply_task_boost resets task_hit_count. We need to NOT call it.
-        # The task_hit_count stays at 1 after record_task_hits.
+        gp.apply_task_boost()  # resets task_hit_count but total_task_hits remains 1
 
         decayed = gp.apply_decay(current_generation=20)
         assert decayed == 1
         top = gp.get_top(1)
-        assert abs(top[0]["score"] - 0.79) < 0.001  # -0.01
+        # 0.80 + 0.05 (boost) - 0.01 (gentle decay) = 0.84
+        assert abs(top[0]["score"] - 0.84) < 0.001
 
     def test_no_decay_if_task_hit_recent(self, tmp_path):
         """Genes with recent last_task_hit_gen are not decayed."""
@@ -209,23 +210,25 @@ class TestDecayWithTaskHits:
 
 class TestGetRelevantTaskHitWeight:
     def test_task_hit_high_ranks_higher(self, tmp_path):
-        """A gene with high task_hits ranks above a gene with higher base score."""
+        """A gene with high total_task_hits ranks above a gene with higher base score."""
         db = tmp_path / "test.db"
         gp = GenePool(db, max_size=10)
 
         # Gene A: lower score, but many task hits
         gp.add(1, 0.60, SAMPLE_SOURCE)
         gene_a_id = gp.get_top(1)[0]["id"]
-        for _ in range(5):
+        for _ in range(10):
             gp.record_task_hits([gene_a_id], generation=1)
+        # Consume hits via boost — total_task_hits (10) persists for relevance
+        gp.apply_task_boost()
 
         # Gene B: higher score, no task hits
         gp.add(2, 0.90, SAMPLE_SOURCE_B)
 
-        # Query with context that matches both
+        # Query with context that matches both genes
         relevant = gp.get_relevant("stream anomaly weather forecast prediction", 2)
         assert len(relevant) == 2
-        # Gene A should rank first due to task_hit boost (5 * 0.5 = 2.5 extra)
+        # Gene A should rank first due to total_task_hits boost (10 * 0.5 = 5.0 extra)
         assert relevant[0]["id"] == gene_a_id
 
 
@@ -324,6 +327,8 @@ class TestTaskHitAttributionE2E:
         genes = gp.get_top(0)
         gene_a = next(g for g in genes if g["id"] == gene_a_id)
         assert abs(gene_a["score"] - 0.85) < 0.001
+        assert gene_a["task_hit_count"] == 0  # consumed
+        assert gene_a["total_task_hits"] == 1  # preserved
 
 
 class TestAttributionUsesSkillsMatched:
@@ -401,3 +406,4 @@ class TestLineageViaSourceHashLookup:
         gp.record_task_hits([gene_id], generation=5)
         top = gp.get_top(1)
         assert top[0]["task_hit_count"] == 1
+        assert top[0]["total_task_hits"] == 1

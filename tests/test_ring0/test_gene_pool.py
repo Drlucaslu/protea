@@ -442,6 +442,7 @@ class TestGetTopWithId:
         assert top[0]["last_hit_gen"] == 0
         assert top[0]["task_hit_count"] == 0
         assert top[0]["last_task_hit_gen"] == 0
+        assert top[0]["total_task_hits"] == 0
 
 
 class TestGetRelevantWithId:
@@ -540,7 +541,7 @@ class TestApplyDecay:
         gp = GenePool(db, max_size=10)
         gp.add(1, 0.80, SAMPLE_SOURCE + "\n# decay1\n")
         # last_hit_gen=0, current_gen=20 → stale (0 < 20-10)
-        # task_hit_count=0 → accelerated decay at -0.03
+        # total_task_hits=0 → accelerated decay at -0.03
         decayed = gp.apply_decay(current_generation=20)
         assert decayed == 1
         top = gp.get_top(1)
