@@ -474,6 +474,7 @@ class TaskExecutor:
         self.scheduled_store = scheduled_store
         self.preference_store = preference_store
         self.preference_extractor = None  # Initialized in create_executor()
+        self.feedback_fn = None  # Called after complete task response
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
         self._running = True
         self._last_p0_time: float = time.time()
@@ -776,6 +777,12 @@ class TaskExecutor:
                     )
                 except Exception:
                     log.debug("Failed to extract preferences", exc_info=True)
+            # Feedback prompt — only after full task completion.
+            if self.feedback_fn:
+                try:
+                    self.feedback_fn()
+                except Exception:
+                    pass
 
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"

@@ -996,19 +996,12 @@ def run(project_root: pathlib.Path) -> None:
             log.debug("Post-backfill attribution failed (non-fatal): %s", exc)
 
     # Task executor for P0 user tasks.
-    # Wrap reply_fn to trigger feedback prompts after replies.
-    if bot:
-        def _reply_with_feedback(text: str) -> None:
-            bot._send_reply(text)
-            try:
-                bot.send_feedback_prompt()
-            except Exception:
-                pass
-        reply_fn = _reply_with_feedback
-    else:
-        reply_fn = lambda text: None
+    reply_fn = bot._send_reply if bot else lambda text: None
     send_file_fn = bot._send_document if bot else None
     executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store)
+    # Feedback prompt after task completion (not on intermediate messages).
+    if executor and bot:
+        executor.feedback_fn = bot.send_feedback_prompt
     # Expose subagent_manager on state for /background command.
     state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
 

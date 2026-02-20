@@ -165,9 +165,7 @@ class TelegramBot:
         self._max_context_messages = 5
         self._context_window_seconds = 120  # 2分钟内的回复视为有上下文
 
-        # Feedback collection: send 👍/👎 after every N task responses.
-        self._task_response_counter: int = 0
-        self._feedback_interval: int = 3  # Ask for feedback every 3 tasks
+        # Feedback collection: 👍/👎 after completed tasks (~20% probability).
 
     # -- low-level API helpers --
 
@@ -250,13 +248,13 @@ class TelegramBot:
         })
 
     def send_feedback_prompt(self) -> None:
-        """Send a quick feedback prompt after a task response.
+        """Send a quick feedback prompt after a completed task.
 
-        Called by the task executor (via reply_fn wrapper) every N tasks.
-        Sends a lightweight inline keyboard with 👍/👎.
+        Called by the task executor after the full response is sent.
+        Triggers with ~20% probability to avoid annoying the user.
         """
-        self._task_response_counter += 1
-        if self._task_response_counter % self._feedback_interval != 0:
+        import random
+        if random.random() > 0.2:
             return
         buttons = [[
             {"text": "\U0001f44d", "callback_data": "feedback:positive"},
