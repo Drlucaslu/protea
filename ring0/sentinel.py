@@ -886,12 +886,12 @@ def run(project_root: pathlib.Path) -> None:
     fitness = FitnessTracker(db_path)
     memory_store = _best_effort("MemoryStore", lambda: MemoryStore(db_path))
     skill_store = _best_effort("SkillStore", lambda: __import__("ring0.skill_store", fromlist=["SkillStore"]).SkillStore(db_path))
-    gene_pool = _best_effort("GenePool", lambda: __import__("ring0.gene_pool", fromlist=["GenePool"]).GenePool(db_path))
+    embedding_provider = _create_embedding_provider(cfg)
+    gene_pool = _best_effort("GenePool", lambda: __import__("ring0.gene_pool", fromlist=["GenePool"]).GenePool(db_path, embedding_provider=embedding_provider))
     task_store = _best_effort("TaskStore", lambda: __import__("ring0.task_store", fromlist=["TaskStore"]).TaskStore(db_path))
     scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
     preference_store = _best_effort("PreferenceStore", lambda: __import__("ring0.preference_store", fromlist=["PreferenceStore"]).PreferenceStore(db_path, cfg.get("ring1", {}).get("user_profile", {})))
-    embedding_provider = _create_embedding_provider(cfg)
     memory_curator = _create_memory_curator(project_root)
 
     # Capability skill sandbox — venv manager + allowed packages.

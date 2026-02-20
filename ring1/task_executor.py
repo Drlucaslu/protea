@@ -650,7 +650,14 @@ class TaskExecutor:
             gene_patterns: list[dict] = []
             if self.gene_pool:
                 try:
-                    gene_patterns = self.gene_pool.get_relevant(match_text, 3)
+                    gene_emb = None
+                    if self.embedding_provider:
+                        try:
+                            vecs = self.embedding_provider.embed([match_text])
+                            gene_emb = vecs[0] if vecs else None
+                        except Exception:
+                            pass
+                    gene_patterns = self.gene_pool.get_relevant(match_text, 3, query_embedding=gene_emb)
                     _gene_ids_used = [g["id"] for g in gene_patterns if "id" in g]
                 except Exception:
                     log.debug("Gene retrieval for task failed", exc_info=True)
