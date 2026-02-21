@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-from ring1.tools.shell import _is_denied, _is_descendant_of, _is_safe_kill, make_shell_tool
+from ring1.tools.shell import (
+    _in_same_pgid,
+    _is_denied,
+    _is_descendant_of,
+    _is_safe_kill,
+    make_shell_tool,
+)
 
 
 class TestDenyPatterns:
@@ -89,6 +95,22 @@ class TestDenyPatterns:
             assert result is None, f"Expected None, got: {result}"
             result2 = _is_denied(f"kill -9 {proc.pid}")
             assert result2 is None, f"Expected None, got: {result2}"
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_kill_same_pgid_allowed(self):
+        """kill targeting a process in the same PGID should be allowed."""
+        import os
+        import subprocess
+
+        # Spawn a child, then simulate orphaning by mocking _is_descendant_of
+        # to return False — the PGID check should still allow it.
+        proc = subprocess.Popen(["sleep", "60"])
+        try:
+            with patch("ring1.tools.shell._is_descendant_of", return_value=False):
+                result = _is_denied(f"kill {proc.pid}")
+                assert result is None, f"Expected None (same PGID), got: {result}"
         finally:
             proc.kill()
             proc.wait()

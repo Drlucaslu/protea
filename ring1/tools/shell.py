@@ -67,8 +67,21 @@ def _is_descendant_of(pid: int, ancestor: int) -> bool:
     return False
 
 
+def _in_same_pgid(pid: int, reference: int) -> bool:
+    """Return True if *pid* belongs to the same process group as *reference*."""
+    try:
+        return os.getpgid(pid) == os.getpgid(reference)
+    except OSError:
+        return False
+
+
 def _is_safe_kill(command: str) -> str | None:
-    """Allow ``kill`` only when every target PID is a descendant of us.
+    """Allow ``kill`` only for processes within the Protea process tree.
+
+    A target PID is allowed if it is either:
+    * a descendant of the current process (normal child/grandchild), **or**
+    * in the same process group (covers orphaned siblings from a previous
+      Sentinel restart — PGID is inherited and survives reparenting to init).
 
     Returns a reason string if the command should be blocked, else ``None``.
     """
@@ -101,8 +114,11 @@ def _is_safe_kill(command: str) -> str | None:
             return "Blocked: kill with no PID"
         my_pid = os.getpid()
         for pid in pids:
-            if not _is_descendant_of(pid, my_pid):
-                return f"Blocked: PID {pid} is not a descendant of this process"
+            if _in_same_pgid(pid, my_pid):
+                continue
+            if _is_descendant_of(pid, my_pid):
+                continue
+            return f"Blocked: PID {pid} is not in the Protea process tree"
     return None
 
 
