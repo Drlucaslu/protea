@@ -673,10 +673,64 @@ if __name__ == "__main__":
         gp.add(2, 0.90, DISTINCT_SOURCES[1])
 
         # Context with completely unrelated terms — no tag overlap, no embeddings.
-        # Unified scoring falls back to base score ordering.
+        # Default min_semantic=0 preserves backward-compatible behaviour.
         relevant = gp.get_relevant("xyzzy quantum entanglement", 2)
         assert len(relevant) == 2
         assert relevant[0]["score"] == 0.90
+
+    def test_min_semantic_filters_no_overlap(self, tmp_path):
+        """With min_semantic=1.0, genes with zero semantic score are excluded."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        gp.add(1, 0.60, DISTINCT_SOURCES[0])
+        gp.add(2, 0.90, DISTINCT_SOURCES[1])
+
+        # No tag overlap, no embeddings → semantic=0 for all genes.
+        relevant = gp.get_relevant("xyzzy quantum entanglement", 2, min_semantic=1.0)
+        assert relevant == []
+
+    def test_min_semantic_passes_with_overlap(self, tmp_path):
+        """Genes with tag overlap pass the min_semantic threshold."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        source_stream = SAMPLE_SOURCE + "\n# stream_sem\n"
+        gp.add(1, 0.80, source_stream)  # has "stream", "analyzer", "anomaly" tags
+
+        fib_source = '''\
+import os, pathlib, time, threading
+
+def compute_prime_sieve(n):
+    """Compute primes using sieve of Eratosthenes."""
+    pass
+
+def main():
+    hb = pathlib.Path(os.environ.get("PROTEA_HEARTBEAT", ".heartbeat"))
+    pid = os.getpid()
+    while True:
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
+'''
+        gp.add(2, 0.90, fib_source)  # has "prime", "sieve", "eratosthenes"
+
+        # "stream anomaly" overlaps with gene 1 but not gene 2.
+        relevant = gp.get_relevant("stream anomaly detection", 2, min_semantic=1.0)
+        assert len(relevant) == 1
+        assert relevant[0]["generation"] == 1
+
+    def test_relevance_score_in_result(self, tmp_path):
+        """Returned genes should include _relevance score."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.85, SAMPLE_SOURCE + "\n# rel_score\n")
+
+        relevant = gp.get_relevant("stream analyzer", 1)
+        assert len(relevant) == 1
+        assert "_relevance" in relevant[0]
+        assert relevant[0]["_relevance"] > 0
 
     def test_returns_results_with_empty_context(self, tmp_path):
         db = tmp_path / "test.db"

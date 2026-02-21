@@ -657,8 +657,13 @@ class TaskExecutor:
                             gene_emb = vecs[0] if vecs else None
                         except Exception:
                             pass
-                    gene_patterns = self.gene_pool.get_relevant(match_text, 3, query_embedding=gene_emb)
+                    gene_patterns = self.gene_pool.get_relevant(
+                        match_text, 3, query_embedding=gene_emb, min_semantic=1.0,
+                    )
                     _gene_ids_used = [g["id"] for g in gene_patterns if "id" in g]
+                    if gene_patterns:
+                        log.info("Gene injection: %s",
+                                 [(g["id"], g.get("_relevance", 0)) for g in gene_patterns])
                 except Exception:
                     log.debug("Gene retrieval for task failed", exc_info=True)
 

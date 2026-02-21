@@ -287,12 +287,24 @@ class GenePool(SQLiteStore):
             log.info("Gene %d deleted and blacklisted (hash=%s…)", gene_id, row["source_hash"][:12])
             return True
 
-    def get_relevant(self, context: str, n: int = 3, query_embedding: list[float] | None = None) -> list[dict]:
+    def get_relevant(
+        self,
+        context: str,
+        n: int = 3,
+        query_embedding: list[float] | None = None,
+        min_semantic: float = 0.0,
+    ) -> list[dict]:
         """Return top N genes by hybrid relevance score.
 
         Scores each gene by tag overlap, embedding cosine similarity,
         fitness score, and task hit count.  No fallback needed — the
         unified score always produces a meaningful ranking.
+
+        Args:
+            min_semantic: Minimum semantic score (tag overlap * 2 +
+                cosine_sim * 3) required.  Genes below this threshold
+                are excluded.  Default 0.0 keeps backward-compatible
+                behaviour.
         """
         context_tags = set(self.extract_tags(context))
 
@@ -325,17 +337,22 @@ class GenePool(SQLiteStore):
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+            semantic = overlap * 2 + cos_sim * 3
+            if semantic < min_semantic:
+                continue
+
             task_hits = gene.get("total_task_hits") or 0
             penalty = -10.0 if gene["id"] in suppressed else 0.0
-            relevance = overlap * 2 + cos_sim * 3 + gene["score"] + min(task_hits, 10) * 0.5 + penalty
+            relevance = semantic + gene["score"] + min(task_hits, 10) * 0.5 + penalty
             scored.append((relevance, gene))
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
         # Strip embedding from returned dicts (large, not needed by callers)
         results = []
-        for _, gene in scored[:n]:
+        for relevance, gene in scored[:n]:
             gene.pop("embedding", None)
+            gene["_relevance"] = relevance
             results.append(gene)
         return results
 
