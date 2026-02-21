@@ -186,7 +186,7 @@ class TelegramBot:
                     return body
                 return None
         except Exception:
-            log.debug("API call %s failed", method, exc_info=True)
+            log.warning("API call %s failed", method, exc_info=True)
             return None
 
     def _get_updates(self) -> list[dict]:
@@ -1523,7 +1523,7 @@ class TelegramBot:
                         log.debug("Error sending convergence proposal", exc_info=True)
                         break
             except Exception:
-                log.debug("Error in polling loop", exc_info=True)
+                log.warning("Error in polling loop", exc_info=True)
                 # Back off on repeated errors.
                 if self._running.is_set():
                     time.sleep(5)
