@@ -12,6 +12,7 @@ import logging
 import os
 import pathlib
 import signal
+import random
 import subprocess
 import sys
 import threading
@@ -1106,7 +1107,8 @@ def run(project_root: pathlib.Path) -> None:
 
     last_good_hash: str | None = None
     last_crystallized_hash: str | None = None
-    last_skill_sync_time: float = 0.0  # epoch — triggers sync on first eligible moment
+    # Jitter: initial delay of 0–50% of interval so nodes don't all sync at once.
+    last_skill_sync_time: float = time.time() - sync_interval + random.uniform(0, sync_interval * 0.5)
     last_consolidation_date: str = ""  # YYYY-MM-DD — nightly consolidation
     skill_cap = r0.skill_max_count
     proc: subprocess.Popen | None = None
@@ -1520,15 +1522,15 @@ def run(project_root: pathlib.Path) -> None:
                         except Exception:
                             log.debug("Nightly consolidation failed (non-fatal)", exc_info=True)
 
-                # Periodic skill sync (every sync_interval seconds, default 2 hours).
+                # Periodic skill sync (interval + jitter to avoid thundering herd).
                 if skill_syncer and (time.time() - last_skill_sync_time) >= sync_interval:
                     try:
                         sync_result = skill_syncer.sync()
                         log.info("Skill sync: %s", sync_result)
-                        last_skill_sync_time = time.time()
                     except Exception:
                         log.debug("Skill sync failed (non-fatal)", exc_info=True)
-                        last_skill_sync_time = time.time()  # avoid retry storm
+                    # Add 0–50% jitter so nodes don't re-sync in lockstep.
+                    last_skill_sync_time = time.time() + random.uniform(0, sync_interval * 0.5)
 
                 params = generate_params(generation, seed)
                 log.info("Starting generation %d (params: %s)", generation, params)
