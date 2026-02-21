@@ -750,7 +750,7 @@ def _create_registry_client(project_root, cfg):
     return _best_effort("RegistryClient", _factory)
 
 
-def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg):
+def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_pool=None):
     """Best-effort SkillSyncer creation."""
     if not skill_store or not registry_client:
         return None
@@ -760,13 +760,35 @@ def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg):
         if not sync_cfg.get("enabled", True):
             return None
         max_discover = sync_cfg.get("max_discover_per_sync", 5)
+
+        # Build external source adapters from config.
+        sources = []
+        source_cfg = sync_cfg.get("sources", {})
+        try:
+            from ring1.skill_sources import ClawHubSource, SkillsShSource
+            clawhub_cfg = source_cfg.get("clawhub", {})
+            if clawhub_cfg.get("enabled", True):
+                sources.append(ClawHubSource(
+                    clawhub_cfg.get("url", "https://openclawskill.ai"),
+                ))
+            skills_sh_cfg = source_cfg.get("skills_sh", {})
+            if skills_sh_cfg.get("enabled", True):
+                sources.append(SkillsShSource(
+                    skills_sh_cfg.get("url", "https://skills.sh"),
+                ))
+        except Exception as exc:
+            log.debug("External skill sources not available: %s", exc)
+
         syncer = SkillSyncer(
             skill_store=skill_store,
             registry_client=registry_client,
             user_profiler=user_profiler,
             max_discover=max_discover,
+            sources=sources,
+            gene_pool=gene_pool,
         )
-        log.info("SkillSyncer created (max_discover=%d)", max_discover)
+        log.info("SkillSyncer created (max_discover=%d, sources=%d)",
+                 max_discover, len(sources))
         return syncer
     return _best_effort("SkillSyncer", _factory)
 
@@ -944,8 +966,10 @@ def run(project_root: pathlib.Path) -> None:
         if cleaned:
             log.info("Deactivated %d unused evolved skills", cleaned)
 
-    # Skill syncer — periodic publish + discover.
-    skill_syncer = _create_skill_syncer(skill_store, registry_client, user_profiler, cfg)
+    # Skill syncer — periodic publish + discover (skills + genes).
+    skill_syncer = _create_skill_syncer(
+        skill_store, registry_client, user_profiler, cfg, gene_pool=gene_pool,
+    )
     sync_interval = cfg.get("ring1", {}).get("skill_sync", {}).get("interval_sec", 7200)
 
     # Backfill gene pool from existing skills (one-time).

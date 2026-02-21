@@ -1,9 +1,10 @@
-"""Periodic skill synchronization with the Hub.
+"""Periodic skill + gene synchronization with the Hub.
 
-Handles two-way sync:
-1. **Publish** — push quality unpublished local skills to the Hub.
-2. **Discover** — search the Hub for relevant skills based on user profile,
-   download, validate, and install them locally.
+Handles multi-phase sync:
+1. **Publish skills** — push quality unpublished local skills to the Hub.
+2. **Discover skills** — search the Hub (+ external sources) for relevant skills.
+3. **Publish genes** — push proven genes to the Hub.
+4. **Discover genes** — search the Hub for useful genes and install locally.
 
 Designed to be called periodically (e.g. every 2 hours) from the sentinel.
 """
@@ -14,15 +15,17 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ring0.gene_pool import GenePool
     from ring0.skill_store import SkillStore
     from ring0.user_profile import UserProfiler
     from ring1.registry_client import RegistryClient
+    from ring1.skill_sources import SkillSource
 
 log = logging.getLogger("protea.skill_sync")
 
 
 class SkillSyncer:
-    """Two-way skill synchronization between local store and Hub."""
+    """Multi-phase skill + gene synchronization between local store and Hub."""
 
     def __init__(
         self,
@@ -31,19 +34,26 @@ class SkillSyncer:
         user_profiler: UserProfiler | None = None,
         max_discover: int = 5,
         allowed_packages: frozenset[str] | None = None,
+        sources: list[SkillSource] | None = None,
+        gene_pool: GenePool | None = None,
     ) -> None:
         self.skill_store = skill_store
         self.registry = registry_client
         self.profiler = user_profiler
         self.max_discover = max_discover
         self._allowed_packages = allowed_packages
+        self._sources = sources or []
+        self.gene_pool = gene_pool
 
     def sync(self) -> dict:
-        """Run a full sync cycle: publish then discover.
+        """Run a full sync cycle: publish then discover (skills + genes).
 
         Returns a summary dict with counts.
         """
-        result = {"published": 0, "discovered": 0, "rejected": 0, "errors": 0}
+        result = {
+            "published": 0, "discovered": 0, "rejected": 0, "errors": 0,
+            "genes_published": 0, "genes_discovered": 0,
+        }
 
         # Phase 1: Publish unpublished quality skills.
         try:
@@ -52,13 +62,27 @@ class SkillSyncer:
             log.debug("Publish phase failed", exc_info=True)
             result["errors"] += 1
 
-        # Phase 2: Discover relevant skills from Hub.
+        # Phase 2: Discover relevant skills from Hub + external sources.
         try:
             discovered, rejected = self._discover_relevant()
             result["discovered"] = discovered
             result["rejected"] = rejected
         except Exception:
             log.debug("Discover phase failed", exc_info=True)
+            result["errors"] += 1
+
+        # Phase 3: Publish quality genes.
+        try:
+            result["genes_published"] = self._publish_genes()
+        except Exception:
+            log.debug("Gene publish phase failed", exc_info=True)
+            result["errors"] += 1
+
+        # Phase 4: Discover genes from Hub.
+        try:
+            result["genes_discovered"] = self._discover_genes()
+        except Exception:
+            log.debug("Gene discover phase failed", exc_info=True)
             result["errors"] += 1
 
         return result
@@ -99,7 +123,7 @@ class SkillSyncer:
     # ------------------------------------------------------------------
 
     def _discover_relevant(self) -> tuple[int, int]:
-        """Search Hub for relevant skills and install validated ones.
+        """Search Hub + external sources for relevant skills and install validated ones.
 
         Returns (discovered_count, rejected_count).
         """
@@ -162,6 +186,53 @@ class SkillSyncer:
                 except Exception:
                     log.debug("Failed to install skill %r", name, exc_info=True)
 
+        # External sources (ClawHub, Skills.sh, etc.).
+        for source in self._sources:
+            if discovered >= self.max_discover:
+                break
+            for query in queries:
+                if discovered >= self.max_discover:
+                    break
+                try:
+                    ext_results = source.search(query, limit=10)
+                except Exception:
+                    log.debug("Source %s search failed", source.name, exc_info=True)
+                    continue
+                for skill_info in ext_results:
+                    if discovered >= self.max_discover:
+                        break
+                    name = skill_info.get("name", "")
+                    if not name or name in local_names or name in seen_names:
+                        continue
+                    seen_names.add(name)
+
+                    try:
+                        skill_data = source.download(name)
+                    except Exception:
+                        log.debug("Source %s download failed for %r",
+                                  source.name, name, exc_info=True)
+                        continue
+                    if not skill_data:
+                        continue
+
+                    source_code = skill_data.get("source_code", "")
+                    if not self._validate_skill(name, source_code):
+                        rejected += 1
+                        continue
+                    dependencies = skill_data.get("dependencies", [])
+                    if dependencies and not self._validate_dependencies(name, dependencies):
+                        rejected += 1
+                        continue
+
+                    try:
+                        self.skill_store.install_from_hub(skill_data)
+                        discovered += 1
+                        log.info("Sync: discovered skill %r from %s",
+                                 name, source.name)
+                    except Exception:
+                        log.debug("Failed to install skill %r from %s",
+                                  name, source.name, exc_info=True)
+
         return discovered, rejected
 
     def _build_search_queries(self) -> list[str]:
@@ -187,6 +258,81 @@ class SkillSyncer:
                 queries.append(t)
 
         return queries or ["popular"]
+
+    # ------------------------------------------------------------------
+    # Phase 3 & 4: Gene sync
+    # ------------------------------------------------------------------
+
+    def _publish_genes(self) -> int:
+        """Publish quality genes to Hub."""
+        if not self.gene_pool:
+            return 0
+        publishable = self.gene_pool.get_publishable_genes()
+        if not publishable:
+            return 0
+
+        from ring0.gene_pool import GenePool
+
+        published = 0
+        for gene in publishable:
+            tags_str = gene.get("tags", "")
+            name = GenePool.derive_gene_name(tags_str)
+            tags = sorted(tags_str.split()) if tags_str else []
+            try:
+                resp = self.registry.publish_gene(
+                    name=name,
+                    gene_summary=gene.get("gene_summary", ""),
+                    tags=tags,
+                    score=gene.get("score", 0.0),
+                    embedding=gene.get("embedding", ""),
+                )
+                if resp is not None:
+                    published += 1
+                    log.info("Sync: published gene %r to Hub", name)
+            except Exception:
+                log.debug("Failed to publish gene %r", name, exc_info=True)
+        return published
+
+    def _discover_genes(self) -> int:
+        """Discover genes from Hub and install locally."""
+        if not self.gene_pool:
+            return 0
+
+        queries = self._build_search_queries()
+        if not queries:
+            return 0
+
+        discovered = 0
+        seen: set[str] = set()
+
+        for query in queries:
+            if discovered >= self.max_discover:
+                break
+            results = self.registry.search_genes(query=query, order="gdi", limit=10)
+            for gene_info in results:
+                if discovered >= self.max_discover:
+                    break
+                node_id = gene_info.get("node_id", "")
+                name = gene_info.get("name", "")
+                if not name or not node_id:
+                    continue
+                key = f"{node_id}/{name}"
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                # Skip own genes.
+                if node_id == self.registry.node_id:
+                    continue
+
+                try:
+                    if self.gene_pool.install_from_hub(gene_info):
+                        discovered += 1
+                        log.info("Sync: installed gene %r from %s", name, node_id)
+                except Exception:
+                    log.debug("Failed to install gene %r", name, exc_info=True)
+
+        return discovered
 
     @staticmethod
     def _validate_skill(name: str, source_code: str) -> bool:

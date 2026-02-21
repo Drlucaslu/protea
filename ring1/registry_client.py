@@ -148,3 +148,71 @@ class RegistryClient:
     def get_stats(self) -> dict | None:
         """Get registry statistics."""
         return self._request("GET", "/api/stats")
+
+    # ------------------------------------------------------------------
+    # Gene API
+    # ------------------------------------------------------------------
+
+    def publish_gene(
+        self,
+        name: str,
+        gene_summary: str,
+        tags: list[str] | None = None,
+        score: float = 0.0,
+        embedding: str = "",
+        hypothesis_stats: dict | None = None,
+    ) -> dict | None:
+        """Publish a gene to the registry."""
+        body: dict = {
+            "node_id": self.node_id,
+            "name": name,
+            "gene_summary": gene_summary,
+            "tags": tags or [],
+            "score": score,
+            "embedding": embedding,
+            "hypothesis_stats": hypothesis_stats or {},
+        }
+        return self._request("POST", "/api/genes", body=body)
+
+    def search_genes(
+        self,
+        query: str | None = None,
+        tag: str | None = None,
+        limit: int = 20,
+        order: str | None = "gdi",
+    ) -> list[dict]:
+        """Search for genes. Returns list of gene dicts. Defaults to GDI ordering."""
+        params = []
+        if query:
+            params.append(f"q={urllib.request.quote(query)}")
+        if tag:
+            params.append(f"tag={urllib.request.quote(tag)}")
+        params.append(f"limit={limit}")
+        if order:
+            params.append(f"order={order}")
+        qs = "&".join(params)
+        result = self._request("GET", f"/api/genes?{qs}")
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return result
+        return []
+
+    def download_gene(self, node_id: str, name: str) -> dict | None:
+        """Download a gene (auto-increments downloads)."""
+        return self._request("GET", f"/api/genes/{node_id}/{name}")
+
+    def report_gene_outcome(
+        self,
+        node_id: str,
+        name: str,
+        adopted: bool,
+        survived: bool,
+        score: float,
+    ) -> bool:
+        """Report usage outcome back to hub for GDI computation."""
+        result = self._request(
+            "POST", f"/api/genes/{node_id}/{name}/report",
+            body={"adopted": adopted, "survived": survived, "score": score},
+        )
+        return result is not None

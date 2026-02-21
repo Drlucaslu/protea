@@ -296,3 +296,221 @@ class TestSync:
 
         # Should not crash, errors counted
         assert result["errors"] >= 1
+
+    def test_sync_includes_gene_keys(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient()
+        syncer = SkillSyncer(store, registry)
+        result = syncer.sync()
+
+        assert "genes_published" in result
+        assert "genes_discovered" in result
+
+
+class FakeSkillSource:
+    """Minimal fake external skill source."""
+
+    def __init__(self, name="fake-source", search_results=None, download_map=None):
+        self.name = name
+        self._search_results = search_results or []
+        self._download_map = download_map or {}
+
+    def search(self, query, limit=10):
+        return self._search_results
+
+    def download(self, identifier):
+        return self._download_map.get(identifier)
+
+
+class TestMultiSourceDiscover:
+    """_discover_relevant should use external sources."""
+
+    def test_discovers_from_external_source(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="local-node")
+        # Hub returns nothing.
+        registry._search_results = []
+
+        safe_code = "x = 1 + 1\nprint(x)\n"
+        ext_source = FakeSkillSource(
+            name="test-source",
+            search_results=[{"name": "ext_skill", "node_id": "ext-node"}],
+            download_map={
+                "ext_skill": {
+                    "name": "ext_skill",
+                    "description": "External skill",
+                    "prompt_template": "do stuff",
+                    "source_code": safe_code,
+                    "source": "hub:test-source",
+                },
+            },
+        )
+        syncer = SkillSyncer(store, registry, sources=[ext_source])
+        discovered, rejected = syncer._discover_relevant()
+
+        assert discovered == 1
+        assert store.get_by_name("ext_skill") is not None
+
+    def test_respects_max_discover_across_sources(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="local-node")
+        safe_code = "x = 1 + 1\nprint(x)\n"
+
+        # Hub returns 1 skill.
+        registry._search_results = [
+            {"name": "hub_skill", "node_id": "hub-node"},
+        ]
+        registry._download_map = {
+            ("hub-node", "hub_skill"): {
+                "name": "hub_skill",
+                "description": "Hub skill",
+                "prompt_template": "t",
+                "source_code": safe_code,
+            },
+        }
+
+        # External source returns 5 skills.
+        ext_results = [{"name": f"ext_{i}", "node_id": "ext"} for i in range(5)]
+        ext_downloads = {
+            f"ext_{i}": {
+                "name": f"ext_{i}",
+                "description": "ext",
+                "prompt_template": "t",
+                "source_code": safe_code,
+                "source": "hub:ext",
+            }
+            for i in range(5)
+        }
+        ext_source = FakeSkillSource("ext", ext_results, ext_downloads)
+
+        syncer = SkillSyncer(store, registry, max_discover=2, sources=[ext_source])
+        discovered, _ = syncer._discover_relevant()
+
+        # max_discover=2 should cap total across hub + external.
+        assert discovered == 2
+
+    def test_external_source_failure_doesnt_crash(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="local-node")
+
+        class FailSource:
+            name = "fail-source"
+            def search(self, query, limit=10):
+                raise RuntimeError("Source down")
+            def download(self, identifier):
+                return None
+
+        syncer = SkillSyncer(store, registry, sources=[FailSource()])
+        discovered, rejected = syncer._discover_relevant()
+
+        assert discovered == 0  # no crash
+
+
+class FakeGenePool:
+    """Minimal fake gene pool for testing gene sync."""
+
+    def __init__(self, publishable=None):
+        self._publishable = publishable or []
+        self.installed: list[dict] = []
+
+    def get_publishable_genes(self):
+        return self._publishable
+
+    def install_from_hub(self, gene_data):
+        self.installed.append(gene_data)
+        return True
+
+
+class TestGeneSync:
+    """Gene publish + discover phases."""
+
+    def test_publish_genes(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="local-node")
+        registry.published_genes = []
+
+        def fake_publish_gene(name, gene_summary, tags=None, score=0.0, embedding="", hypothesis_stats=None):
+            registry.published_genes.append({"name": name})
+            return {"ok": True}
+        registry.publish_gene = fake_publish_gene
+
+        gene_pool = FakeGenePool(publishable=[
+            {"id": 1, "gene_summary": "class Analyzer: ...", "tags": "analyzer stream",
+             "score": 0.80, "total_task_hits": 3, "embedding": ""},
+        ])
+
+        syncer = SkillSyncer(store, registry, gene_pool=gene_pool)
+        count = syncer._publish_genes()
+
+        assert count == 1
+        assert len(registry.published_genes) == 1
+
+    def test_publish_genes_without_pool(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient()
+        syncer = SkillSyncer(store, registry, gene_pool=None)
+        count = syncer._publish_genes()
+        assert count == 0
+
+    def test_discover_genes(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="local-node")
+        registry._gene_search_results = [
+            {"name": "remote-gene", "node_id": "other-node",
+             "gene_summary": "class Remote: ...", "tags": ["remote"],
+             "score": 0.75},
+        ]
+
+        def fake_search_genes(query=None, order=None, limit=10):
+            return registry._gene_search_results
+        registry.search_genes = fake_search_genes
+
+        gene_pool = FakeGenePool()
+        syncer = SkillSyncer(store, registry, gene_pool=gene_pool)
+        count = syncer._discover_genes()
+
+        assert count == 1
+        assert len(gene_pool.installed) == 1
+
+    def test_discover_genes_skips_own_node(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient(node_id="my-node")
+
+        def fake_search_genes(query=None, order=None, limit=10):
+            return [
+                {"name": "my-gene", "node_id": "my-node",
+                 "gene_summary": "class Mine: ...", "tags": ["mine"],
+                 "score": 0.75},
+            ]
+        registry.search_genes = fake_search_genes
+
+        gene_pool = FakeGenePool()
+        syncer = SkillSyncer(store, registry, gene_pool=gene_pool)
+        count = syncer._discover_genes()
+
+        assert count == 0
+
+    def test_discover_genes_without_pool(self, tmp_path):
+        from ring0.skill_store import SkillStore
+
+        store = SkillStore(tmp_path / "skills.db")
+        registry = FakeRegistryClient()
+        syncer = SkillSyncer(store, registry, gene_pool=None)
+        count = syncer._discover_genes()
+        assert count == 0
