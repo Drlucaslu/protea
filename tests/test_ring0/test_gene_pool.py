@@ -1058,3 +1058,135 @@ if __name__ == "__main__":
         relevant = gp.get_relevant("stream analyzer", 1)
         assert len(relevant) == 1
         assert "embedding" not in relevant[0]
+
+
+class TestHypothesisTracking:
+    def test_record_and_close_hypothesis(self, tmp_path):
+        """Basic flow: record hypotheses, close with outcome, verify data."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gp.add(2, 0.85, DISTINCT_SOURCES[1])
+        ids = [g["id"] for g in gp.get_top(0)]
+
+        gp.record_hypothesis(generation=5, gene_ids=ids)
+        gp.close_hypothesis(generation=5, survived=True, score=0.90, adopted_ids=[ids[0]])
+
+        import sqlite3
+        con = sqlite3.connect(str(db))
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM gene_hypotheses WHERE generation = 5").fetchall()
+        con.close()
+
+        assert len(rows) == 2
+        for row in rows:
+            assert row["survived"] == 1
+            assert row["score"] == 0.90
+            assert row["closed_at"] is not None
+        adopted_rows = [r for r in rows if r["adopted"] == 1]
+        not_adopted_rows = [r for r in rows if r["adopted"] == 0]
+        assert len(adopted_rows) == 1
+        assert len(not_adopted_rows) == 1
+        assert adopted_rows[0]["gene_id"] == ids[0]
+
+    def test_suppression_after_repeated_failures(self, tmp_path):
+        """A gene adopted 3+ times with low avg score gets suppressed."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gene_id = gp.get_top(1)[0]["id"]
+
+        # Simulate 3 generations where this gene was adopted but scored poorly.
+        for gen in range(3):
+            gp.record_hypothesis(generation=gen, gene_ids=[gene_id])
+            gp.close_hypothesis(generation=gen, survived=True, score=0.20, adopted_ids=[gene_id])
+
+        suppressed = gp.get_suppressed_gene_ids()
+        assert gene_id in suppressed
+
+    def test_no_suppression_when_not_adopted(self, tmp_path):
+        """Genes injected but never adopted should NOT be suppressed."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gene_id = gp.get_top(1)[0]["id"]
+
+        # Gene was injected 5 times but never adopted.
+        for gen in range(5):
+            gp.record_hypothesis(generation=gen, gene_ids=[gene_id])
+            gp.close_hypothesis(generation=gen, survived=True, score=0.10, adopted_ids=[])
+
+        suppressed = gp.get_suppressed_gene_ids()
+        assert gene_id not in suppressed
+
+    def test_no_suppression_below_threshold(self, tmp_path):
+        """Only 2 adopted attempts — not enough to trigger suppression (need 3)."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gene_id = gp.get_top(1)[0]["id"]
+
+        for gen in range(2):
+            gp.record_hypothesis(generation=gen, gene_ids=[gene_id])
+            gp.close_hypothesis(generation=gen, survived=True, score=0.10, adopted_ids=[gene_id])
+
+        suppressed = gp.get_suppressed_gene_ids()
+        assert gene_id not in suppressed
+
+    def test_suppressed_genes_ranked_last(self, tmp_path):
+        """Suppressed genes should be ranked below non-suppressed in get_relevant()."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+
+        # Add two genes: one will be suppressed, one won't.
+        gp.add(1, 0.90, DISTINCT_SOURCES[0])  # will suppress — higher base score
+        gp.add(2, 0.50, DISTINCT_SOURCES[1])  # not suppressed — lower base score
+        top = gp.get_top(0)
+        bad_gene_id = top[0]["id"]  # score=0.90 gene
+
+        # Suppress the high-score gene via 3 adopted failures.
+        for gen in range(3):
+            gp.record_hypothesis(generation=gen, gene_ids=[bad_gene_id])
+            gp.close_hypothesis(generation=gen, survived=True, score=0.20, adopted_ids=[bad_gene_id])
+
+        relevant = gp.get_relevant("anything", 2)
+        assert len(relevant) == 2
+        # The suppressed gene (0.90 base) should rank BELOW the 0.50 gene.
+        assert relevant[0]["score"] == 0.50
+        assert relevant[1]["score"] == 0.90
+
+    def test_gene_track_record_query(self, tmp_path):
+        """Verify raw hypothesis data is correctly stored and queryable."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.80, DISTINCT_SOURCES[0])
+        gene_id = gp.get_top(1)[0]["id"]
+
+        # Record mixed outcomes.
+        gp.record_hypothesis(generation=10, gene_ids=[gene_id])
+        gp.close_hypothesis(generation=10, survived=True, score=0.80, adopted_ids=[gene_id])
+
+        gp.record_hypothesis(generation=11, gene_ids=[gene_id])
+        gp.close_hypothesis(generation=11, survived=False, score=0.20, adopted_ids=[gene_id])
+
+        gp.record_hypothesis(generation=12, gene_ids=[gene_id])
+        gp.close_hypothesis(generation=12, survived=True, score=0.60, adopted_ids=[])
+
+        import sqlite3
+        con = sqlite3.connect(str(db))
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT gene_id, COUNT(*) AS attempts, "
+            "SUM(CASE WHEN adopted = 1 THEN 1 ELSE 0 END) AS adopted_count, "
+            "AVG(CASE WHEN adopted = 1 THEN score END) AS avg_adopted_score "
+            "FROM gene_hypotheses WHERE gene_id = ? AND closed_at IS NOT NULL "
+            "GROUP BY gene_id",
+            (gene_id,),
+        ).fetchall()
+        con.close()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["attempts"] == 3
+        assert row["adopted_count"] == 2
+        assert abs(row["avg_adopted_score"] - 0.50) < 0.01  # (0.80 + 0.20) / 2

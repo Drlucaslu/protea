@@ -89,6 +89,17 @@ class GenePool(SQLiteStore):
         con.execute(
             "CREATE TABLE IF NOT EXISTS gene_blacklist (source_hash TEXT PRIMARY KEY)"
         )
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS gene_hypotheses ("
+            "    id          INTEGER PRIMARY KEY,"
+            "    generation  INTEGER NOT NULL,"
+            "    gene_id     INTEGER NOT NULL,"
+            "    adopted     INTEGER,"
+            "    survived    INTEGER,"
+            "    score       REAL,"
+            "    closed_at   TEXT"
+            ")"
+        )
 
     def _backfill_tags(self) -> None:
         """Compute and store tags for existing genes that lack them."""
@@ -295,6 +306,8 @@ class GenePool(SQLiteStore):
         if not rows:
             return []
 
+        suppressed = self.get_suppressed_gene_ids()
+
         scored: list[tuple[float, dict]] = []
         for row in rows:
             gene = dict(row)
@@ -313,7 +326,8 @@ class GenePool(SQLiteStore):
                     pass
 
             task_hits = gene.get("total_task_hits") or 0
-            relevance = overlap * 2 + cos_sim * 3 + gene["score"] + min(task_hits, 10) * 0.5
+            penalty = -10.0 if gene["id"] in suppressed else 0.0
+            relevance = overlap * 2 + cos_sim * 3 + gene["score"] + min(task_hits, 10) * 0.5 + penalty
             scored.append((relevance, gene))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -441,6 +455,49 @@ class GenePool(SQLiteStore):
             log.info("Gene adoption verified: %d/%d genes adopted", len(adopted), len(gene_ids))
 
         return adopted
+
+    def record_hypothesis(self, generation: int, gene_ids: list[int]) -> None:
+        """Record that genes were selected for evolution prompt injection."""
+        if not gene_ids:
+            return
+        with self._connect() as con:
+            for gid in gene_ids:
+                con.execute(
+                    "INSERT INTO gene_hypotheses (generation, gene_id) VALUES (?, ?)",
+                    (generation, gid),
+                )
+
+    def close_hypothesis(self, generation: int, survived: bool, score: float, adopted_ids: list[int]) -> None:
+        """Close all hypothesis rows for a generation with outcome data."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        adopted_set = set(adopted_ids)
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, gene_id FROM gene_hypotheses WHERE generation = ? AND closed_at IS NULL",
+                (generation,),
+            ).fetchall()
+            for row in rows:
+                adopted = 1 if row["gene_id"] in adopted_set else 0
+                con.execute(
+                    "UPDATE gene_hypotheses SET adopted = ?, survived = ?, score = ?, closed_at = ? WHERE id = ?",
+                    (adopted, int(survived), score, now, row["id"]),
+                )
+
+    def get_suppressed_gene_ids(self) -> set[int]:
+        """Return gene IDs that were adopted 3+ times but averaged poor scores.
+
+        Only penalizes genes that were actually adopted (not just injected).
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT gene_id, COUNT(*) AS adopted_attempts, AVG(score) AS avg_score "
+                "FROM gene_hypotheses "
+                "WHERE adopted = 1 AND closed_at IS NOT NULL "
+                "GROUP BY gene_id "
+                "HAVING adopted_attempts >= 3 AND avg_score < 0.35"
+            ).fetchall()
+            return {row["gene_id"] for row in rows}
 
     def apply_decay(self, current_generation: int) -> int:
         """Decay genes not hit in >10 generations (floor 0.10).

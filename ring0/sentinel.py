@@ -417,7 +417,7 @@ def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_sto
 
 
 def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction=""):
-    """Best-effort evolution.  Returns (success, gene_ids) tuple."""
+    """Best-effort evolution.  Returns (success, gene_ids, adopted_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
         from ring1.evolver import Evolver
@@ -425,7 +425,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         r1_config = load_ring1_config(project_root)
         if not r1_config.has_llm_config():
             log.warning("LLM API key not configured — skipping evolution")
-            return False, []
+            return False, [], []
 
         # Compact context: directives and 1 reflection only.
         # Reflections/crash_logs are machine-generated with low priority;
@@ -487,6 +487,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                     _injected_gene_ids = [g["id"] for g in genes if "id" in g]
                     if _injected_gene_ids:
                         gene_pool.record_hits(_injected_gene_ids, generation)
+                        gene_pool.record_hypothesis(generation, _injected_gene_ids)
             except Exception:
                 pass
 
@@ -615,27 +616,28 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
                             pass
 
             # Verify gene adoption: only genes actually used in new code get hits.
+            _adopted_gene_ids: list[int] = []
             if gene_pool and genes and result.new_source:
                 try:
                     gene_ids = [g["id"] for g in genes if "id" in g]
                     if gene_ids:
-                        gene_pool.verify_adoption(
+                        _adopted_gene_ids = gene_pool.verify_adoption(
                             result.new_source, gene_ids, generation,
                         )
                 except Exception:
                     pass
 
-            return True, _injected_gene_ids
+            return True, _injected_gene_ids, _adopted_gene_ids
         else:
             log.warning("Evolution failed: %s", result.reason)
             if notifier:
                 notifier.notify_error(generation, result.reason)
-            return False, []
+            return False, [], []
     except Exception as exc:
         log.error("Evolution error (non-fatal): %s", exc)
         if notifier:
             notifier.notify_error(generation, str(exc))
-        return False, []
+        return False, [], []
 
 
 def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None, fitness=None, gene_ids=None):
@@ -1343,7 +1345,7 @@ def run(project_root: pathlib.Path) -> None:
                     evo_direction = _build_evolution_direction(
                         gene_pool, user_profiler, skill_store, memory_store,
                     )
-                    evolved, last_injected_gene_ids = _try_evolve(
+                    evolved, last_injected_gene_ids, adopted_gene_ids = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
                         directive=directive,
@@ -1359,6 +1361,14 @@ def run(project_root: pathlib.Path) -> None:
                         skill_hit_summary=skill_hit,
                         evolution_direction=evo_direction,
                     )
+                    if gene_pool and last_injected_gene_ids:
+                        try:
+                            gene_pool.close_hypothesis(
+                                generation, survived=True, score=score,
+                                adopted_ids=adopted_gene_ids,
+                            )
+                        except Exception:
+                            pass
                 if evolved:
                     state.last_evolution_time = time.time()
                     try:
@@ -1627,7 +1637,7 @@ def run(project_root: pathlib.Path) -> None:
                 evo_direction = _build_evolution_direction(
                     gene_pool, user_profiler, skill_store, memory_store,
                 )
-                evolved, last_injected_gene_ids = _try_evolve(
+                evolved, last_injected_gene_ids, _ = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
                     directive=directive,
@@ -1643,6 +1653,14 @@ def run(project_root: pathlib.Path) -> None:
                     skill_hit_summary=skill_hit,
                     evolution_direction=evo_direction,
                 )
+                if gene_pool and last_injected_gene_ids:
+                    try:
+                        gene_pool.close_hypothesis(
+                            generation, survived=False, score=score,
+                            adopted_ids=[],
+                        )
+                    except Exception:
+                        pass
             if evolved:
                 state.last_evolution_time = time.time()
                 try:
