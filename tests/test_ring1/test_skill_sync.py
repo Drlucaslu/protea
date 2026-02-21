@@ -18,7 +18,7 @@ class FakeRegistryClient:
         self.published.append({"name": name})
         return {"ok": True}
 
-    def search(self, query=None, tag=None, limit=50):
+    def search(self, query=None, tag=None, limit=50, order=None, min_downloads=0):
         return self._search_results
 
     def download(self, node_id, name):
@@ -475,7 +475,7 @@ class TestGeneSync:
              "score": 0.75},
         ]
 
-        def fake_search_genes(query=None, order=None, limit=10):
+        def fake_search_genes(query=None, order=None, limit=10, min_score=0.0):
             return registry._gene_search_results
         registry.search_genes = fake_search_genes
 
@@ -492,7 +492,7 @@ class TestGeneSync:
         store = SkillStore(tmp_path / "skills.db")
         registry = FakeRegistryClient(node_id="my-node")
 
-        def fake_search_genes(query=None, order=None, limit=10):
+        def fake_search_genes(query=None, order=None, limit=10, min_score=0.0):
             return [
                 {"name": "my-gene", "node_id": "my-node",
                  "gene_summary": "class Mine: ...", "tags": ["mine"],

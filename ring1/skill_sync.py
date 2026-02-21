@@ -11,6 +11,7 @@ Designed to be called periodically (e.g. every 2 hours) from the sentinel.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -310,6 +311,16 @@ class SkillSyncer:
 
         from ring0.gene_pool import _cosine_similarity
 
+        # Pre-load local gene source hashes to skip already-known content
+        # regardless of node_id (handles hostname changes, re-publishing, etc.)
+        local_hashes: set[str] = set()
+        try:
+            with self.gene_pool._connect() as con:
+                for row in con.execute("SELECT source_hash FROM gene_pool").fetchall():
+                    local_hashes.add(row["source_hash"])
+        except Exception:
+            pass
+
         for query in queries:
             if discovered >= self.max_discover:
                 break
@@ -336,9 +347,16 @@ class SkillSyncer:
                     continue
                 seen.add(key)
 
-                # Skip own genes.
+                # Skip own genes (exact node_id match).
                 if node_id == self.registry.node_id:
                     continue
+
+                # Skip genes whose content already exists locally.
+                gene_summary = gene_info.get("gene_summary", "")
+                if gene_summary:
+                    content_hash = hashlib.sha256(gene_summary.encode()).hexdigest()
+                    if content_hash in local_hashes:
+                        continue
 
                 # Skip genes with low semantic relevance.
                 if query_emb and gene_info.get("embedding"):
