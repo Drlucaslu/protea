@@ -112,6 +112,8 @@ class RegistryClient:
         query: str | None = None,
         tag: str | None = None,
         limit: int = 50,
+        order: str | None = None,
+        min_downloads: int = 0,
     ) -> list[dict]:
         """Search for skills.  Returns a list of skill dicts."""
         params = []
@@ -120,6 +122,10 @@ class RegistryClient:
         if tag:
             params.append(f"tag={urllib.request.quote(tag)}")
         params.append(f"limit={limit}")
+        if order:
+            params.append(f"order={order}")
+        if min_downloads > 0:
+            params.append(f"min_downloads={min_downloads}")
         qs = "&".join(params)
         result = self._request("GET", f"/api/skills?{qs}")
         if result is None:
@@ -180,6 +186,7 @@ class RegistryClient:
         tag: str | None = None,
         limit: int = 20,
         order: str | None = "gdi",
+        min_score: float = 0.0,
     ) -> list[dict]:
         """Search for genes. Returns list of gene dicts. Defaults to GDI ordering."""
         params = []
@@ -190,6 +197,8 @@ class RegistryClient:
         params.append(f"limit={limit}")
         if order:
             params.append(f"order={order}")
+        if min_score > 0:
+            params.append(f"min_score={min_score}")
         qs = "&".join(params)
         result = self._request("GET", f"/api/genes?{qs}")
         if result is None:

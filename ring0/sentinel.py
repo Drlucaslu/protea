@@ -750,7 +750,7 @@ def _create_registry_client(project_root, cfg):
     return _best_effort("RegistryClient", _factory)
 
 
-def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_pool=None):
+def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_pool=None, embedding_provider=None):
     """Best-effort SkillSyncer creation."""
     if not skill_store or not registry_client:
         return None
@@ -786,6 +786,7 @@ def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_
             max_discover=max_discover,
             sources=sources,
             gene_pool=gene_pool,
+            embedding_provider=embedding_provider,
         )
         log.info("SkillSyncer created (max_discover=%d, sources=%d)",
                  max_discover, len(sources))
@@ -969,6 +970,7 @@ def run(project_root: pathlib.Path) -> None:
     # Skill syncer — periodic publish + discover (skills + genes).
     skill_syncer = _create_skill_syncer(
         skill_store, registry_client, user_profiler, cfg, gene_pool=gene_pool,
+        embedding_provider=embedding_provider,
     )
     sync_interval = cfg.get("ring1", {}).get("skill_sync", {}).get("interval_sec", 7200)
 

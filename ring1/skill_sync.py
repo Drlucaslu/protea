@@ -11,6 +11,7 @@ Designed to be called periodically (e.g. every 2 hours) from the sentinel.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -36,11 +37,13 @@ class SkillSyncer:
         allowed_packages: frozenset[str] | None = None,
         sources: list[SkillSource] | None = None,
         gene_pool: GenePool | None = None,
+        embedding_provider=None,
     ) -> None:
         self.skill_store = skill_store
         self.registry = registry_client
         self.profiler = user_profiler
         self.max_discover = max_discover
+        self.embedding_provider = embedding_provider
         self._allowed_packages = allowed_packages
         self._sources = sources or []
         self.gene_pool = gene_pool
@@ -140,7 +143,7 @@ class SkillSyncer:
             if discovered >= self.max_discover:
                 break
 
-            results = self.registry.search(query=query, limit=10)
+            results = self.registry.search(query=query, limit=10, order="gdi", min_downloads=1)
             for skill_info in results:
                 if discovered >= self.max_discover:
                     break
@@ -305,10 +308,22 @@ class SkillSyncer:
         discovered = 0
         seen: set[str] = set()
 
+        from ring0.gene_pool import _cosine_similarity
+
         for query in queries:
             if discovered >= self.max_discover:
                 break
-            results = self.registry.search_genes(query=query, order="gdi", limit=10)
+
+            # Build query embedding for semantic relevance filtering.
+            query_emb = None
+            if self.embedding_provider:
+                try:
+                    vecs = self.embedding_provider.embed([query])
+                    query_emb = vecs[0] if vecs else None
+                except Exception:
+                    pass
+
+            results = self.registry.search_genes(query=query, order="gdi", limit=10, min_score=0.5)
             for gene_info in results:
                 if discovered >= self.max_discover:
                     break
@@ -324,6 +339,17 @@ class SkillSyncer:
                 # Skip own genes.
                 if node_id == self.registry.node_id:
                     continue
+
+                # Skip genes with low semantic relevance.
+                if query_emb and gene_info.get("embedding"):
+                    try:
+                        raw = gene_info["embedding"]
+                        gene_emb = json.loads(raw) if isinstance(raw, str) else raw
+                        sim = _cosine_similarity(query_emb, gene_emb)
+                        if sim < 0.3:
+                            continue
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass  # allow through if embedding is unparseable
 
                 try:
                     if self.gene_pool.install_from_hub(gene_info):
