@@ -311,13 +311,17 @@ class SkillSyncer:
 
         from ring0.gene_pool import _cosine_similarity
 
-        # Pre-load local gene source hashes to skip already-known content
-        # regardless of node_id (handles hostname changes, re-publishing, etc.)
-        local_hashes: set[str] = set()
+        # Pre-load hashes of local gene summaries to skip already-known content
+        # regardless of node_id (handles hostname changes, re-publishing, etc.).
+        # NOTE: we hash gene_summary (not source_hash) because local source_hash
+        # is computed from full source_code, while Hub genes only carry gene_summary.
+        local_summary_hashes: set[str] = set()
         try:
             with self.gene_pool._connect() as con:
-                for row in con.execute("SELECT source_hash FROM gene_pool").fetchall():
-                    local_hashes.add(row["source_hash"])
+                for row in con.execute("SELECT gene_summary FROM gene_pool").fetchall():
+                    if row["gene_summary"]:
+                        h = hashlib.sha256(row["gene_summary"].encode()).hexdigest()
+                        local_summary_hashes.add(h)
         except Exception:
             pass
 
@@ -354,8 +358,8 @@ class SkillSyncer:
                 # Skip genes whose content already exists locally.
                 gene_summary = gene_info.get("gene_summary", "")
                 if gene_summary:
-                    content_hash = hashlib.sha256(gene_summary.encode()).hexdigest()
-                    if content_hash in local_hashes:
+                    summary_hash = hashlib.sha256(gene_summary.encode()).hexdigest()
+                    if summary_hash in local_summary_hashes:
                         continue
 
                 # Skip genes with low semantic relevance.
