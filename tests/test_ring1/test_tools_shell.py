@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
-from ring1.tools.shell import _is_denied, make_shell_tool
+from ring1.tools.shell import _is_denied, _is_descendant_of, _is_safe_kill, make_shell_tool
 
 
 class TestDenyPatterns:
@@ -70,15 +72,53 @@ class TestDenyPatterns:
         assert _is_denied("git diff") is None
         assert _is_denied("git branch") is None
 
-    def test_kill_denied(self):
-        assert _is_denied("kill 12345") is not None
-        assert _is_denied("kill -9 12345") is not None
+    def test_kill_non_descendant_denied(self):
+        """kill targeting a PID that is not a descendant should be blocked."""
+        assert _is_denied("kill 1") is not None
+        assert _is_denied("kill -9 1") is not None
+
+    def test_kill_descendant_allowed(self):
+        """kill targeting a descendant PID should be allowed."""
+        import os
+        import subprocess
+
+        # Spawn a child process we can reference.
+        proc = subprocess.Popen(["sleep", "60"])
+        try:
+            result = _is_denied(f"kill {proc.pid}")
+            assert result is None, f"Expected None, got: {result}"
+            result2 = _is_denied(f"kill -9 {proc.pid}")
+            assert result2 is None, f"Expected None, got: {result2}"
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_kill_pipe_denied(self):
+        """kill with pipes should always be blocked."""
+        assert _is_denied("kill $(pgrep python)") is not None
+        assert _is_denied("pgrep python | kill") is not None
+        assert _is_denied("kill `pgrep python`") is not None
+
+    def test_kill_no_pid_denied(self):
+        """kill with no PID should be blocked."""
+        assert _is_denied("kill") is not None
+        assert _is_denied("kill -9") is not None
+
+    def test_kill_non_numeric_target_denied(self):
+        """kill with a non-numeric target should be blocked."""
+        assert _is_denied("kill foo") is not None
 
     def test_pkill_denied(self):
         assert _is_denied("pkill -f python") is not None
 
     def test_killall_denied(self):
         assert _is_denied("killall python") is not None
+
+    def test_os_kill_denied(self):
+        assert _is_denied("os.kill(123, 9)") is not None
+
+    def test_signal_sigterm_denied(self):
+        assert _is_denied("signal.SIGTERM") is not None
 
     def test_nohup_denied(self):
         assert _is_denied("nohup python3 run.py &") is not None

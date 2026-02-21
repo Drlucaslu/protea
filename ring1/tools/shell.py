@@ -6,6 +6,7 @@ Pure stdlib.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 
@@ -33,7 +34,6 @@ _DENY_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bsystemctl\s+(?:stop|disable|mask)\b"),
     # Process lifecycle — Sentinel/CommitWatcher manage these automatically.
     re.compile(r"\bgit\s+(?:pull|push|reset|rebase|merge)\b"),
-    re.compile(r"\bkill\b"),
     re.compile(r"\bpkill\b"),
     re.compile(r"\bkillall\b"),
     re.compile(r"\bnohup\b"),
@@ -44,11 +44,76 @@ _DENY_PATTERNS: list[re.Pattern] = [
 ]
 
 
+_KILL_RE = re.compile(r"\bkill\b")
+
+
+def _is_descendant_of(pid: int, ancestor: int) -> bool:
+    """Return True if *pid* is a descendant of *ancestor* in the process tree."""
+    current = pid
+    for _ in range(64):  # guard against loops
+        if current == ancestor:
+            return True
+        if current <= 1:
+            return False
+        try:
+            out = subprocess.check_output(
+                ["ps", "-o", "ppid=", "-p", str(current)],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            current = int(out)
+        except (subprocess.CalledProcessError, ValueError):
+            return False
+    return False
+
+
+def _is_safe_kill(command: str) -> str | None:
+    """Allow ``kill`` only when every target PID is a descendant of us.
+
+    Returns a reason string if the command should be blocked, else ``None``.
+    """
+    # Reject complex forms we cannot safely parse.
+    if re.search(r"[|`]|\$\(", command):
+        return "Blocked: kill with pipes/subshells is not allowed"
+
+    # Tokenise: split on && / ; / || to handle chained commands, then
+    # inspect only the segments that contain a bare `kill`.
+    segments = re.split(r"&&|;|\|\|", command)
+    for segment in segments:
+        segment = segment.strip()
+        if not _KILL_RE.search(segment):
+            continue
+        tokens = segment.split()
+        # Find the `kill` token and collect PID args after it.
+        try:
+            idx = next(i for i, t in enumerate(tokens) if t == "kill")
+        except StopIteration:
+            continue
+        pids: list[int] = []
+        for token in tokens[idx + 1 :]:
+            if token.startswith("-"):
+                continue  # skip signal flags like -9, -TERM
+            if token.isdigit():
+                pids.append(int(token))
+            else:
+                return f"Blocked: cannot verify kill target '{token}'"
+        if not pids:
+            return "Blocked: kill with no PID"
+        my_pid = os.getpid()
+        for pid in pids:
+            if not _is_descendant_of(pid, my_pid):
+                return f"Blocked: PID {pid} is not a descendant of this process"
+    return None
+
+
 def _is_denied(command: str) -> str | None:
     """Return a reason string if *command* matches a deny pattern, else None."""
     for pattern in _DENY_PATTERNS:
         if pattern.search(command):
             return f"Blocked: command matches deny pattern ({pattern.pattern})"
+    # Special handling: allow `kill` only for descendant PIDs.
+    if _KILL_RE.search(command):
+        return _is_safe_kill(command)
     return None
 
 
