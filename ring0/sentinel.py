@@ -762,23 +762,9 @@ def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_
             return None
         max_discover = sync_cfg.get("max_discover_per_sync", 5)
 
-        # Build external source adapters from config.
-        sources = []
-        source_cfg = sync_cfg.get("sources", {})
-        try:
-            from ring1.skill_sources import ClawHubSource, SkillsShSource
-            clawhub_cfg = source_cfg.get("clawhub", {})
-            if clawhub_cfg.get("enabled", True):
-                sources.append(ClawHubSource(
-                    clawhub_cfg.get("url", "https://openclawskill.ai"),
-                ))
-            skills_sh_cfg = source_cfg.get("skills_sh", {})
-            if skills_sh_cfg.get("enabled", True):
-                sources.append(SkillsShSource(
-                    skills_sh_cfg.get("url", "https://skills.sh"),
-                ))
-        except Exception as exc:
-            log.debug("External skill sources not available: %s", exc)
+        # External sources disabled — ClawHub and Skills.sh block
+        # programmatic access (Cloudflare 403 / 404).  Only Protea Hub is used.
+        sources: list = []
 
         syncer = SkillSyncer(
             skill_store=skill_store,
