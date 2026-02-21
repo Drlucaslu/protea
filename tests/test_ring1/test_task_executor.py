@@ -899,8 +899,9 @@ class TestTaskRecovery:
         from ring0.task_store import TaskStore
         state = _make_state()
         ts = TaskStore(tmp_path / "tasks.db")
-        ts.add("t-1", "task one", "c1", created_at=100.0)
-        ts.add("t-2", "task two", "c1", created_at=200.0)
+        now = time.time()
+        ts.add("t-1", "task one", "c1", created_at=now - 60)
+        ts.add("t-2", "task two", "c1", created_at=now - 30)
 
         client = MagicMock()
         reply_fn = MagicMock()
@@ -919,7 +920,7 @@ class TestTaskRecovery:
         from ring0.task_store import TaskStore
         state = _make_state()
         ts = TaskStore(tmp_path / "tasks.db")
-        ts.add("t-1", "interrupted", "c1")
+        ts.add("t-1", "interrupted", "c1", created_at=time.time())
         ts.set_status("t-1", "executing")
 
         client = MagicMock()
@@ -939,9 +940,9 @@ class TestTaskRecovery:
         from ring0.task_store import TaskStore
         state = _make_state()
         ts = TaskStore(tmp_path / "tasks.db")
-        ts.add("t-1", "done", "c1")
+        ts.add("t-1", "done", "c1", created_at=time.time())
         ts.set_status("t-1", "completed", "result")
-        ts.add("t-2", "pending", "c1")
+        ts.add("t-2", "pending", "c1", created_at=time.time())
 
         client = MagicMock()
         reply_fn = MagicMock()
@@ -953,6 +954,27 @@ class TestTaskRecovery:
         assert state.task_queue.qsize() == 1
         task = state.task_queue.get_nowait()
         assert task.task_id == "t-2"
+
+    def test_recover_expires_stale_tasks(self, tmp_path):
+        """Tasks older than _RECOVER_MAX_AGE_SEC are expired, not re-enqueued."""
+        from ring0.task_store import TaskStore
+        state = _make_state()
+        ts = TaskStore(tmp_path / "tasks.db")
+        now = time.time()
+        ts.add("t-old", "stale task", "c1", created_at=now - 600)  # 10 min ago
+        ts.add("t-new", "fresh task", "c1", created_at=now - 60)   # 1 min ago
+
+        client = MagicMock()
+        reply_fn = MagicMock()
+        executor = TaskExecutor(
+            state, client, tmp_path, reply_fn, task_store=ts,
+        )
+        executor._recover_tasks()
+
+        # Only the fresh task should be recovered.
+        assert state.task_queue.qsize() == 1
+        task = state.task_queue.get_nowait()
+        assert task.task_id == "t-new"
 
     def test_recover_no_store(self):
         state = _make_state()

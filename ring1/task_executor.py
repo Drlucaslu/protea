@@ -543,17 +543,30 @@ class TaskExecutor:
             self._last_p0_time = time.time()
         log.info("Task executor stopped")
 
+    _RECOVER_MAX_AGE_SEC = 300  # skip tasks older than 5 minutes on restart
+
     def _recover_tasks(self) -> None:
-        """Recover pending/executing tasks from the store after restart."""
+        """Recover pending/executing tasks from the store after restart.
+
+        Tasks older than ``_RECOVER_MAX_AGE_SEC`` are marked as expired
+        rather than re-enqueued, so stale work doesn't block new messages.
+        """
         if not self.task_store:
             return
         try:
             # Reset executing → pending (interrupted by restart)
             for t in self.task_store.get_executing():
                 self.task_store.set_status(t["task_id"], "pending")
-            # Re-enqueue all pending tasks
+            # Re-enqueue pending tasks that are still fresh.
+            now = time.time()
             from ring1.telegram_bot import Task
+            expired = 0
             for t in self.task_store.get_pending():
+                age = now - (t.get("created_at") or 0)
+                if age > self._RECOVER_MAX_AGE_SEC:
+                    self.task_store.set_status(t["task_id"], "failed", "expired on restart")
+                    expired += 1
+                    continue
                 task = Task(
                     text=t["text"],
                     chat_id=t["chat_id"],
@@ -562,6 +575,9 @@ class TaskExecutor:
                 )
                 self.state.task_queue.put(task)
             count = self.state.task_queue.qsize()
+            if expired:
+                log.info("Expired %d stale tasks on restart (>%ds old)",
+                         expired, self._RECOVER_MAX_AGE_SEC)
             if count:
                 log.info("Recovered %d tasks from store", count)
         except Exception:
