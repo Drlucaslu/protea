@@ -169,7 +169,11 @@ class TestEvolver:
 
         config.get_llm_client.return_value.send_message.return_value = llm_response
         evolver = Evolver(config, fitness)
-        result = evolver.evolve(ring2, generation=0, params={}, survived=True)
+        # Use adapt intent so blast radius gate allows full rewrite.
+        result = evolver.evolve(
+            ring2, generation=0, params={}, survived=True,
+            evolution_intent={"intent": "adapt", "signals": ["test"]},
+        )
 
         assert result.success is True
         written = (ring2 / "main.py").read_text()

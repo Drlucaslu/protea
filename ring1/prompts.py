@@ -14,7 +14,17 @@ import re
 
 SYSTEM_PROMPT = """\
 You are the evolution engine for Protea, a self-evolving artificial life system.
-Your task is to mutate the Ring 2 code to create a new generation.
+Your task is to INCREMENTALLY IMPROVE the Ring 2 code for the next generation.
+
+## Incremental Evolution (preferred)
+PREFER modifying the existing code incrementally over rewriting from scratch.
+- Keep working features and structure intact when possible
+- Only add, remove, or modify the specific functionality requested
+- The heartbeat, main() structure, and core loop should remain stable
+- If a directive asks for a new feature, INTEGRATE it into the existing code
+- Aim for the MINIMUM change needed to achieve the goal
+- Exception: if the current code is fundamentally broken or unsuitable,
+  a larger rewrite is acceptable
 
 ## Absolute Constraints (MUST follow — violation = immediate death)
 1. The code MUST maintain a heartbeat protocol:
@@ -46,14 +56,13 @@ Survival is necessary but NOT sufficient — a program that only heartbeats scor
 - Base survival: 0.50 (survived max_runtime)
 - Output volume: up to +0.10 (meaningful non-empty lines, saturates at 50 lines)
 - Output diversity: up to +0.10 (unique lines / total lines)
-- Output novelty: up to +0.10 (how different from recent generations — CRITICAL)
+- Output novelty: up to +0.05 (minor bonus for varied output)
 - Structured output: up to +0.10 (JSON blocks, tables, key:value reports)
 - Functional bonus: up to +0.05 (real I/O, HTTP, file operations, API interaction)
 - Error penalty: up to −0.10 (traceback/error/exception lines reduce score)
 
-IMPORTANT: Novelty is scored by comparing output tokens against recent generations.
-Repeating the same program pattern will score LOW on novelty. Each generation should
-produce genuinely different output to maximise its score.
+NOTE: Stability is valued over novelty. A working program that produces consistent,
+useful output scores HIGHER than one that changes randomly for novelty points.
 
 ## Capability Evolution (optional)
 If the user's recent tasks require capabilities that pure stdlib cannot provide
@@ -389,46 +398,48 @@ def build_evolution_prompt(
         if intent == "repair":
             parts.append(
                 "FIX the issues below. Do not add new features "
-                "— focus on making the code survive."
+                "— focus on making the code survive. Keep existing structure."
             )
             for sig in signals:
                 parts.append(f"- {sig}")
         elif intent == "explore":
             parts.append(
-                "Scores have PLATEAUED. Evolve toward capabilities that better serve "
-                "the user based on their profile and recent tasks. "
-                "Do NOT explore randomly — focus on gaps between what the user needs "
-                "and what the current code provides."
+                "Scores have PLATEAUED. Make targeted improvements to output "
+                "quality or add a new feature. Prefer incremental changes, but "
+                "a larger refactor is acceptable if the current approach is "
+                "fundamentally limited."
             )
         elif intent == "adapt":
             parts.append(
-                "Follow the user directive below. Prioritize it above "
-                "all other guidance."
+                "Follow the user directive below. INTEGRATE the requested "
+                "changes into the existing code. Do NOT rewrite from scratch — "
+                "keep all working features and modify only what's needed."
             )
         else:  # optimize
             parts.append(
-                "The code survived. Improve fitness: better output quality, "
-                "novelty, or efficiency."
+                "The code survived. Make small, targeted improvements to output "
+                "quality or efficiency. Do NOT restructure or rewrite — preserve "
+                "the existing architecture and all working features."
             )
     else:
         # Legacy fallback (no evolution_intent provided)
         parts.append("## Instructions")
         if is_plateaued:
             parts.append(
-                "WARNING: Scores have PLATEAUED. The current approach is stagnant. "
-                "You MUST try something fundamentally different — a new algorithm, "
-                "a new domain, a new interaction pattern. Do NOT make incremental "
-                "changes to the existing code. Start fresh with a novel idea."
+                "Scores have PLATEAUED. Make targeted improvements to output "
+                "quality or add a new feature. Prefer incremental changes, "
+                "but a larger refactor is acceptable if the current approach "
+                "is fundamentally limited."
             )
         elif survived:
             parts.append(
-                "The previous code survived. Evolve it — try something genuinely "
-                "NEW and different while keeping the heartbeat alive."
+                "The previous code survived. Make small, targeted improvements "
+                "while keeping the heartbeat and all working features intact."
             )
         else:
             parts.append(
                 "The previous code DIED (heartbeat lost). Fix the issue and make it "
-                "more robust. Ensure the heartbeat loop runs reliably."
+                "more robust. Keep the existing structure — only fix what broke."
             )
 
     if directive:

@@ -62,7 +62,7 @@ class TestBuildEvolutionPrompt:
             survived=True,
         )
         assert "SURVIVED" in user
-        assert "new" in user.lower() or "different" in user.lower()
+        assert "improve" in user.lower() or "targeted" in user.lower()
 
     def test_died_instructions(self):
         _, user = build_evolution_prompt(
@@ -527,7 +527,7 @@ class TestBuildEvolutionPrompt:
             is_plateaued=True,
         )
         assert "PLATEAUED" in user
-        assert "fundamentally different" in user.lower()
+        assert "improve" in user.lower() or "targeted" in user.lower()
 
     def test_gene_pool_included(self):
         gene_pool = [

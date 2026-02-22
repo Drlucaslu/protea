@@ -180,14 +180,26 @@ class Evolver:
             log.error("Validation failed: %s", reason)
             return EvolutionResult(False, f"Validation: {reason}", "")
 
-        # 8. Write.
-        main_py.write_text(new_source)
-        log.info("Evolution gen-%d: new code written (%d bytes)", generation, len(new_source))
-
-        # 9. Compute blast radius and build metadata.
+        # 8. Compute blast radius and reject full rewrites for non-adapt intents.
         from ring0.evolution_intent import compute_blast_radius
 
         blast_radius = compute_blast_radius(current_source, new_source)
+        _intent = (evolution_intent or {}).get("intent", "optimize")
+        if blast_radius["scope"] == "full_rewrite" and _intent == "optimize":
+            log.warning(
+                "Rejected full rewrite (lines_changed=%d, intent=%s) — "
+                "incremental changes preferred when code is working",
+                blast_radius["lines_changed"], _intent,
+            )
+            return EvolutionResult(
+                False,
+                f"Rejected: full rewrite not allowed for intent={_intent}",
+                "",
+            )
+
+        # 9. Write.
+        main_py.write_text(new_source)
+        log.info("Evolution gen-%d: new code written (%d bytes)", generation, len(new_source))
         metadata = (
             {**evolution_intent, "blast_radius": blast_radius}
             if evolution_intent
