@@ -77,11 +77,15 @@ def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subp
     """Launch the Ring 2 process and return its Popen handle."""
     log_file = ring2_path / ".output.log"
     # Truncate log to last 200 lines before new generation.
+    # Use tail instead of read_text() to avoid OOM on huge log files.
     if log_file.exists():
         try:
-            lines = log_file.read_text(errors="replace").splitlines()
-            if len(lines) > 500:
-                log_file.write_text("\n".join(lines[-200:]) + "\n")
+            tmp = log_file.with_suffix(".log.tmp")
+            subprocess.run(
+                ["tail", "-200", str(log_file)],
+                stdout=open(tmp, "w"), stderr=subprocess.DEVNULL,
+            )
+            tmp.replace(log_file)
         except Exception:
             pass
     fh = open(log_file, "a")
@@ -145,8 +149,14 @@ def _read_ring2_output(proc, max_lines: int = 100) -> str:
     log_path = getattr(proc, "_log_path", None)
     if not log_path or not log_path.exists():
         return ""
-    lines = log_path.read_text(errors="replace").splitlines()
-    return "\n".join(lines[-max_lines:])
+    try:
+        result = subprocess.run(
+            ["tail", f"-{max_lines}", str(log_path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout
+    except Exception:
+        return ""
 
 
 def _classify_failure(proc, output: str) -> str:

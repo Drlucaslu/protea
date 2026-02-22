@@ -9,6 +9,7 @@ from __future__ import annotations
 import abc
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -55,17 +56,57 @@ class LLMClient(abc.ABC):
     # HTTP retry
     # ------------------------------------------------------------------
 
+    _HARD_TIMEOUT: float = 90.0  # daemon-thread hard timeout (seconds)
+
     def _call_api_with_retry(self, url: str, data: bytes, headers: dict) -> dict:
-        """HTTP POST with exponential-backoff retry on transient errors."""
+        """HTTP POST with exponential-backoff retry on transient errors.
+
+        Each request runs in a daemon thread with a hard timeout to guard
+        against macOS HTTPS sockets that enter uninterruptible sleep.
+        """
         last_error: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
-            try:
-                req = urllib.request.Request(
-                    url, data=data, headers=headers, method="POST",
+            result: dict | None = None
+            error: Exception | None = None
+
+            def _do_request() -> None:
+                nonlocal result, error
+                try:
+                    req = urllib.request.Request(
+                        url, data=data, headers=headers, method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        result = json.loads(resp.read().decode("utf-8"))
+                except Exception as exc:
+                    error = exc
+
+            t = threading.Thread(target=_do_request, daemon=True)
+            t.start()
+            t.join(timeout=self._HARD_TIMEOUT)
+
+            if t.is_alive():
+                # Thread stuck — treat as timeout, let daemon die on its own
+                last_error = TimeoutError(
+                    f"request stuck for >{self._HARD_TIMEOUT}s"
                 )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
+                if attempt < self._MAX_RETRIES - 1:
+                    delay = self._BASE_DELAY * (2 ** attempt)
+                    log.warning(
+                        "%s hard timeout — retry %d/%d in %.1fs",
+                        self._LOG_PREFIX, attempt + 1, self._MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise LLMError(
+                    f"{self._LOG_PREFIX} hard timeout: {last_error}"
+                ) from last_error
+
+            if result is not None:
+                return result
+
+            # Thread finished with an error — handle as before
+            exc = error
+            if isinstance(exc, urllib.error.HTTPError):
                 last_error = exc
                 code = exc.code
                 if code in self._RETRYABLE_CODES and attempt < self._MAX_RETRIES - 1:
@@ -80,7 +121,7 @@ class LLMClient(abc.ABC):
                     f"{self._LOG_PREFIX} HTTP {code}: "
                     f"{exc.read().decode('utf-8', errors='replace')}"
                 ) from exc
-            except urllib.error.URLError as exc:
+            elif isinstance(exc, urllib.error.URLError):
                 last_error = exc
                 if attempt < self._MAX_RETRIES - 1:
                     delay = self._BASE_DELAY * (2 ** attempt)
@@ -91,7 +132,7 @@ class LLMClient(abc.ABC):
                     time.sleep(delay)
                     continue
                 raise LLMError(f"{self._LOG_PREFIX} network error: {exc}") from exc
-            except (TimeoutError, OSError) as exc:
+            elif isinstance(exc, (TimeoutError, OSError)):
                 last_error = exc
                 if attempt < self._MAX_RETRIES - 1:
                     delay = self._BASE_DELAY * (2 ** attempt)
@@ -102,6 +143,8 @@ class LLMClient(abc.ABC):
                     time.sleep(delay)
                     continue
                 raise LLMError(f"{self._LOG_PREFIX} timeout: {exc}") from exc
+            elif exc is not None:
+                raise LLMError(f"{self._LOG_PREFIX} unexpected: {exc}") from exc
 
         raise LLMError(
             f"{self._LOG_PREFIX} failed after {self._MAX_RETRIES} retries"
