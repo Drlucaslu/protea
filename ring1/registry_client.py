@@ -1,7 +1,7 @@
 """Registry HTTP client — pure stdlib (urllib.request + json).
 
-Allows a Protea instance to publish, search, and download skills from a
-remote Skill Registry.  Follows the same retry + best-effort pattern as
+Allows a Protea instance to publish, search, and download task templates
+from a remote registry.  Follows the same retry + best-effort pattern as
 ring1/llm_client.py.
 """
 
@@ -20,7 +20,7 @@ _BASE_DELAY = 1.0  # seconds
 
 
 class RegistryClient:
-    """HTTP client for the Skill Registry."""
+    """HTTP client for the Protea Hub registry."""
 
     def __init__(
         self,
@@ -83,145 +83,61 @@ class RegistryClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def publish(
-        self,
-        name: str,
-        description: str,
-        prompt_template: str,
-        parameters: dict | None = None,
-        tags: list[str] | None = None,
-        source_code: str = "",
-        dependencies: list[str] | None = None,
-    ) -> dict | None:
-        """Publish a skill to the registry."""
-        body: dict = {
-            "node_id": self.node_id,
-            "name": name,
-            "description": description,
-            "prompt_template": prompt_template,
-            "parameters": parameters or {},
-            "tags": tags or [],
-            "source_code": source_code,
-        }
-        if dependencies:
-            body["dependencies"] = dependencies
-        return self._request("POST", "/api/skills", body=body)
-
-    def search(
-        self,
-        query: str | None = None,
-        tag: str | None = None,
-        limit: int = 50,
-        order: str | None = None,
-        min_downloads: int = 0,
-    ) -> list[dict]:
-        """Search for skills.  Returns a list of skill dicts."""
-        params = []
-        if query:
-            params.append(f"q={urllib.request.quote(query)}")
-        if tag:
-            params.append(f"tag={urllib.request.quote(tag)}")
-        params.append(f"limit={limit}")
-        if order:
-            params.append(f"order={order}")
-        if min_downloads > 0:
-            params.append(f"min_downloads={min_downloads}")
-        qs = "&".join(params)
-        result = self._request("GET", f"/api/skills?{qs}")
-        if result is None:
-            return []
-        if isinstance(result, list):
-            return result
-        return []
-
-    def download(self, node_id: str, name: str) -> dict | None:
-        """Download a skill (auto-increments downloads)."""
-        return self._request("GET", f"/api/skills/{node_id}/{name}")
-
-    def rate(self, node_id: str, name: str, up: bool = True) -> bool:
-        """Rate a skill."""
-        result = self._request(
-            "POST", f"/api/skills/{node_id}/{name}/rate",
-            body={"up": up},
-        )
-        return result is not None
-
-    def unpublish(self, name: str) -> bool:
-        """Delete own skill from the registry."""
-        result = self._request("DELETE", f"/api/skills/{self.node_id}/{name}")
-        return result is not None and result.get("ok", False)
-
     def get_stats(self) -> dict | None:
         """Get registry statistics."""
         return self._request("GET", "/api/stats")
 
     # ------------------------------------------------------------------
-    # Gene API
+    # Task Template API
     # ------------------------------------------------------------------
 
-    def publish_gene(
+    def publish_task_template(
         self,
         name: str,
-        gene_summary: str,
+        task_text: str,
+        cron_expr: str,
+        schedule_type: str = "cron",
         tags: list[str] | None = None,
-        score: float = 0.0,
-        embedding: str = "",
-        hypothesis_stats: dict | None = None,
+        template_hash: str = "",
+        category: str = "",
     ) -> dict | None:
-        """Publish a gene to the registry."""
+        """Publish a task template to the registry."""
         body: dict = {
             "node_id": self.node_id,
             "name": name,
-            "gene_summary": gene_summary,
+            "task_text": task_text,
+            "cron_expr": cron_expr,
+            "schedule_type": schedule_type,
             "tags": tags or [],
-            "score": score,
-            "embedding": embedding,
-            "hypothesis_stats": hypothesis_stats or {},
+            "template_hash": template_hash,
+            "category": category,
         }
-        return self._request("POST", "/api/genes", body=body)
+        return self._request("POST", "/api/task-templates", body=body)
 
-    def search_genes(
+    def search_task_templates(
         self,
         query: str | None = None,
         tag: str | None = None,
+        category: str | None = None,
         limit: int = 20,
-        order: str | None = "gdi",
-        min_score: float = 0.0,
     ) -> list[dict]:
-        """Search for genes. Returns list of gene dicts. Defaults to GDI ordering."""
+        """Search for task templates.  Returns a list of template dicts."""
         params = []
         if query:
             params.append(f"q={urllib.request.quote(query)}")
         if tag:
             params.append(f"tag={urllib.request.quote(tag)}")
+        if category:
+            params.append(f"category={urllib.request.quote(category)}")
         params.append(f"limit={limit}")
-        if order:
-            params.append(f"order={order}")
-        if min_score > 0:
-            params.append(f"min_score={min_score}")
         qs = "&".join(params)
-        result = self._request("GET", f"/api/genes?{qs}")
+        result = self._request("GET", f"/api/task-templates?{qs}")
         if result is None:
             return []
         if isinstance(result, list):
             return result
         return []
 
-    def download_gene(self, node_id: str, name: str) -> dict | None:
-        """Download a gene (auto-increments downloads)."""
-        return self._request("GET", f"/api/genes/{node_id}/{name}")
-
-    def report_gene_outcome(
-        self,
-        node_id: str,
-        name: str,
-        adopted: bool,
-        survived: bool,
-        score: float,
-    ) -> bool:
-        """Report usage outcome back to hub for GDI computation."""
-        result = self._request(
-            "POST", f"/api/genes/{node_id}/{name}/report",
-            body={"adopted": adopted, "survived": survived, "score": score},
-        )
-        return result is not None
+    def download_task_template(self, node_id: str, name: str) -> dict | None:
+        """Download a task template (auto-increments downloads)."""
+        return self._request("GET", f"/api/task-templates/{node_id}/{name}")

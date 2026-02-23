@@ -77,14 +77,10 @@ max_envs = 10
 # Extra packages beyond the built-in allowlist (merged with validator defaults).
 extra_allowed_packages = []
 
-[ring1.skill_sync]
+[ring1.task_sync]
 enabled = true
 interval_sec = 7200          # 2 hours between sync cycles
-max_discover_per_sync = 5    # max skills to download per cycle
-
-[ring1.skill_sync.sources]
-clawhub = { enabled = true, url = "https://openclawskill.ai" }
-skills_sh = { enabled = true, url = "https://skills.sh" }
+max_discover_per_sync = 5    # max templates to download per cycle
 
 [ring1.convergence]
 enabled = true

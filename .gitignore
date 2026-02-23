@@ -102,3 +102,14 @@ heartbeat.txt
 
 # Convergence corrections (auto-extracted rules)
 corrections/
+
+# Generated config/state files from Ring 2
+*_config.json
+*_state.json
+
+# Runtime logs (except protea.log already covered above)
+*.log
+!protea.log
+
+# Ring 2 runtime config
+ring2/config/

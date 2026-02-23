@@ -104,7 +104,7 @@ _NAV_HTML = """\
 <a href="/">Overview</a>
 <a href="/memory">Memory</a>
 <a href="/skills">Skills</a>
-<a href="/genes">Genes</a>
+<a href="/templates">Templates</a>
 <a href="/intent">Intent</a>
 <a href="/profile">Profile</a>
 <a href="/schedule">Schedule</a>
@@ -478,8 +478,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_memory(query)
         elif path == "/skills":
             self._serve_skills()
-        elif path == "/genes":
-            self._serve_genes()
+        elif path == "/templates":
+            self._serve_templates()
         elif path == "/intent":
             self._serve_intent()
         elif path == "/profile":
@@ -493,8 +493,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_memory_stats()
         elif path == "/api/skills":
             self._api_skills()
-        elif path == "/api/genes":
-            self._api_genes()
+        elif path == "/api/templates":
+            self._api_templates()
         elif path == "/api/intent":
             self._api_intent()
         elif path == "/api/profile":
@@ -582,15 +582,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Gene count
         gene_count = 0
-        if self.gene_pool:
+        template_count = 0
+        if self.scheduled_store:
             try:
-                gene_count = self.gene_pool.count()
+                template_count = len(self.scheduled_store.get_publishable(min_runs=2))
             except Exception:
                 pass
-        gene_card = (
-            f'<div class="card"><h3>Genes</h3>'
-            f'<div class="value">{gene_count}</div>'
-            f'<div class="detail">in gene pool</div></div>'
+        template_card = (
+            f'<div class="card"><h3>Templates</h3>'
+            f'<div class="value">{template_count}</div>'
+            f'<div class="detail">publishable tasks</div></div>'
         )
 
         # Generation / Ring 2 status
@@ -671,7 +672,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
 
         body = (
-            f'<div class="cards">{gen_card}{mem_card}{skill_card}{gene_card}{intent_card}{profile_card}{cooldown_card}{token_card}</div>'
+            f'<div class="cards">{gen_card}{mem_card}{skill_card}{template_card}{intent_card}{profile_card}{cooldown_card}{token_card}</div>'
             f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
             f'{fitness_svg}'
             f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
@@ -963,96 +964,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = f"<h2>Scheduled Tasks ({count})</h2>{table_html}"
         self._send_html(_page("Schedule", body))
 
-    def _serve_genes(self) -> None:
-        """Gene leaderboard page — full gene data for debugging."""
-        genes = []
-        if self.gene_pool:
+    def _serve_templates(self) -> None:
+        """Task Templates page — published and discovered templates."""
+        published = []
+        if self.scheduled_store:
             try:
-                genes = self.gene_pool.get_top(0)
+                all_tasks = self.scheduled_store.get_publishable(min_runs=2)
+                published = [t for t in all_tasks if t.get("published_template_hash")]
             except Exception:
                 pass
 
-        # Gather lineage info (gene_id → skill names).
-        gene_skills: dict[int, list[str]] = {}
-        if self.skill_store and genes:
+        publishable = []
+        if self.scheduled_store:
             try:
-                for g in genes:
-                    gid = g.get("id")
-                    if gid is not None:
-                        skills = self.skill_store.get_gene_skills(gid)
-                        if skills:
-                            gene_skills[gid] = skills
+                all_tasks = self.scheduled_store.get_publishable(min_runs=2)
+                publishable = [t for t in all_tasks if not t.get("published_template_hash")]
             except Exception:
                 pass
 
-        # Summary cards.
-        total = len(genes)
-        avg_score = sum(g.get("score", 0) for g in genes) / total if total else 0
-        task_proven = sum(1 for g in genes if (g.get("total_task_hits") or 0) > 0)
-        linked = len(gene_skills)
+        total_published = len(published)
+        total_publishable = len(publishable)
+
         cards_html = (
             '<div class="cards">'
-            f'<div class="card"><h3>Total Genes</h3><div class="value">{total}</div></div>'
-            f'<div class="card"><h3>Avg Score</h3><div class="value">{avg_score:.2f}</div></div>'
-            f'<div class="card"><h3>Task-Proven</h3><div class="value">{task_proven}</div>'
-            f'<div class="detail">genes with task_hit &gt; 0</div></div>'
-            f'<div class="card"><h3>Linked to Skills</h3><div class="value">{linked}</div>'
-            f'<div class="detail">genes with skill lineage</div></div>'
+            f'<div class="card"><h3>Published</h3><div class="value">{total_published}</div>'
+            f'<div class="detail">shared to hub</div></div>'
+            f'<div class="card"><h3>Publishable</h3><div class="value">{total_publishable}</div>'
+            f'<div class="detail">ready to share</div></div>'
             '</div>'
         )
 
         rows_html = []
-        for i, g in enumerate(genes, 1):
-            gid = g.get("id", "?")
-            score = g.get("score", 0)
-            gen = g.get("generation", "?")
-            summary = _esc(str(g.get("gene_summary", "")))
-            tags_raw = str(g.get("tags", ""))
-            tags_html = " ".join(
-                f'<span class="tag">{_esc(t)}</span>' for t in tags_raw.split() if t
-            ) if tags_raw.strip() else '<span style="color:#555">—</span>'
-            hits = g.get("hit_count", 0)
-            last_hit = g.get("last_hit_gen", 0)
-            task_hits = g.get("total_task_hits", 0) or 0
-            last_task_hit = g.get("last_task_hit_gen", 0) or 0
-            skills = gene_skills.get(gid, [])
-            skills_html = ", ".join(_esc(s) for s in skills) if skills else '<span style="color:#555">—</span>'
-
-            # Color score cell by value.
-            if score >= 0.8:
-                score_color = "#4ecdc4"
-            elif score >= 0.5:
-                score_color = "#feca57"
-            else:
-                score_color = "#ff6b6b"
-
+        for t in published + publishable:
+            name = _esc(t.get("name", ""))
+            cron = _esc(t.get("cron_expr", ""))
+            runs = t.get("run_count", 0)
+            status = "published" if t.get("published_template_hash") else "local"
+            status_color = "#4ecdc4" if status == "published" else "#feca57"
+            task_text = _esc(str(t.get("task_text", ""))[:100])
             rows_html.append(
                 f'<tr>'
-                f'<td>{gid}</td>'
-                f'<td style="color:{score_color};font-weight:600">{score:.3f}</td>'
-                f'<td>{gen}</td>'
-                f'<td>{hits}</td><td>{last_hit}</td>'
-                f'<td style="font-weight:600">{task_hits}</td><td>{last_task_hit}</td>'
-                f'<td>{skills_html}</td>'
-                f'<td class="content-cell" style="max-width:none">{summary}</td>'
-                f'<td style="max-width:300px">{tags_html}</td>'
+                f'<td>{name}</td>'
+                f'<td style="color:{status_color}">{status}</td>'
+                f'<td>{cron}</td>'
+                f'<td>{runs}</td>'
+                f'<td class="content-cell">{task_text}</td>'
                 f'</tr>'
             )
 
         table = (
             '<table><thead><tr>'
-            '<th>ID</th><th>Score</th><th>Gen</th>'
-            '<th>Code Hits</th><th>Last Code Hit</th>'
-            '<th>Task Hits</th><th>Last Task Hit</th>'
-            '<th>Skills</th>'
-            '<th>Summary</th><th>Tags</th>'
+            '<th>Name</th><th>Status</th><th>Schedule</th>'
+            '<th>Runs</th><th>Task</th>'
             '</tr></thead><tbody>'
             + "".join(rows_html)
             + '</tbody></table>'
-        ) if rows_html else '<p style="color:#777">No genes in pool yet.</p>'
+        ) if rows_html else '<p style="color:#777">No task templates yet. Tasks with 2+ runs become publishable.</p>'
 
-        body = f"<h2>Gene Leaderboard ({total})</h2>{cards_html}{table}"
-        self._send_html(_page("Genes", body))
+        body = f"<h2>Task Templates</h2>{cards_html}{table}"
+        self._send_html(_page("Templates", body))
 
     # ------------------------------------------------------------------
     # API handlers
@@ -1083,14 +1053,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
         self._send_json(stats)
 
-    def _api_genes(self) -> None:
-        genes = []
-        if self.gene_pool:
+    def _api_templates(self) -> None:
+        templates = []
+        if self.scheduled_store:
             try:
-                genes = self.gene_pool.get_top(0)
+                templates = self.scheduled_store.get_publishable(min_runs=2)
             except Exception:
                 pass
-        self._send_json(genes)
+        self._send_json(templates)
 
     def _api_skills(self) -> None:
         skills = []

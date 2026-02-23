@@ -83,9 +83,9 @@ protea/
 │   ├── skill_portal.py         # Skill web UI
 │   ├── skill_runner.py         # Skill process manager
 │   ├── skill_sandbox.py        # Skill venv + dependency manager
-│   ├── skill_sync.py           # Skill ↔ profile sync
+│   ├── task_sync.py            # Task template ↔ hub sync
 │   ├── skill_validator.py      # Skill code validation
-│   ├── registry_client.py      # Hub registry client
+│   ├── registry_client.py      # Hub registry client (task templates)
 │   ├── subagent.py             # Background task subagents
 │   ├── tool_registry.py        # Tool dispatch framework
 │   ├── tools/                  # Tool implementations
@@ -154,7 +154,7 @@ When scores plateau and no directive is pending, LLM evolution calls are **skipp
 
 ## Gene Pool
 
-Evolved code patterns are preserved across generations via a **gene pool**. When Ring 2 survives, its source code is analysed (AST) to extract a compact gene summary (~200–500 tokens). The top 100 genes (by fitness score) are stored in SQLite.
+Evolved code patterns are preserved across generations via a local **gene pool**. When Ring 2 survives, its source code is analysed (AST) to extract a compact gene summary (~200–500 tokens). The top 100 genes (by fitness score) are stored in SQLite.
 
 During evolution, the best 2–3 gene summaries are injected into the LLM prompt as **Inherited Patterns**. During task execution, genes are filtered by a **semantic relevance threshold** (`min_semantic=1.0`) to avoid injecting unrelated patterns.
 
@@ -199,6 +199,7 @@ Local web UI at `http://localhost:8899`:
 | Overview | Stat cards + SVG fitness chart |
 | Memory | Browsable table with tier/type filters |
 | Skills | Card grid with usage counts and tags |
+| Templates | Published and discoverable task templates |
 | Intent | Vertical timeline of evolution intents |
 | Profile | Category bar chart + interaction stats |
 
@@ -238,6 +239,6 @@ All settings in `config/config.toml`:
 - **ring1.dashboard**: local dashboard (enabled, host, port)
 - **ring1.embeddings**: vector search (provider, model, dimensions)
 
-## Registry
+## Task Template Sharing
 
-Protea skills can be published to and installed from [protea-hub](https://github.com/lianglu/protea-hub).
+Scheduled tasks that prove their value (run_count >= 2) are automatically shared as **task templates** via [protea-hub](https://github.com/lianglu/protea-hub). Each template is a parameterized intent+trigger+execution triple in natural language. Other Protea instances can discover and install relevant templates based on their user profile.

@@ -339,3 +339,113 @@ class TestClear:
         store.add("b", "task b", "0 * * * *")
         store.clear()
         assert store.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# TestGetPublishable
+# ---------------------------------------------------------------------------
+
+class TestGetPublishable:
+    def test_returns_tasks_with_enough_runs(self, store):
+        sid1 = store.add("task-1", "News summary", "0 9 * * *")
+        sid2 = store.add("task-2", "Weather check", "0 8 * * *")
+        # Give task-1 two runs
+        store.update_after_run(sid1, time.time() + 3600)
+        store.update_after_run(sid1, time.time() + 7200)
+        # Give task-2 only one run
+        store.update_after_run(sid2, time.time() + 3600)
+
+        publishable = store.get_publishable(min_runs=2)
+        assert len(publishable) == 1
+        assert publishable[0]["name"] == "task-1"
+
+    def test_excludes_disabled(self, store):
+        sid = store.add("disabled-task", "Do something", "0 9 * * *")
+        store.update_after_run(sid, time.time() + 3600)
+        store.update_after_run(sid, time.time() + 7200)
+        store.disable(sid)
+        publishable = store.get_publishable(min_runs=2)
+        assert len(publishable) == 0
+
+    def test_empty_store(self, store):
+        assert store.get_publishable() == []
+
+
+# ---------------------------------------------------------------------------
+# TestExtractTemplate
+# ---------------------------------------------------------------------------
+
+class TestExtractTemplate:
+    def test_basic_extraction(self, store):
+        task = {
+            "name": "daily-news",
+            "task_text": "Summarize today's tech news",
+            "cron_expr": "0 9 * * *",
+            "schedule_type": "cron",
+        }
+        tmpl = store.extract_template(task)
+        assert tmpl["name"] == "daily-news"
+        assert tmpl["cron_expr"] == "0 9 * * *"
+        assert tmpl["template_hash"]
+        assert isinstance(tmpl["tags"], list)
+
+    def test_tags_extraction(self, store):
+        task = {
+            "name": "weather",
+            "task_text": "Check weather and send daily summary report",
+            "cron_expr": "0 8 * * *",
+            "schedule_type": "cron",
+        }
+        tmpl = store.extract_template(task)
+        assert "weather" in tmpl["tags"]
+        assert "daily" in tmpl["tags"]
+        assert "summary" in tmpl["tags"]
+        assert "report" in tmpl["tags"]
+        assert "check" in tmpl["tags"]
+
+
+# ---------------------------------------------------------------------------
+# TestInstallFromTemplate
+# ---------------------------------------------------------------------------
+
+class TestInstallFromTemplate:
+    def test_basic_install(self, store):
+        template = {
+            "name": "imported-news",
+            "task_text": "Summarize news for {topic}",
+            "cron_expr": "0 9 * * *",
+            "schedule_type": "cron",
+        }
+        sid = store.install_from_template(template, params={"topic": "AI"}, chat_id="123")
+        task = store.get_by_id(sid)
+        assert task is not None
+        assert task["task_text"] == "Summarize news for AI"
+        assert task["chat_id"] == "123"
+
+    def test_no_params(self, store):
+        template = {
+            "name": "simple",
+            "task_text": "Check server status",
+            "cron_expr": "*/30 * * * *",
+            "schedule_type": "cron",
+        }
+        sid = store.install_from_template(template)
+        task = store.get_by_id(sid)
+        assert task["task_text"] == "Check server status"
+
+
+# ---------------------------------------------------------------------------
+# TestMarkTemplatePublished
+# ---------------------------------------------------------------------------
+
+class TestMarkTemplatePublished:
+    def test_mark_published(self, store):
+        sid = store.add("test", "task", "0 9 * * *")
+        store.mark_template_published(sid, "abc123")
+        task = store.get_by_id(sid)
+        assert task["published_template_hash"] == "abc123"
+
+    def test_published_hash_default_null(self, store):
+        sid = store.add("test", "task", "0 9 * * *")
+        task = store.get_by_id(sid)
+        assert task.get("published_template_hash") is None

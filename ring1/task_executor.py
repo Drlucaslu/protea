@@ -1287,7 +1287,7 @@ def create_executor(
     skill_store=None,
     skill_runner=None,
     task_store=None,
-    registry_client=None,
+    registry_client=None,  # deprecated, kept for call-site compat
     user_profiler=None,
     embedding_provider=None,
     scheduled_store=None,
@@ -1319,7 +1319,6 @@ def create_executor(
         reply_fn=reply_fn,
         skill_store=skill_store,
         skill_runner=skill_runner,
-        registry_client=registry_client,
         scheduled_store=scheduled_store,
         send_file_fn=send_file_fn,
     )
@@ -1333,7 +1332,6 @@ def create_executor(
         subagent_manager=subagent_mgr,
         skill_store=skill_store,
         skill_runner=skill_runner,
-        registry_client=registry_client,
         scheduled_store=scheduled_store,
         send_file_fn=send_file_fn,
     )

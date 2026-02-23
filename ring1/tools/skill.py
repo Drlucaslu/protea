@@ -13,44 +13,16 @@ from ring1.tool_registry import Tool
 log = logging.getLogger("protea.tools.skill")
 
 
-def _try_hub_fallback(skill_store, registry_client, skill_name: str) -> dict | None:
-    """Search the hub for a skill and install it locally if found."""
-    if registry_client is None:
-        return None
-    try:
-        results = registry_client.search(query=skill_name, limit=5)
-        # Find exact match first, then prefix match.
-        match = None
-        for r in results:
-            if r.get("name") == skill_name:
-                match = r
-                break
-        if match is None:
-            return None
-        # Download full skill data.
-        data = registry_client.download(match["node_id"], match["name"])
-        if data is None:
-            return None
-        skill_store.install_from_hub(data)
-        log.info("Installed skill '%s' from hub (node=%s)", skill_name, match["node_id"])
-        return skill_store.get_by_name(skill_name)
-    except Exception as exc:
-        log.debug("Hub fallback for '%s' failed: %s", skill_name, exc)
-        return None
-
-
-def make_run_skill_tool(skill_store, skill_runner, registry_client=None) -> Tool:
+def make_run_skill_tool(skill_store, skill_runner) -> Tool:
     """Create a Tool that starts a stored skill by name."""
 
     def _exec_run_skill(inp: dict) -> str:
         skill_name = inp["skill_name"]
 
-        # 1. Look up the skill in the store, fallback to hub.
+        # 1. Look up the skill in the store.
         skill = skill_store.get_by_name(skill_name)
         if skill is None:
-            skill = _try_hub_fallback(skill_store, registry_client, skill_name)
-        if skill is None:
-            return f"Error: skill '{skill_name}' not found (checked local store and hub)."
+            return f"Error: skill '{skill_name}' not found."
 
         source_code = skill.get("source_code", "")
         if not source_code:
@@ -138,16 +110,14 @@ def make_run_skill_tool(skill_store, skill_runner, registry_client=None) -> Tool
     )
 
 
-def make_view_skill_tool(skill_store, registry_client=None) -> Tool:
+def make_view_skill_tool(skill_store) -> Tool:
     """Create a Tool that reads a stored skill's source code and metadata."""
 
     def _exec_view_skill(inp: dict) -> str:
         skill_name = inp["skill_name"]
         skill = skill_store.get_by_name(skill_name)
         if skill is None:
-            skill = _try_hub_fallback(skill_store, registry_client, skill_name)
-        if skill is None:
-            return f"Error: skill '{skill_name}' not found (checked local store and hub)."
+            return f"Error: skill '{skill_name}' not found."
 
         parts = [
             f"Name: {skill.get('name', '')}",
@@ -181,7 +151,7 @@ def make_view_skill_tool(skill_store, registry_client=None) -> Tool:
     )
 
 
-def make_edit_skill_tool(skill_store, registry_client=None) -> Tool:
+def make_edit_skill_tool(skill_store) -> Tool:
     """Create a Tool that edits a stored skill's source code via search-and-replace."""
 
     def _exec_edit_skill(inp: dict) -> str:
@@ -191,9 +161,7 @@ def make_edit_skill_tool(skill_store, registry_client=None) -> Tool:
 
         skill = skill_store.get_by_name(skill_name)
         if skill is None:
-            skill = _try_hub_fallback(skill_store, registry_client, skill_name)
-        if skill is None:
-            return f"Error: skill '{skill_name}' not found (checked local store and hub)."
+            return f"Error: skill '{skill_name}' not found."
 
         source_code = skill.get("source_code", "")
 

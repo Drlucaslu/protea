@@ -394,49 +394,6 @@ class TestUpdateUsageLastUsedAt:
         assert store.get_by_name("s1")["last_used_at"] is not None
 
 
-class TestInstallFromHub:
-    """install_from_hub() should insert or update a hub skill."""
-
-    def test_install_new_skill(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        data = {
-            "name": "hub_skill",
-            "description": "From hub",
-            "prompt_template": "Do {{task}}",
-            "parameters": {"task": "string"},
-            "tags": ["hub"],
-            "source_code": "print('hub')",
-        }
-        rid = store.install_from_hub(data)
-        assert rid > 0
-        skill = store.get_by_name("hub_skill")
-        assert skill["source"] == "hub"
-        assert skill["description"] == "From hub"
-        assert skill["source_code"] == "print('hub')"
-
-    def test_update_existing_skill(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        store.add("s1", "old desc", "old tmpl", source="user")
-        store.install_from_hub({
-            "name": "s1",
-            "description": "new desc",
-            "prompt_template": "new tmpl",
-            "source_code": "new code",
-        })
-        skill = store.get_by_name("s1")
-        assert skill["source"] == "hub"
-        assert skill["description"] == "new desc"
-        assert skill["source_code"] == "new code"
-
-    def test_reactivates_deactivated_skill(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        store.add("s1", "desc", "tmpl", source="hub")
-        store.deactivate("s1")
-        assert store.get_by_name("s1")["active"] is False
-        store.install_from_hub({"name": "s1", "description": "desc", "prompt_template": "tmpl"})
-        assert store.get_by_name("s1")["active"] is True
-
-
 class TestEvictStale:
     """evict_stale() should remove old hub skills but keep local ones."""
 
@@ -550,41 +507,6 @@ class TestPublished:
         skill = store.get_by_name("s1")
         assert skill["published"] == 0
 
-    def test_mark_published(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        store.add("s1", "desc", "tmpl", source="crystallized")
-        store.mark_published("s1")
-        skill = store.get_by_name("s1")
-        assert skill["published"] == 1
-
-    def test_get_unpublished_filters_correctly(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        # Crystallized, high usage, not published → should appear
-        store.add("good", "desc", "tmpl", source="crystallized")
-        store.update_usage("good")
-        store.update_usage("good")
-
-        # Hub source → should NOT appear
-        store.add("from_hub", "desc", "tmpl", source="hub")
-        store.update_usage("from_hub")
-        store.update_usage("from_hub")
-
-        # Low usage → should NOT appear (below min_usage=2)
-        store.add("low_use", "desc", "tmpl", source="user")
-
-        # Already published → should NOT appear
-        store.add("published", "desc", "tmpl", source="user")
-        store.update_usage("published")
-        store.update_usage("published")
-        store.mark_published("published")
-
-        result = store.get_unpublished(min_usage=2)
-        names = [s["name"] for s in result]
-        assert "good" in names
-        assert "from_hub" not in names
-        assert "low_use" not in names
-        assert "published" not in names
-
     def test_get_local_names(self, tmp_path):
         store = SkillStore(tmp_path / "skills.db")
         store.add("a", "desc", "tmpl")
@@ -662,8 +584,6 @@ class TestSchemaMigrationPublished:
         skill = store.get_by_name("old")
         assert skill is not None
         assert skill["published"] == 0
-        store.mark_published("old")
-        assert store.get_by_name("old")["published"] == 1
 
 
 class TestDependencies:
@@ -681,30 +601,6 @@ class TestDependencies:
         skill = store.get_by_name("s1")
         assert skill["dependencies"] == []
 
-    def test_install_from_hub_with_dependencies(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        data = {
-            "name": "hub_cap",
-            "description": "Browser automation",
-            "prompt_template": "tmpl",
-            "source_code": "print('ok')",
-            "dependencies": ["playwright"],
-        }
-        store.install_from_hub(data)
-        skill = store.get_by_name("hub_cap")
-        assert skill["dependencies"] == ["playwright"]
-
-    def test_install_from_hub_updates_dependencies(self, tmp_path):
-        store = SkillStore(tmp_path / "skills.db")
-        store.add("s1", "desc", "tmpl", dependencies=["old_pkg"])
-        store.install_from_hub({
-            "name": "s1",
-            "description": "updated",
-            "prompt_template": "tmpl",
-            "dependencies": ["new_pkg"],
-        })
-        skill = store.get_by_name("s1")
-        assert skill["dependencies"] == ["new_pkg"]
 
 
 class TestPermanent:

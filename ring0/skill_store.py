@@ -197,68 +197,6 @@ class SkillStore(SQLiteStore):
             )
             return cur.rowcount > 0
 
-    def install_from_hub(self, skill_data: dict) -> int:
-        """Install a skill downloaded from the hub into the local store.
-
-        If a skill with the same name already exists, update it.
-        Returns the rowid.
-        """
-        name = skill_data["name"]
-        dependencies = skill_data.get("dependencies")
-        existing = self.get_by_name(name)
-        if existing:
-            self.update(
-                name,
-                description=skill_data.get("description"),
-                prompt_template=skill_data.get("prompt_template"),
-                tags=skill_data.get("tags"),
-                source_code=skill_data.get("source_code"),
-            )
-            with self._connect() as con:
-                con.execute(
-                    "UPDATE skills SET source = 'hub', active = 1 WHERE name = ?",
-                    (name,),
-                )
-                if dependencies is not None:
-                    con.execute(
-                        "UPDATE skills SET dependencies = ? WHERE name = ?",
-                        (json.dumps(dependencies), name),
-                    )
-            return existing["id"]
-        return self.add(
-            name=name,
-            description=skill_data.get("description", ""),
-            prompt_template=skill_data.get("prompt_template", ""),
-            parameters=skill_data.get("parameters"),
-            tags=skill_data.get("tags"),
-            source="hub",
-            source_code=skill_data.get("source_code", ""),
-            dependencies=dependencies,
-        )
-
-    def get_unpublished(self, min_usage: int = 2) -> list[dict]:
-        """Return active, locally-created skills not yet published to the Hub.
-
-        Only returns skills with usage_count >= *min_usage* to ensure quality.
-        """
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT * FROM skills WHERE active = 1 "
-                "AND source IN ('crystallized', 'user') "
-                "AND published = 0 "
-                "AND usage_count >= ? "
-                "ORDER BY usage_count DESC",
-                (min_usage,),
-            ).fetchall()
-            return [self._row_to_dict(r) for r in rows]
-
-    def mark_published(self, name: str) -> None:
-        """Mark a skill as published to the Hub."""
-        with self._connect() as con:
-            con.execute(
-                "UPDATE skills SET published = 1 WHERE name = ?", (name,),
-            )
-
     def get_local_names(self) -> set[str]:
         """Return names of all active skills (for dedup during discovery)."""
         with self._connect() as con:

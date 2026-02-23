@@ -330,7 +330,7 @@ class TestDashboardServer:
             assert code == 200
             code, body = self._get(f"{base}/skills")
             assert code == 200
-            code, body = self._get(f"{base}/genes")
+            code, body = self._get(f"{base}/templates")
             assert code == 200
             code, body = self._get(f"{base}/intent")
             assert code == 200
@@ -339,65 +339,67 @@ class TestDashboardServer:
         finally:
             dashboard.stop()
 
-    def test_genes_page(self):
-        mock_gene_pool = MagicMock()
-        mock_gene_pool.get_top.return_value = [
-            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Improved error handling", "tags": "robustness error", "hit_count": 7, "last_hit_gen": 42, "task_hit_count": 0, "last_task_hit_gen": 40, "total_task_hits": 3},
-            {"id": 2, "generation": 3, "score": 0.72, "gene_summary": "Faster startup", "tags": "perf", "hit_count": 0, "last_hit_gen": 0, "task_hit_count": 0, "last_task_hit_gen": 0, "total_task_hits": 0},
+    def test_templates_page(self):
+        mock_scheduled = MagicMock()
+        mock_scheduled.get_publishable.return_value = [
+            {"name": "daily-news", "cron_expr": "0 9 * * *", "run_count": 5,
+             "task_text": "Summarize news", "published_template_hash": "abc123",
+             "schedule_id": "sched-1"},
+            {"name": "weather-check", "cron_expr": "0 8 * * *", "run_count": 3,
+             "task_text": "Check weather", "published_template_hash": None,
+             "schedule_id": "sched-2"},
         ]
-        mock_gene_pool.count.return_value = 10
-        mock_skill_store = MagicMock()
-        mock_skill_store.get_gene_skills.return_value = []
-        dashboard, base = self._start(gene_pool=mock_gene_pool, skill_store=mock_skill_store)
+        dashboard, base = self._start(scheduled_store=mock_scheduled)
         try:
-            code, body = self._get(f"{base}/genes")
+            code, body = self._get(f"{base}/templates")
             assert code == 200
-            assert "Gene Leaderboard" in body
-            assert "Improved error handling" in body
-            assert "0.850" in body
-            assert "0.720" in body
-            assert "Code Hits" in body
-            assert "Task Hits" in body
-            assert "Last Task Hit" in body
-            assert "Task-Proven" in body
-            assert "Avg Score" in body
+            assert "Task Templates" in body
+            assert "daily-news" in body
+            assert "weather-check" in body
+            assert "published" in body
+            assert "local" in body
         finally:
             dashboard.stop()
 
-    def test_genes_page_no_data(self):
-        dashboard, base = self._start()
+    def test_templates_page_no_data(self):
+        mock_scheduled = MagicMock()
+        mock_scheduled.get_publishable.return_value = []
+        dashboard, base = self._start(scheduled_store=mock_scheduled)
         try:
-            code, body = self._get(f"{base}/genes")
+            code, body = self._get(f"{base}/templates")
             assert code == 200
-            assert "No genes in pool yet" in body
+            assert "No task templates yet" in body
         finally:
             dashboard.stop()
 
-    def test_api_genes(self):
-        mock_gene_pool = MagicMock()
-        mock_gene_pool.get_top.return_value = [
-            {"id": 1, "generation": 5, "score": 0.85, "gene_summary": "Test gene", "tags": "test", "hit_count": 3, "last_hit_gen": 10},
+    def test_api_templates(self):
+        mock_scheduled = MagicMock()
+        mock_scheduled.get_publishable.return_value = [
+            {"name": "t1", "cron_expr": "0 9 * * *", "run_count": 3,
+             "task_text": "Test task", "schedule_id": "sched-1"},
         ]
-        dashboard, base = self._start(gene_pool=mock_gene_pool)
+        dashboard, base = self._start(scheduled_store=mock_scheduled)
         try:
-            code, data = self._get_json(f"{base}/api/genes")
+            code, data = self._get_json(f"{base}/api/templates")
             assert code == 200
             assert isinstance(data, list)
             assert len(data) == 1
-            assert data[0]["score"] == 0.85
+            assert data[0]["name"] == "t1"
         finally:
             dashboard.stop()
 
-    def test_overview_contains_gene_card(self):
-        mock_gene_pool = MagicMock()
-        mock_gene_pool.count.return_value = 42
-        dashboard, base = self._start(gene_pool=mock_gene_pool)
+    def test_overview_contains_template_card(self):
+        mock_scheduled = MagicMock()
+        mock_scheduled.get_publishable.return_value = [
+            {"name": "t1", "run_count": 3, "published_template_hash": None},
+            {"name": "t2", "run_count": 5, "published_template_hash": None},
+        ]
+        dashboard, base = self._start(scheduled_store=mock_scheduled)
         try:
             code, body = self._get(f"{base}/")
             assert code == 200
-            assert "Genes" in body
-            assert "42" in body
-            assert "in gene pool" in body
+            assert "Templates" in body
+            assert "publishable tasks" in body
         finally:
             dashboard.stop()
 

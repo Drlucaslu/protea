@@ -651,7 +651,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
         return False, [], []
 
 
-def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, registry_client=None, fitness=None, gene_ids=None):
+def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, fitness=None, gene_ids=None):
     """Best-effort crystallization.  Returns action string or None."""
     try:
         from ring1.config import load_ring1_config
@@ -687,25 +687,6 @@ def _try_crystallize(project_root, skill_store, source_code, output, generation,
                 result.llm_usage["input_tokens"],
                 result.llm_usage["output_tokens"],
             )
-
-        # Auto-publish to registry on successful crystallization.
-        if result.action in ("create", "update") and result.skill_name and registry_client:
-            try:
-                skill_data = skill_store.get_by_name(result.skill_name)
-                if skill_data:
-                    resp = registry_client.publish(
-                        name=skill_data["name"],
-                        description=skill_data.get("description", ""),
-                        prompt_template=skill_data.get("prompt_template", ""),
-                        parameters=skill_data.get("parameters"),
-                        tags=skill_data.get("tags"),
-                        source_code=skill_data.get("source_code", ""),
-                    )
-                    if resp is not None:
-                        skill_store.mark_published(result.skill_name)
-                    log.info("Published skill %r to registry", result.skill_name)
-            except Exception as pub_exc:
-                log.debug("Registry publish failed (non-fatal): %s", pub_exc)
 
         # Record gene → skill lineage for task-hit attribution.
         if result.action in ("create", "update") and result.skill_name and gene_ids:
@@ -761,34 +742,26 @@ def _create_registry_client(project_root, cfg):
     return _best_effort("RegistryClient", _factory)
 
 
-def _create_skill_syncer(skill_store, registry_client, user_profiler, cfg, gene_pool=None, embedding_provider=None):
-    """Best-effort SkillSyncer creation."""
-    if not skill_store or not registry_client:
+def _create_task_syncer(scheduled_store, registry_client, user_profiler, cfg):
+    """Best-effort TaskSyncer creation."""
+    if not scheduled_store or not registry_client:
         return None
     def _factory():
-        from ring1.skill_sync import SkillSyncer
-        sync_cfg = cfg.get("ring1", {}).get("skill_sync", {})
+        from ring1.task_sync import TaskSyncer
+        sync_cfg = cfg.get("ring1", {}).get("task_sync", cfg.get("ring1", {}).get("skill_sync", {}))
         if not sync_cfg.get("enabled", True):
             return None
         max_discover = sync_cfg.get("max_discover_per_sync", 5)
 
-        # External sources disabled — ClawHub and Skills.sh block
-        # programmatic access (Cloudflare 403 / 404).  Only Protea Hub is used.
-        sources: list = []
-
-        syncer = SkillSyncer(
-            skill_store=skill_store,
+        syncer = TaskSyncer(
+            scheduled_store=scheduled_store,
             registry_client=registry_client,
             user_profiler=user_profiler,
             max_discover=max_discover,
-            sources=sources,
-            gene_pool=gene_pool,
-            embedding_provider=embedding_provider,
         )
-        log.info("SkillSyncer created (max_discover=%d, sources=%d)",
-                 max_discover, len(sources))
+        log.info("TaskSyncer created (max_discover=%d)", max_discover)
         return syncer
-    return _best_effort("SkillSyncer", _factory)
+    return _best_effort("TaskSyncer", _factory)
 
 
 def _create_portal(project_root, cfg, skill_store, skill_runner):
@@ -863,13 +836,13 @@ def _create_dashboard(project_root, cfg, **data_sources):
     return _best_effort("Dashboard", _factory)
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, registry_client=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, gene_pool=None):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, gene_pool=None):
     """Best-effort task executor creation."""
     def _factory():
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
         if executor:
             thread = start_executor_thread(executor)
             state.executor_thread = thread
@@ -964,12 +937,11 @@ def run(project_root: pathlib.Path) -> None:
         if cleaned:
             log.info("Deactivated %d unused evolved skills", cleaned)
 
-    # Skill syncer — periodic publish + discover (skills + genes).
-    skill_syncer = _create_skill_syncer(
-        skill_store, registry_client, user_profiler, cfg, gene_pool=gene_pool,
-        embedding_provider=embedding_provider,
+    # Task syncer — periodic publish + discover (task templates).
+    task_syncer = _create_task_syncer(
+        scheduled_store, registry_client, user_profiler, cfg,
     )
-    sync_interval = cfg.get("ring1", {}).get("skill_sync", {}).get("interval_sec", 7200)
+    sync_interval = cfg.get("ring1", {}).get("task_sync", cfg.get("ring1", {}).get("skill_sync", {})).get("interval_sec", 7200)
 
     # Backfill gene pool from existing skills (one-time).
     if gene_pool and skill_store:
@@ -1041,7 +1013,7 @@ def run(project_root: pathlib.Path) -> None:
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else lambda text: None
     send_file_fn = bot._send_document if bot else None
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, registry_client=registry_client, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
     # Feedback prompt after task completion (not on intermediate messages).
     if executor and bot:
         executor.feedback_fn = bot.send_feedback_prompt
@@ -1291,7 +1263,6 @@ def run(project_root: pathlib.Path) -> None:
                         _try_crystallize(
                             project_root, skill_store, source, output,
                             generation, skill_cap=skill_cap,
-                            registry_client=registry_client,
                             fitness=fitness,
                             gene_ids=crystallize_gene_ids,
                         )
@@ -1518,13 +1489,13 @@ def run(project_root: pathlib.Path) -> None:
                         except Exception:
                             log.debug("Nightly consolidation failed (non-fatal)", exc_info=True)
 
-                # Periodic skill sync (interval + jitter to avoid thundering herd).
-                if skill_syncer and (time.time() - last_skill_sync_time) >= sync_interval:
+                # Periodic task template sync (interval + jitter to avoid thundering herd).
+                if task_syncer and (time.time() - last_skill_sync_time) >= sync_interval:
                     try:
-                        sync_result = skill_syncer.sync()
-                        log.info("Skill sync: %s", sync_result)
+                        sync_result = task_syncer.sync()
+                        log.info("Task sync: %s", sync_result)
                     except Exception:
-                        log.debug("Skill sync failed (non-fatal)", exc_info=True)
+                        log.debug("Task sync failed (non-fatal)", exc_info=True)
                     # Add 0–50% jitter so nodes don't re-sync in lockstep.
                     last_skill_sync_time = time.time() + random.uniform(0, sync_interval * 0.5)
 

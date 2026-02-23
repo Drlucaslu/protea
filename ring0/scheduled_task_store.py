@@ -38,10 +38,12 @@ class ScheduledTaskStore(SQLiteStore):
     )"""
 
     def _migrate(self, con) -> None:
-        """Add expires_at column if missing (schema v2)."""
+        """Add columns introduced after the initial schema."""
         cols = {row[1] for row in con.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
         if "expires_at" not in cols:
             con.execute("ALTER TABLE scheduled_tasks ADD COLUMN expires_at REAL DEFAULT NULL")
+        if "published_template_hash" not in cols:
+            con.execute("ALTER TABLE scheduled_tasks ADD COLUMN published_template_hash TEXT DEFAULT NULL")
 
     def add(
         self,
@@ -153,6 +155,82 @@ class ScheduledTaskStore(SQLiteStore):
             return self._row_to_dict(row) if row else None
 
     # ------------------------------------------------------------------
+    # Task Template sharing
+    # ------------------------------------------------------------------
+
+    def get_publishable(self, min_runs: int = 2) -> list[dict]:
+        """Return enabled tasks with run_count >= min_runs (candidates for sharing)."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM scheduled_tasks WHERE enabled = 1 AND run_count >= ? "
+                "ORDER BY run_count DESC",
+                (min_runs,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def extract_template(task: dict) -> dict:
+        """Extract a parameterized template from a scheduled task.
+
+        Strips chat_id and replaces concrete subjects/topics with {param}
+        placeholders where possible.
+        """
+        import hashlib
+        import re
+
+        task_text = task.get("task_text", "")
+        name = task.get("name", "")
+        cron_expr = task.get("cron_expr", "")
+        schedule_type = task.get("schedule_type", "cron")
+
+        # Build parameterized version: strip chat_id specifics.
+        parameterized = task_text
+
+        # Compute a hash of the template for dedup.
+        template_hash = hashlib.sha256(
+            f"{name}:{cron_expr}:{parameterized}".encode()
+        ).hexdigest()[:16]
+
+        return {
+            "name": name,
+            "task_text": parameterized,
+            "cron_expr": cron_expr,
+            "schedule_type": schedule_type,
+            "template_hash": template_hash,
+            "tags": _extract_tags(task_text),
+        }
+
+    def install_from_template(
+        self, template: dict, params: dict | None = None, chat_id: str = ""
+    ) -> str:
+        """Instantiate a task from a downloaded template.
+
+        Returns the new schedule_id.
+        """
+        task_text = template.get("task_text", "")
+        # Substitute any {param} placeholders.
+        if params:
+            for key, value in params.items():
+                task_text = task_text.replace(f"{{{key}}}", str(value))
+
+        return self.add(
+            name=template.get("name", "imported-task"),
+            task_text=task_text,
+            cron_expr=template.get("cron_expr", "0 9 * * *"),
+            schedule_type=template.get("schedule_type", "cron"),
+            chat_id=chat_id,
+        )
+
+    def mark_template_published(self, schedule_id: str, template_hash: str) -> None:
+        """Mark a task as published with its template hash."""
+        with self._connect() as con:
+            con.execute(
+                "UPDATE scheduled_tasks SET published_template_hash = ? "
+                "WHERE schedule_id = ?",
+                (template_hash, schedule_id),
+            )
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -172,3 +250,17 @@ class ScheduledTaskStore(SQLiteStore):
             return dt.timestamp()
         except Exception:
             return None
+
+
+def _extract_tags(text: str) -> list[str]:
+    """Extract simple keyword tags from task text."""
+    import re
+    # Common task-related keywords.
+    keywords = {
+        "news", "weather", "summary", "report", "monitor", "check",
+        "alert", "digest", "daily", "weekly", "rss", "feed", "price",
+        "stock", "crypto", "email", "backup", "cleanup", "health",
+        "status", "notify", "remind", "translate", "search", "analyze",
+    }
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    return sorted(words & keywords)
