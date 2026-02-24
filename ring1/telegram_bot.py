@@ -586,15 +586,18 @@ class TelegramBot:
         """Create a lightweight LLM client for group message triage."""
         api_key = os.environ.get("CLAUDE_API_KEY", "")
         if not api_key:
+            log.info("Triage LLM not created: CLAUDE_API_KEY not set")
             return None
         try:
             from ring1.llm_base import create_llm_client
-            return create_llm_client(
+            client = create_llm_client(
                 provider="anthropic", api_key=api_key,
                 model="claude-haiku-4-5-20251001", max_tokens=16,
             )
+            log.info("Triage LLM created (haiku)")
+            return client
         except Exception:
-            log.debug("Failed to create triage LLM", exc_info=True)
+            log.warning("Failed to create triage LLM", exc_info=True)
             return None
 
     # -- command handlers --
@@ -1492,9 +1495,9 @@ class TelegramBot:
                         chat_type = chat_info.get("type", "private")
                         is_group = chat_type in ("group", "supergroup")
 
-                        # Group filter: only respond to @mentions, replies to bot, or commands
+                        # Group filter: fast rules + LLM triage
                         if is_group and not self._should_respond_in_group(msg):
-                            log.info("Group msg filtered out (no mention/reply/cmd): chat_id=%s text=%s",
+                            log.info("Group msg filtered out: chat_id=%s text=%s",
                                      msg_chat_id, (msg.get("text", "") or "")[:80])
                             continue
 
