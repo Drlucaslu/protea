@@ -21,6 +21,8 @@ log = logging.getLogger("protea.tools.filesystem")
 _SENSITIVE_DIRS = frozenset({
     ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".config/gcloud",
     "Library/Keychains",
+    # Personal directories — privacy protection.
+    "Documents", "Downloads", "Desktop", "Pictures", "Movies", "Music",
 })
 
 # Source directories that are read-only (relative to workspace).

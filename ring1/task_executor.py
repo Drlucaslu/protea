@@ -226,12 +226,12 @@ Web tools:
 
 File tools:
 - read_file: Read a file's contents (with line numbers, offset, limit).
-  Accepts relative paths, absolute paths, or ~/… paths.
 - write_file: Write content to a file (creates parent dirs if needed).
-  Accepts relative paths, absolute paths, or ~/… paths.
 - edit_file: Search-and-replace edit on a file (old_string must be unique).
 - list_dir: List files and subdirectories.
-All file tools can access any path within the user's home directory (~/).
+File tools operate within the project workspace and telegram_output/.
+NEVER read, scan, or index the user's personal directories (Documents,
+Downloads, Desktop, Pictures, etc.) — this is a strict privacy boundary.
 
 Shell tool:
 - exec: Execute a shell command (timeout 120s). Only truly destructive commands
