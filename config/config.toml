@@ -13,19 +13,19 @@ db_path = "data/protea.db"
 
 [ring0.evolution]
 seed = 42
-cooldown_sec = 1800
+cooldown_sec = 3600
 skill_max_count = 100
 # Adaptive evolution: skip LLM calls when scores plateau to save tokens.
 # plateau_window = how many recent scores to check for stagnation.
 # plateau_epsilon = max score variance to consider "plateaued".
 # When plateaued, evolution is skipped unless a user directive is pending.
-plateau_window = 5
+plateau_window = 3
 plateau_epsilon = 0.03
 
 [ring1]
 claude_model = "claude-sonnet-4-5-20250929"
-claude_max_tokens = 16384
-max_prompt_history = 10
+claude_max_tokens = 4096
+max_prompt_history = 5
 
 [ring1.autonomy]
 enabled = true
