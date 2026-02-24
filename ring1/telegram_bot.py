@@ -1416,7 +1416,14 @@ class TelegramBot:
                             self._answer_callback_query(str(cb["id"]))
                             reply = self._handle_callback(cb.get("data", ""))
                             if reply:
-                                self._send_reply(reply)
+                                cb_chat = cb.get("message", {}).get("chat", {})
+                                cb_type = cb_chat.get("type", "private")
+                                if cb_type in ("group", "supergroup"):
+                                    self._send_reply(reply,
+                                                     chat_id=str(cb_chat.get("id", "")),
+                                                     reply_to_message_id=cb.get("message", {}).get("message_id"))
+                                else:
+                                    self._send_reply(reply)
                             continue
 
                         # --- regular message ---
@@ -1435,15 +1442,22 @@ class TelegramBot:
                         # Check for various file types
                         handled = False
                         
+                        # Group-aware reply helper
+                        _reply_kw = {}
+                        if is_group:
+                            _reply_kw = {"chat_id": msg_chat_id,
+                                         "reply_to_message_id": msg.get("message_id")}
+
                         # Helper: process file result tuple and optionally enqueue caption as task
                         def _process_file(file_info, file_type):
                             reply, saved_path = self._handle_file(file_info, file_type, msg_chat_id, caption)
                             if reply:
-                                self._send_reply(reply)
+                                self._send_reply(reply, **_reply_kw)
                             if caption and saved_path and not caption.strip().startswith("/"):
                                 task_text = f"[文件已上传: {saved_path}]\n\n{caption}"
-                                ack = self._enqueue_task(task_text, msg_chat_id)
-                                self._send_reply(ack)
+                                ack = self._enqueue_task(task_text, msg_chat_id,
+                                                         reply_to_message_id=msg.get("message_id") if is_group else None)
+                                self._send_reply(ack, **_reply_kw)
 
                         # 1. Document (any file uploaded as document)
                         document = msg.get("document")
@@ -1531,7 +1545,7 @@ class TelegramBot:
                                     reply_msg = f"已创建定时任务: {desc}\n任务: {task_text}\n(ID: {sched_id})"
                                     if info["auto_stop_hours"] > 0:
                                         reply_msg += f"\n将在 {info['auto_stop_hours']} 小时后自动停止"
-                                    self._send_reply(reply_msg)
+                                    self._send_reply(reply_msg, **_reply_kw)
                                 del self.state._pending_habits[pk]
                                 handled = True
                                 break
