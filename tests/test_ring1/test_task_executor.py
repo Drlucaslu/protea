@@ -1737,3 +1737,61 @@ class TestGenePatternContext:
         # Should be truncated to 197 chars + "..."
         assert "A" * 197 + "..." in ctx
         assert "A" * 200 not in ctx
+
+
+# ---------------------------------------------------------------------------
+# TestReplyFnFactory
+# ---------------------------------------------------------------------------
+
+class TestReplyFnFactory:
+    """Test per-task reply routing via reply_fn_factory."""
+
+    def test_execute_task_with_reply_fn_factory(self, tmp_path):
+        """When reply_fn_factory is set, task replies go through it."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "group answer"
+        default_reply = MagicMock()
+        factory_reply = MagicMock()
+
+        def factory(chat_id, reply_to_id=None):
+            return factory_reply
+
+        registry = _make_registry()
+        executor = TaskExecutor(
+            state, client, ring2, default_reply,
+            registry=registry, reply_fn_factory=factory,
+        )
+        task = Task(text="hello", chat_id="-100999", reply_to_message_id=42)
+        executor._execute_task(task)
+
+        # Should use factory reply, not default
+        factory_reply.assert_called()
+        default_reply.assert_not_called()
+        assert factory_reply.call_args[0][0].startswith("group answer")
+
+    def test_execute_task_default_reply_fn(self, tmp_path):
+        """Without reply_fn_factory, default reply_fn is used."""
+        state = _make_state()
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text("code")
+
+        client = MagicMock()
+        client.send_message_with_tools.return_value = "answer"
+        default_reply = MagicMock()
+        registry = _make_registry()
+
+        executor = TaskExecutor(
+            state, client, ring2, default_reply,
+            registry=registry, reply_fn_factory=None,
+        )
+        task = Task(text="hello", chat_id="12345")
+        executor._execute_task(task)
+
+        default_reply.assert_called_once()
+        assert default_reply.call_args[0][0].startswith("answer")

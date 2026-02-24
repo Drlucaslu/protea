@@ -48,7 +48,9 @@ class _BotHandler(http.server.BaseHTTPRequestHandler):
             resp_body = {"ok": ok, "result": {"message_id": 2} if ok else {}}
         else:
             body = json.loads(raw_body) if raw_body else {}
-            if path.endswith("/getUpdates"):
+            if path.endswith("/getMe"):
+                resp_body = {"ok": True, "result": {"username": "TestProteaBot", "id": 999}}
+            elif path.endswith("/getUpdates"):
                 resp_body = {"ok": True, "result": list(_BotHandler.updates_queue)}
                 _BotHandler.updates_queue.clear()
             elif path.endswith("/sendMessage"):
@@ -88,9 +90,24 @@ def _make_update(text: str, chat_id: str = "12345", update_id: int = 1) -> dict:
         "update_id": update_id,
         "message": {
             "text": text,
-            "chat": {"id": int(chat_id)},
+            "chat": {"id": int(chat_id), "type": "private"},
         },
     }
+
+
+def _make_group_update(
+    text: str, chat_id: str = "-100999", update_id: int = 1,
+    message_id: int = 42, reply_to: dict | None = None,
+) -> dict:
+    msg: dict = {
+        "message_id": message_id,
+        "text": text,
+        "chat": {"id": int(chat_id), "type": "supergroup"},
+        "from": {"id": 111, "is_bot": False, "username": "testuser"},
+    }
+    if reply_to:
+        msg["reply_to_message"] = reply_to
+    return {"update_id": update_id, "message": msg}
 
 
 def _make_callback_update(
@@ -1637,5 +1654,118 @@ class TestCaptionAutoEnqueue:
 
             bot.stop()
             thread.join(timeout=5)
+        finally:
+            server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestGroupMessages
+# ---------------------------------------------------------------------------
+
+class TestGroupMessages:
+    """Test group message authorization, filtering, and reply routing."""
+
+    def test_is_authorized_accepts_group(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            update = _make_group_update("hello", chat_id="-100999")
+            assert bot._is_authorized(update) is True
+        finally:
+            server.shutdown()
+
+    def test_should_respond_in_group_mention(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {"text": f"@{bot.bot_username} 你好", "chat": {"type": "supergroup"}}
+            assert bot._should_respond_in_group(msg) is True
+        finally:
+            server.shutdown()
+
+    def test_should_respond_in_group_reply_to_bot(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {
+                "text": "继续",
+                "chat": {"type": "supergroup"},
+                "reply_to_message": {
+                    "from": {"username": bot.bot_username, "is_bot": True},
+                    "text": "bot reply",
+                },
+            }
+            assert bot._should_respond_in_group(msg) is True
+        finally:
+            server.shutdown()
+
+    def test_should_respond_in_group_command(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {"text": "/status", "chat": {"type": "supergroup"}}
+            assert bot._should_respond_in_group(msg) is True
+        finally:
+            server.shutdown()
+
+    def test_should_respond_in_group_command_with_botname(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {"text": f"/status@{bot.bot_username}", "chat": {"type": "supergroup"}}
+            assert bot._should_respond_in_group(msg) is True
+        finally:
+            server.shutdown()
+
+    def test_should_respond_in_group_ignores_random(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {"text": "random chat message", "chat": {"type": "supergroup"}}
+            assert bot._should_respond_in_group(msg) is False
+        finally:
+            server.shutdown()
+
+    def test_send_reply_to_group(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot._send_reply("hello group", chat_id="-100999", reply_to_message_id=42)
+            assert len(_BotHandler.sent_messages) == 1
+            msg = _BotHandler.sent_messages[0]
+            assert msg["chat_id"] == "-100999"
+            assert msg["reply_to_message_id"] == 42
+        finally:
+            server.shutdown()
+
+    def test_make_reply_fn(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            reply = bot.make_reply_fn("-100999", reply_to_message_id=42)
+            reply("test message")
+            assert len(_BotHandler.sent_messages) == 1
+            msg = _BotHandler.sent_messages[0]
+            assert msg["chat_id"] == "-100999"
+            assert msg["reply_to_message_id"] == 42
+        finally:
+            server.shutdown()
+
+    def test_bot_username_fetched(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            assert bot.bot_username == "TestProteaBot"
+        finally:
+            server.shutdown()
+
+    def test_enqueue_task_with_reply_to(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot._handle_command("hello", chat_id="-100999", reply_to_message_id=42)
+            task = bot.state.task_queue.get_nowait()
+            assert task.reply_to_message_id == 42
+            assert task.chat_id == "-100999"
         finally:
             server.shutdown()

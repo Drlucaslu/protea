@@ -836,13 +836,13 @@ def _create_dashboard(project_root, cfg, **data_sources):
     return _best_effort("Dashboard", _factory)
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, gene_pool=None):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, gene_pool=None, reply_fn_factory=None):
     """Best-effort task executor creation."""
     def _factory():
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool, reply_fn_factory=reply_fn_factory)
         if executor:
             thread = start_executor_thread(executor)
             state.executor_thread = thread
@@ -1013,7 +1013,8 @@ def run(project_root: pathlib.Path) -> None:
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else lambda text: None
     send_file_fn = bot._send_document if bot else None
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool)
+    reply_fn_factory = bot.make_reply_fn if bot else None
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool, reply_fn_factory=reply_fn_factory)
     # Feedback prompt after task completion (not on intermediate messages).
     if executor and bot:
         executor.feedback_fn = bot.send_feedback_prompt

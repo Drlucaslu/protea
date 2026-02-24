@@ -450,6 +450,7 @@ class TaskExecutor:
         scheduled_store=None,
         preference_store=None,
         gene_pool=None,
+        reply_fn_factory=None,
     ) -> None:
         """
         Args:
@@ -468,6 +469,7 @@ class TaskExecutor:
             user_profiler: Optional UserProfiler for interest tracking.
             embedding_provider: Optional EmbeddingProvider for semantic vectors.
             prefer_local_skills: Match tasks to skills and recommend them.
+            reply_fn_factory: Optional factory(chat_id, reply_to_message_id) -> reply_fn.
         """
         self.state = state
         self.client = client
@@ -487,6 +489,7 @@ class TaskExecutor:
         self.scheduled_store = scheduled_store
         self.preference_store = preference_store
         self.gene_pool = gene_pool
+        self.reply_fn_factory = reply_fn_factory
         self.preference_extractor = None  # Initialized in create_executor()
         self.feedback_fn = None  # Called after complete task response
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
@@ -587,6 +590,13 @@ class TaskExecutor:
         """Execute a single task: set p0_active -> LLM call -> reply -> clear."""
         log.info("P0 task received: %s", task.text[:80])
         self.state.p0_active.set()
+
+        # Per-task reply routing: group messages go back to their chat/thread.
+        task_reply_fn = self.reply_fn
+        reply_to_id = getattr(task, "reply_to_message_id", None)
+        task_chat_id = getattr(task, "chat_id", "")
+        if self.reply_fn_factory and task_chat_id:
+            task_reply_fn = self.reply_fn_factory(task_chat_id, reply_to_id)
         # Mark executing in store
         if self.task_store:
             try:
@@ -754,7 +764,7 @@ class TaskExecutor:
 
             # Reply — split into segments for Telegram's 4096-char limit.
             try:
-                _send_segmented(self.reply_fn, response + footer)
+                _send_segmented(task_reply_fn, response + footer)
             except Exception:
                 log.error("Failed to send task reply", exc_info=True)
         finally:
@@ -1294,6 +1304,7 @@ def create_executor(
     send_file_fn=None,
     preference_store=None,
     gene_pool=None,
+    reply_fn_factory=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
     try:
@@ -1353,6 +1364,7 @@ def create_executor(
         scheduled_store=scheduled_store,
         preference_store=preference_store,
         gene_pool=gene_pool,
+        reply_fn_factory=reply_fn_factory,
     )
     executor.subagent_manager = subagent_mgr
 

@@ -131,6 +131,7 @@ class Task:
     """A user task submitted via free-text Telegram message."""
     text: str
     chat_id: str
+    reply_to_message_id: int | None = None
     created_at: float = field(default_factory=time.time)
     task_id: str = field(default_factory=lambda: f"t-{int(time.time() * 1000) % 1_000_000}")
 
@@ -158,6 +159,8 @@ class TelegramBot:
         self._offset: int = 0
         self._running = threading.Event()
         self._running.set()
+        self.bot_username: str = ""  # set by _fetch_bot_info()
+        self._fetch_bot_info()
         
         # 对话上下文追踪 - 记住最近的 bot 消息以支持回复关联
         self._last_bot_messages = []  # 保留最近 5 条消息
@@ -167,6 +170,13 @@ class TelegramBot:
         # Feedback collection: 👍/👎 after completed tasks (~20% probability).
 
     # -- low-level API helpers --
+
+    def _fetch_bot_info(self) -> None:
+        """Fetch bot username via getMe (best-effort)."""
+        result = self._api_call("getMe")
+        if result:
+            self.bot_username = result["result"].get("username", "")
+            log.info("Bot username: @%s", self.bot_username)
 
     def _api_call(self, method: str, params: dict | None = None) -> dict | None:
         """Call a Telegram Bot API method.  Returns parsed JSON or None."""
@@ -200,27 +210,28 @@ class TelegramBot:
             self._offset = updates[-1]["update_id"] + 1
         return updates
 
-    def _send_reply(self, text: str) -> None:
+    def _send_reply(self, text: str, chat_id: str | None = None,
+                     reply_to_message_id: int | None = None) -> None:
         """Send a text reply (fire-and-forget).
 
-        Tries Markdown first; falls back to plain text if Telegram rejects it
-        (e.g. LLM responses often contain ``##`` headers that are invalid in
-        Telegram's legacy Markdown mode).
+        Args:
+            text: Message text.
+            chat_id: Target chat.  Defaults to owner private chat.
+            reply_to_message_id: If set, reply to this message (thread linking).
         """
-        result = self._api_call("sendMessage", {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-        })
+        target = chat_id or self.chat_id
+        params: dict = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
+        if reply_to_message_id:
+            params["reply_to_message_id"] = reply_to_message_id
+        result = self._api_call("sendMessage", params)
         if result is None:
             # Markdown was rejected — retry as plain text.
-            result = self._api_call("sendMessage", {
-                "chat_id": self.chat_id,
-                "text": text,
-            })
-        
-        # 记录发送的消息以支持上下文追踪
-        if result and result.get("ok"):
+            params.pop("parse_mode", None)
+            params.pop("reply_to_message_id", None)  # might fail if original deleted
+            result = self._api_call("sendMessage", params)
+
+        # 记录发送的消息以支持上下文追踪 (only for owner private chat)
+        if result and result.get("ok") and (not chat_id or chat_id == self.chat_id):
             msg_data = result.get("result", {})
             message_id = msg_data.get("message_id")
             if message_id:
@@ -232,6 +243,12 @@ class TelegramBot:
                 # 只保留最近的 N 条消息
                 if len(self._last_bot_messages) > self._max_context_messages:
                     self._last_bot_messages.pop(0)
+
+    def make_reply_fn(self, chat_id: str, reply_to_message_id: int | None = None):
+        """Create a reply callable bound to a specific chat (and optional thread)."""
+        def reply(text: str) -> None:
+            self._send_reply(text, chat_id=chat_id, reply_to_message_id=reply_to_message_id)
+        return reply
 
     def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> None:
         """Send a message with an inline keyboard (fire-and-forget).
@@ -453,10 +470,11 @@ class TelegramBot:
         })
 
     def _is_authorized(self, update: dict) -> bool:
-        """Check if the update comes from the authorized chat.
+        """Check if the update comes from an authorized chat.
 
-        When ``chat_id`` is empty (not yet configured), the first incoming
-        message is accepted and its chat ID is locked as the authorized chat.
+        - Group/supergroup messages are always accepted (filtered later by
+          ``_should_respond_in_group``).
+        - Private messages use the existing owner-lock logic.
         """
         if "callback_query" in update:
             chat = update["callback_query"].get("message", {}).get("chat", {})
@@ -465,7 +483,10 @@ class TelegramBot:
         msg_chat_id = str(chat.get("id", ""))
         if not msg_chat_id:
             return False
-        # Auto-detect: lock to the first sender when chat_id is not configured.
+        chat_type = chat.get("type", "private")
+        if chat_type in ("group", "supergroup"):
+            return True  # group messages accepted; _should_respond_in_group filters later
+        # Private chat: auto-detect or check owner
         if not self.chat_id:
             self._lock_chat_id(msg_chat_id)
             return True
@@ -503,6 +524,24 @@ class TelegramBot:
             log.info("Persisted chat_id to %s", env_path)
         except Exception:
             log.debug("Failed to persist chat_id to .env", exc_info=True)
+
+    def _should_respond_in_group(self, msg: dict) -> bool:
+        """Return True if the bot should respond to this group message.
+
+        Triggers: @mention, reply to bot's message, or ``/`` command.
+        """
+        text = msg.get("text", "") or msg.get("caption", "")
+        # 1. @mention
+        if self.bot_username and f"@{self.bot_username}" in text:
+            return True
+        # 2. Reply to bot's own message
+        reply = msg.get("reply_to_message", {})
+        if reply.get("from", {}).get("username") == self.bot_username and self.bot_username:
+            return True
+        # 3. Slash command
+        if text.strip().startswith("/"):
+            return True
+        return False
 
     # -- command handlers --
 
@@ -1063,9 +1102,10 @@ class TelegramBot:
             lines.append(f"{icon} {name} — {schedule_desc}{next_at}{runs}{disabled_tag}")
         return "\n".join(lines)
 
-    def _enqueue_task(self, text: str, chat_id: str) -> str:
+    def _enqueue_task(self, text: str, chat_id: str,
+                      reply_to_message_id: int | None = None) -> str:
         """Create a Task, enqueue it, pulse p0_event, return ack."""
-        task = Task(text=text, chat_id=chat_id)
+        task = Task(text=text, chat_id=chat_id, reply_to_message_id=reply_to_message_id)
         ts = self.state.task_store
         if ts:
             try:
@@ -1326,7 +1366,8 @@ class TelegramBot:
         
         return prefix + user_text
 
-    def _handle_command(self, text: str, chat_id: str = "") -> str:
+    def _handle_command(self, text: str, chat_id: str = "",
+                        reply_to_message_id: int | None = None) -> str:
         """Dispatch a command or free-text message and return the response."""
         stripped = text.strip()
         if not stripped:
@@ -1334,7 +1375,7 @@ class TelegramBot:
 
         # Free text (not a command) → enqueue as P0 task
         if not stripped.startswith("/"):
-            return self._enqueue_task(stripped, chat_id)
+            return self._enqueue_task(stripped, chat_id, reply_to_message_id)
 
         # /direct, /skill, /run, /find need special handling (passes full text)
         first_word = stripped.split()[0].lower().split("@")[0]
@@ -1380,7 +1421,15 @@ class TelegramBot:
 
                         # --- regular message ---
                         msg = update.get("message", {})
-                        msg_chat_id = str(msg.get("chat", {}).get("id", ""))
+                        chat_info = msg.get("chat", {})
+                        msg_chat_id = str(chat_info.get("id", ""))
+                        chat_type = chat_info.get("type", "private")
+                        is_group = chat_type in ("group", "supergroup")
+
+                        # Group filter: only respond to @mentions, replies to bot, or commands
+                        if is_group and not self._should_respond_in_group(msg):
+                            continue
+
                         caption = msg.get("caption", "")
                         
                         # Check for various file types
@@ -1489,15 +1538,27 @@ class TelegramBot:
                             if handled:
                                 continue
 
-                        # 上下文增强：检测用户是否在回复 bot 的消息
-                        context_info = self._detect_conversation_context(msg)
-                        if context_info:
-                            # 将上下文信息注入到用户输入中
-                            text = self._enrich_text_with_context(text, context_info)
-                        
-                        reply = self._handle_command(text, chat_id=msg_chat_id)
+                        # Strip @botname from group messages
+                        if is_group and self.bot_username:
+                            text = text.replace(f"@{self.bot_username}", "").strip()
+
+                        # 上下文增强：检测用户是否在回复 bot 的消息 (private chat only)
+                        if not is_group:
+                            context_info = self._detect_conversation_context(msg)
+                            if context_info:
+                                text = self._enrich_text_with_context(text, context_info)
+
+                        msg_reply_to = msg.get("message_id") if is_group else None
+                        reply = self._handle_command(
+                            text, chat_id=msg_chat_id,
+                            reply_to_message_id=msg_reply_to,
+                        )
                         if reply is not None:
-                            self._send_reply(reply)
+                            if is_group:
+                                self._send_reply(reply, chat_id=msg_chat_id,
+                                                 reply_to_message_id=msg.get("message_id"))
+                            else:
+                                self._send_reply(reply)
                     except Exception:
                         log.debug("Error handling update", exc_info=True)
 
