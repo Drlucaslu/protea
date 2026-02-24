@@ -566,10 +566,12 @@ class TelegramBot:
         if not text.strip() or not self._triage_llm:
             return False
         prompt = (
-            "A message was sent in a group chat. Decide: can an AI assistant "
-            "provide a highly accurate, confident answer (>90% confidence)?\n\n"
-            "YES: factual questions, how-to, translation, calculation, etc.\n"
-            "NO: casual chat, opinions, greetings, messages between humans, vague messages\n\n"
+            "A message was sent in a group chat. Decide: is this message a question "
+            "or request where an AI assistant could be helpful?\n\n"
+            "YES: questions, requests for info, how-to, translation, calculation, "
+            "weather, time, recommendations, anything seeking an answer\n"
+            "NO: casual chat between humans, greetings, opinions with no question, "
+            "inside jokes, messages clearly addressed to another person\n\n"
             f"Message: \"{text}\"\n\nReply ONLY YES or NO."
         )
         try:
