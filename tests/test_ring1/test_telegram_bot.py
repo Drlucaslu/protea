@@ -1769,3 +1769,93 @@ class TestGroupMessages:
             assert task.chat_id == "-100999"
         finally:
             server.shutdown()
+
+    def test_bot_name_mentioned(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            # "protea" hardcoded
+            assert bot._bot_name_mentioned("protea 你好") is True
+            assert bot._bot_name_mentioned("Protea help me") is True
+            # bot_username variants
+            assert bot._bot_name_mentioned("TestProteaBot do something") is True
+            # derived clean name (username minus "bot" and "test")
+            assert bot._bot_name_mentioned("Hey protea, what time is it?") is True
+        finally:
+            server.shutdown()
+
+    def test_bot_name_not_mentioned(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            assert bot._bot_name_mentioned("random chat message") is False
+            assert bot._bot_name_mentioned("let's go eat") is False
+            assert bot._bot_name_mentioned("") is False
+        finally:
+            server.shutdown()
+
+    def test_should_respond_bot_name(self, tmp_path, monkeypatch):
+        """Bot name mention triggers response in group."""
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            msg = {"text": "protea 帮我查一下天气", "chat": {"type": "supergroup"}}
+            assert bot._should_respond_in_group(msg) is True
+        finally:
+            server.shutdown()
+
+    def test_llm_triage_yes(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            mock_llm = MagicMock()
+            mock_llm.send_message.return_value = "YES"
+            bot._triage_llm = mock_llm
+            assert bot._llm_triage_group_message("What is the capital of France?") is True
+        finally:
+            server.shutdown()
+
+    def test_llm_triage_no(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            mock_llm = MagicMock()
+            mock_llm.send_message.return_value = "NO"
+            bot._triage_llm = mock_llm
+            assert bot._llm_triage_group_message("我们去吃饭吧") is False
+        finally:
+            server.shutdown()
+
+    def test_llm_triage_error(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            mock_llm = MagicMock()
+            mock_llm.send_message.side_effect = RuntimeError("API error")
+            bot._triage_llm = mock_llm
+            # Fail-safe: should return False on error
+            assert bot._llm_triage_group_message("some question") is False
+        finally:
+            server.shutdown()
+
+    def test_llm_triage_no_llm(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            bot._triage_llm = None
+            assert bot._llm_triage_group_message("any text") is False
+        finally:
+            server.shutdown()
+
+    def test_llm_triage_empty_text(self, tmp_path, monkeypatch):
+        server, port = _make_server()
+        try:
+            bot = _make_bot(port, tmp_path, monkeypatch)
+            mock_llm = MagicMock()
+            bot._triage_llm = mock_llm
+            assert bot._llm_triage_group_message("") is False
+            assert bot._llm_triage_group_message("   ") is False
+            # LLM should not be called for empty text
+            mock_llm.send_message.assert_not_called()
+        finally:
+            server.shutdown()

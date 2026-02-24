@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import pathlib
 import queue
 import threading
@@ -162,6 +163,8 @@ class TelegramBot:
         self.bot_username: str = ""  # set by _fetch_bot_info()
         self._fetch_bot_info()
         
+        self._triage_llm = self._create_triage_llm()
+
         # 对话上下文追踪 - 记住最近的 bot 消息以支持回复关联
         self._last_bot_messages = []  # 保留最近 5 条消息
         self._max_context_messages = 5
@@ -528,20 +531,71 @@ class TelegramBot:
     def _should_respond_in_group(self, msg: dict) -> bool:
         """Return True if the bot should respond to this group message.
 
-        Triggers: @mention, reply to bot's message, or ``/`` command.
+        Two-layer filter: fast rules first, then LLM triage.
         """
         text = msg.get("text", "") or msg.get("caption", "")
         # 1. @mention
         if self.bot_username and f"@{self.bot_username}" in text:
             return True
-        # 2. Reply to bot's own message
+        # 2. Bot name mentioned (case-insensitive)
+        if self._bot_name_mentioned(text):
+            return True
+        # 3. Reply to bot's own message
         reply = msg.get("reply_to_message", {})
         if reply.get("from", {}).get("username") == self.bot_username and self.bot_username:
             return True
-        # 3. Slash command
+        # 4. Slash command
         if text.strip().startswith("/"):
             return True
-        return False
+        # 5. LLM triage: can we answer with high confidence?
+        return self._llm_triage_group_message(text)
+
+    def _bot_name_mentioned(self, text: str) -> bool:
+        """Check if the bot's name is mentioned in the text (case-insensitive)."""
+        text_lower = text.lower()
+        names = {"protea"}
+        if self.bot_username:
+            clean = self.bot_username.lower().replace("bot", "").replace("test", "")
+            if clean:
+                names.add(clean)
+            names.add(self.bot_username.lower())
+        return any(name in text_lower for name in names)
+
+    def _llm_triage_group_message(self, text: str) -> bool:
+        """Use a fast LLM to decide if the bot can confidently answer this message."""
+        if not text.strip() or not self._triage_llm:
+            return False
+        prompt = (
+            "A message was sent in a group chat. Decide: can an AI assistant "
+            "provide a highly accurate, confident answer (>90% confidence)?\n\n"
+            "YES: factual questions, how-to, translation, calculation, etc.\n"
+            "NO: casual chat, opinions, greetings, messages between humans, vague messages\n\n"
+            f"Message: \"{text}\"\n\nReply ONLY YES or NO."
+        )
+        try:
+            result = self._triage_llm.send_message("You are a triage classifier.", prompt)
+            answer = result.strip().upper()
+            should = answer.startswith("YES")
+            log.info("LLM triage: %s → %s", text[:60], answer)
+            return should
+        except Exception:
+            log.debug("LLM triage failed", exc_info=True)
+            return False
+
+    def _create_triage_llm(self):
+        """Create a lightweight LLM client for group message triage."""
+        api_key = os.environ.get("CLAUDE_API_KEY", "")
+        if not api_key:
+            return None
+        try:
+            from ring1.llm_base import create_llm_client
+            return create_llm_client(
+                provider="anthropic", api_key=api_key,
+                model="claude-haiku-4-5-20251001", max_tokens=16,
+            )
+        except Exception:
+            log.debug("Failed to create triage LLM", exc_info=True)
+            return None
 
     # -- command handlers --
 
@@ -1406,8 +1460,13 @@ class TelegramBot:
                 updates = self._get_updates()
                 for update in updates:
                     try:
+                        msg_dbg = update.get("message", {})
+                        chat_dbg = msg_dbg.get("chat", {})
+                        log.info("Update received: chat_id=%s type=%s text=%s",
+                                 chat_dbg.get("id"), chat_dbg.get("type"),
+                                 (msg_dbg.get("text", "") or "")[:80])
                         if not self._is_authorized(update):
-                            log.debug("Ignoring unauthorized update")
+                            log.info("Ignoring unauthorized update from chat_id=%s", chat_dbg.get("id"))
                             continue
 
                         # --- callback_query (inline keyboard press) ---
@@ -1435,6 +1494,8 @@ class TelegramBot:
 
                         # Group filter: only respond to @mentions, replies to bot, or commands
                         if is_group and not self._should_respond_in_group(msg):
+                            log.info("Group msg filtered out (no mention/reply/cmd): chat_id=%s text=%s",
+                                     msg_chat_id, (msg.get("text", "") or "")[:80])
                             continue
 
                         caption = msg.get("caption", "")
