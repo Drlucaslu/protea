@@ -40,6 +40,12 @@ max_tool_rounds = 50
 [ring1.task_executor]
 prefer_local_skills = true   # match tasks to skills and recommend them to the LLM
 
+[ring1.task_api]
+enabled = true
+host = "127.0.0.1"
+port = 8877
+secret_env = "PROTEA_TASK_API_SECRET"
+
 [ring1.portal]
 enabled = false
 host = "127.0.0.1"

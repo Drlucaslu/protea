@@ -776,6 +776,19 @@ def _create_portal(project_root, cfg, skill_store, skill_runner):
     return _best_effort("Skill Portal", _factory)
 
 
+def _create_task_api(project_root, cfg, executor):
+    """Best-effort Task API creation."""
+    def _factory():
+        from ring1.task_api import create_task_api
+        registry = getattr(executor, "registry", None) if executor else None
+        api = create_task_api(cfg, registry, project_root)
+        if api:
+            api.start()
+            log.info("Task API started")
+        return api
+    return _best_effort("Task API", _factory)
+
+
 def _create_matrix_bot(project_root, state):
     """Best-effort Matrix bot creation."""
     def _factory():
@@ -1045,6 +1058,9 @@ def run(project_root: pathlib.Path) -> None:
             log.info("ProactiveLoop enabled (morning=%d, evening=%d)",
                      proactive_cfg.get("morning_hour", 9),
                      proactive_cfg.get("evening_hour", 21))
+
+    # Task API — HTTP endpoint for external bot delegation.
+    task_api = _create_task_api(project_root, cfg, executor)
 
     # Skill Portal — unified web dashboard.
     portal = _create_portal(project_root, cfg, skill_store, skill_runner)
@@ -1685,6 +1701,8 @@ def run(project_root: pathlib.Path) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
         commit_watcher.stop()
+        if task_api:
+            task_api.stop()
         if dashboard:
             dashboard.stop()
         if portal:
