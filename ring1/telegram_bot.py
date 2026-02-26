@@ -213,6 +213,26 @@ class TelegramBot:
             self._offset = updates[-1]["update_id"] + 1
         return updates
 
+    _TG_MSG_LIMIT = 4000  # Telegram hard limit ~4096, leave margin
+
+    def _split_message(self, text: str) -> list[str]:
+        """Split *text* into segments that fit within Telegram's message limit."""
+        limit = self._TG_MSG_LIMIT
+        if len(text) <= limit:
+            return [text]
+        segments: list[str] = []
+        while text:
+            if len(text) <= limit:
+                segments.append(text)
+                break
+            # Find last newline within limit for a clean break.
+            cut = text.rfind("\n", 0, limit)
+            if cut <= 0:
+                cut = limit  # no good break point — hard cut
+            segments.append(text[:cut])
+            text = text[cut:].lstrip("\n")
+        return segments
+
     def _send_reply(self, text: str, chat_id: str | None = None,
                      reply_to_message_id: int | None = None) -> None:
         """Send a text reply (fire-and-forget).
@@ -223,15 +243,19 @@ class TelegramBot:
             reply_to_message_id: If set, reply to this message (thread linking).
         """
         target = chat_id or self.chat_id
-        params: dict = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
-        if reply_to_message_id:
-            params["reply_to_message_id"] = reply_to_message_id
-        result = self._api_call("sendMessage", params)
-        if result is None:
-            # Markdown was rejected — retry as plain text.
-            params.pop("parse_mode", None)
-            params.pop("reply_to_message_id", None)  # might fail if original deleted
+        segments = self._split_message(text)
+        for i, seg in enumerate(segments):
+            if len(segments) > 1:
+                seg = f"[{i + 1}/{len(segments)}]\n{seg}"
+            params: dict = {"chat_id": target, "text": seg, "parse_mode": "Markdown"}
+            if reply_to_message_id:
+                params["reply_to_message_id"] = reply_to_message_id
             result = self._api_call("sendMessage", params)
+            if result is None:
+                # Markdown was rejected — retry as plain text.
+                params.pop("parse_mode", None)
+                params.pop("reply_to_message_id", None)  # might fail if original deleted
+                result = self._api_call("sendMessage", params)
 
         # 记录发送的消息以支持上下文追踪 (only for owner private chat)
         if result and result.get("ok") and (not chat_id or chat_id == self.chat_id):

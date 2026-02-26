@@ -455,9 +455,9 @@ def extract_python_code(response: str) -> str | None:
 
     Returns None if no valid code block is found.
     """
-    # Match ```python ... ``` blocks (non-greedy).
-    pattern = r"```python\s*\n(.*?)```"
-    match = re.search(pattern, response, re.DOTALL)
+    # Match ```python/```py/```Python ... ``` blocks (non-greedy).
+    pattern = r"```(?:python|py)\s*\n(.*?)```"
+    match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
     if match:
         code = match.group(1).strip()
         if code:
@@ -471,8 +471,8 @@ def extract_reflection(response: str) -> str | None:
     Looks for text between ``## Reflection`` and the first
     ````` ```python ````` code fence.  Returns ``None`` if no reflection found.
     """
-    pattern = r"## Reflection\s*\n(.*?)```python"
-    match = re.search(pattern, response, re.DOTALL)
+    pattern = r"## Reflection\s*\n(.*?)```(?:python|py)"
+    match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
     if match:
         text = match.group(1).strip()
         if text:
