@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import threading
+from unittest.mock import MagicMock, ANY
 
 from ring1.tools.send_file import make_send_file_tool
 
 
 class TestSendFileTool:
     """Test send_file tool behaviour."""
+
+    def setup_method(self):
+        # Clean up thread context to avoid test pollution.
+        for attr in ("task_chat_id", "reply_to_message_id"):
+            if hasattr(threading.current_thread(), attr):
+                delattr(threading.current_thread(), attr)
 
     def test_send_success(self, tmp_path):
         f = tmp_path / "report.pdf"
@@ -18,7 +25,7 @@ class TestSendFileTool:
 
         result = tool.execute({"file_path": str(f)})
         assert "File sent" in result
-        send_fn.assert_called_once_with(str(f), "")
+        send_fn.assert_called_once_with(str(f), "", "")
 
     def test_send_with_caption(self, tmp_path):
         f = tmp_path / "data.csv"
@@ -28,7 +35,7 @@ class TestSendFileTool:
 
         result = tool.execute({"file_path": str(f), "caption": "Your data"})
         assert "File sent" in result
-        send_fn.assert_called_once_with(str(f), "Your data")
+        send_fn.assert_called_once_with(str(f), "Your data", "")
 
     def test_file_not_found(self):
         send_fn = MagicMock()
@@ -110,4 +117,4 @@ class TestSendFileTool:
         tool = make_send_file_tool(send_fn)
 
         tool.execute({"file_path": str(f)})
-        send_fn.assert_called_once_with(str(f), "")
+        send_fn.assert_called_once_with(str(f), "", "")

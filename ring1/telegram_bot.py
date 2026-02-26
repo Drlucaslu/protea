@@ -283,7 +283,7 @@ class TelegramBot:
             "这次回答还行吗？", buttons,
         )
 
-    def _send_document(self, file_path: str, caption: str = "") -> bool:
+    def _send_document(self, file_path: str, caption: str = "", target_chat_id: str = "") -> bool:
         """Send a file to the authorized chat via sendDocument (multipart).
 
         Args:
@@ -313,7 +313,8 @@ class TelegramBot:
         # chat_id field
         parts.append(f"--{boundary}\r\n".encode())
         parts.append(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
-        parts.append(f"{self.chat_id}\r\n".encode())
+        chat_id_to_use = target_chat_id if target_chat_id else self.chat_id
+        parts.append(f"{chat_id_to_use}\r\n".encode())
 
         # caption field (optional)
         if caption:

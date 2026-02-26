@@ -704,6 +704,11 @@ class TaskExecutor:
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
+
+            # Store chat_id and reply_to_message_id in thread context for tools (fix routing bug)
+            import threading
+            threading.current_thread().task_chat_id = task_chat_id
+            threading.current_thread().reply_to_message_id = reply_to_id
             # LLM call with tool registry
             try:
                 if self.registry:
@@ -1325,9 +1330,9 @@ def create_executor(
 
     # Create subagent manager (needs registry, so we build in two steps)
     base_registry = create_default_registry(
-        workspace_path=workspace,
-        shell_timeout=shell_timeout,
+        workspace=workspace,
         reply_fn=reply_fn,
+        reply_fn_factory=reply_fn_factory,
         skill_store=skill_store,
         skill_runner=skill_runner,
         scheduled_store=scheduled_store,
@@ -1337,10 +1342,10 @@ def create_executor(
 
     # Rebuild registry with spawn tool included
     registry = create_default_registry(
-        workspace_path=workspace,
-        shell_timeout=shell_timeout,
+        workspace=workspace,
         reply_fn=reply_fn,
-        subagent_manager=subagent_mgr,
+        reply_fn_factory=reply_fn_factory,
+        spawn_fn=subagent_mgr,
         skill_store=skill_store,
         skill_runner=skill_runner,
         scheduled_store=scheduled_store,

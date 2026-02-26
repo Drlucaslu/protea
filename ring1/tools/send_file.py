@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import threading
 
 from ring1.tool_registry import Tool
 
@@ -39,8 +40,11 @@ def make_send_file_tool(send_file_fn) -> Tool:
         if file_size > _MAX_FILE_SIZE:
             return f"Error: file too large ({file_size / 1024 / 1024:.1f} MB > 50 MB limit)"
 
+        # Get chat_id from task context (set by TaskExecutor)
+        task_chat_id = getattr(threading.current_thread(), "task_chat_id", "")
+        
         try:
-            ok = send_file_fn(str(path), caption)
+            ok = send_file_fn(str(path), caption, task_chat_id)
         except Exception as exc:
             log.warning("send_file tool error: %s", exc)
             return f"Error sending file: {exc}"
