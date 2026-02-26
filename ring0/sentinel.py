@@ -1113,6 +1113,8 @@ def run(project_root: pathlib.Path) -> None:
     last_injected_gene_ids: list[int] = []
     last_attributed_task_id: int = 0
     directive_remaining_cycles: int = 0
+    consecutive_plateau_skips: int = 0  # Track how many times plateau suppressed evolution
+    _MAX_PLATEAU_AUTO_DIRECTIVES = 3   # Stop auto-directives after this many consecutive plateaus
 
     try:
         params = generate_params(generation, seed)
@@ -1308,21 +1310,27 @@ def run(project_root: pathlib.Path) -> None:
                 )
                 if not should_evo:
                     if plateaued and not pending_directive:
-                        auto_dir = _try_auto_directive(memory_store, user_profiler, project_root)
-                        if auto_dir:
-                            with state.lock:
-                                state.evolution_directive = auto_dir
-                            should_evo = True
-                            pending_directive = auto_dir
-                            log.info("Auto-directive: %s", auto_dir[:80])
+                        consecutive_plateau_skips += 1
+                        if consecutive_plateau_skips <= _MAX_PLATEAU_AUTO_DIRECTIVES:
+                            auto_dir = _try_auto_directive(memory_store, user_profiler, project_root)
+                            if auto_dir:
+                                with state.lock:
+                                    state.evolution_directive = auto_dir
+                                should_evo = True
+                                pending_directive = auto_dir
+                                log.info("Auto-directive (%d/%d): %s", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES, auto_dir[:80])
+                            else:
+                                log.info("Plateau, no auto-directive — skipping (%d/%d)", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES)
                         else:
-                            log.info("Plateau, no auto-directive — skipping")
+                            log.info("Plateau persisted %d times — hibernating (waiting for user directive or new task)", consecutive_plateau_skips)
                     elif not plateaued:
+                        consecutive_plateau_skips = 0  # Reset: no longer plateaued
                         log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
                                  eff_cooldown, skill_hit["ratio"] * 100)
                 if not should_evo:
                     evolved = False
                 else:
+                    consecutive_plateau_skips = 0  # Reset: evolution is proceeding
                     with state.lock:
                         directive = state.evolution_directive
                         if directive:
@@ -1615,6 +1623,7 @@ def run(project_root: pathlib.Path) -> None:
                          eff_cooldown, skill_hit["ratio"] * 100)
                 evolved = False
             else:
+                consecutive_plateau_skips = 0  # Reset: failure triggers fresh evolution
                 with state.lock:
                     directive = state.evolution_directive
                     if directive:
