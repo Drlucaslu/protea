@@ -171,7 +171,7 @@ class Evolver:
         # 6. Extract code.
         new_source = extract_python_code(response)
         if new_source is None:
-            log.error("No Python code block found in LLM response")
+            log.error("No Python code block found in LLM response (first 500 chars): %s", response[:500])
             return EvolutionResult(False, "No code block in response", "")
 
         # 7. Validate.
