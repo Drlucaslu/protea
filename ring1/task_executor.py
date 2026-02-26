@@ -505,6 +505,7 @@ class TaskExecutor:
         self._chat_history: list[tuple[float, str, str]] = []
         self._chat_history_max = 5
         self._chat_history_ttl = 600  # 10 minutes
+        self._last_chat_id: str = ""  # Track most recent chat_id for P1 context
 
     def _get_recent_history(self) -> list[tuple[str, str]]:
         """Return recent conversation pairs, pruning expired entries."""
@@ -595,6 +596,8 @@ class TaskExecutor:
         task_reply_fn = self.reply_fn
         reply_to_id = getattr(task, "reply_to_message_id", None)
         task_chat_id = getattr(task, "chat_id", "")
+        if task_chat_id:
+            self._last_chat_id = task_chat_id
         if self.reply_fn_factory and task_chat_id:
             task_reply_fn = self.reply_fn_factory(task_chat_id, reply_to_id)
         # Mark executing in store
@@ -1144,12 +1147,15 @@ class TaskExecutor:
         if not task_desc:
             return
 
-        log.info("P1 autonomous task triggered: %s", task_desc[:80])
-        self._execute_p1_task(task_desc)
+        log.info("P1 autonomous task triggered: %s (chat_id=%s)", task_desc[:80], self._last_chat_id or "default")
+        self._execute_p1_task(task_desc, chat_id=self._last_chat_id)
 
-    def _execute_p1_task(self, task_desc: str) -> None:
+    def _execute_p1_task(self, task_desc: str, chat_id: str = "") -> None:
         """Execute a P1 autonomous task and report via Telegram."""
         self.state.p1_active.set()
+        # Set thread context so tools (message, send_file) route correctly.
+        threading.current_thread().task_chat_id = chat_id
+        threading.current_thread().reply_to_message_id = None
         start = time.time()
         response = ""
         skills_used: list[str] = []
@@ -1262,8 +1268,14 @@ class TaskExecutor:
             report = f"[P1 Autonomous Work] {task_desc}\n\n{response}{footer}"
             if len(report) > _MAX_REPLY_LEN:
                 report = report[:_MAX_REPLY_LEN] + "\n... (truncated)"
+            p1_reply_fn = self.reply_fn
+            if self.reply_fn_factory and chat_id:
+                try:
+                    p1_reply_fn = self.reply_fn_factory(chat_id, None)
+                except Exception:
+                    pass
             try:
-                _send_segmented(self.reply_fn, report)
+                _send_segmented(p1_reply_fn, report)
             except Exception:
                 log.error("Failed to send P1 report", exc_info=True)
         finally:
