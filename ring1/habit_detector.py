@@ -521,7 +521,7 @@ class HabitDetector:
         return len(days) >= min_days
 
     def _content_similarity(self, task_a: dict, task_b: dict) -> float:
-        """Content similarity: prefer embedding cosine, fallback to Jaccard."""
+        """Content similarity via keyword Jaccard."""
         emb_a = task_a.get("embedding")
         emb_b = task_b.get("embedding")
         if emb_a and emb_b and isinstance(emb_a, list) and isinstance(emb_b, list):

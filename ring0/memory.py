@@ -2,14 +2,13 @@
 
 Records and queries experiential memories (reflections, observations,
 directives) across generations.  Supports tiered storage (hot/warm/cold),
-importance scoring, keyword search, and optional embedding-based semantic
-search.  Pure stdlib — no external dependencies.
+importance scoring, and keyword search.  Pure stdlib — no external
+dependencies.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import re
 import sqlite3
 
@@ -294,18 +293,6 @@ def _extract_keywords(content: str) -> str:
     return " ".join(keywords)
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors (pure stdlib)."""
-    if len(a) != len(b) or not a:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
 class MemoryStore(SQLiteStore):
     """Store and retrieve experiential memories in a local SQLite database."""
 
@@ -405,32 +392,6 @@ class MemoryStore(SQLiteStore):
 
         return False
 
-    _VECTOR_DEDUP_THRESHOLD = 0.95
-    _VECTOR_DEDUP_WINDOW = 50
-
-    def _is_vector_duplicate(
-        self,
-        embedding: list[float],
-        threshold: float = _VECTOR_DEDUP_THRESHOLD,
-        window: int = _VECTOR_DEDUP_WINDOW,
-    ) -> bool:
-        """Check if embedding is too similar to any recent non-archived entry."""
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT embedding FROM memory "
-                "WHERE embedding != '' AND tier != 'archive' "
-                "ORDER BY id DESC LIMIT ?",
-                (window,),
-            ).fetchall()
-        for row in rows:
-            try:
-                stored = json.loads(row["embedding"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if _cosine_similarity(embedding, stored) >= threshold:
-                return True
-        return False
-
     def add(
         self,
         generation: int,
@@ -476,56 +437,6 @@ class MemoryStore(SQLiteStore):
                 "(generation, entry_type, content, metadata, importance, tier, keywords) "
                 "VALUES (?, ?, ?, ?, ?, 'hot', ?)",
                 (generation, entry_type, content, meta_json, importance, keywords),
-            )
-            return cur.lastrowid  # type: ignore[return-value]
-
-    def add_with_embedding(
-        self,
-        generation: int,
-        entry_type: str,
-        content: str,
-        metadata: dict | None = None,
-        importance: float | None = None,
-        embedding: list[float] | None = None,
-    ) -> int:
-        """Insert a memory entry with an optional embedding vector.
-
-        Pipeline: noise filter → quality gate → dedup → insert.
-        Rejected entries return -1.
-        """
-        # PHASE 1: Noise detection (reject early)
-        if _is_system_noise(entry_type, content):
-            return -1  # Rejected: system noise
-
-        # PHASE 2: Quality scoring
-        if importance is None:
-            importance = _compute_importance(entry_type, content)
-
-        # PHASE 3: Minimum quality threshold (directives always pass)
-        if entry_type != "directive":
-            threshold = _TASK_MIN_QUALITY_SCORE if entry_type == "task" else _MIN_QUALITY_SCORE
-            if importance < threshold:
-                return -1  # Rejected: below quality threshold
-
-        # PHASE 4: Deduplication
-        if self._is_recent_duplicate(entry_type, content):
-            return -1  # Rejected: duplicate
-
-        # PHASE 5: Vector deduplication — reject semantically identical content.
-        if embedding:
-            if self._is_vector_duplicate(embedding):
-                return -1  # Rejected: vector duplicate
-
-        keywords = _extract_keywords(content)
-        meta_json = json.dumps(metadata or {})
-        emb_json = json.dumps(embedding) if embedding else ""
-        with self._connect() as con:
-            importance = self._apply_session_boost(con, entry_type, importance)
-            cur = con.execute(
-                "INSERT INTO memory "
-                "(generation, entry_type, content, metadata, importance, tier, keywords, embedding) "
-                "VALUES (?, ?, ?, ?, ?, 'hot', ?, ?)",
-                (generation, entry_type, content, meta_json, importance, keywords, emb_json),
             )
             return cur.lastrowid  # type: ignore[return-value]
 
@@ -600,51 +511,22 @@ class MemoryStore(SQLiteStore):
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
-    def search_similar(
-        self,
-        query_embedding: list[float],
-        limit: int = 5,
-        min_similarity: float = 0.3,
-    ) -> list[dict]:
-        """Vector similarity search across all entries with embeddings."""
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT * FROM memory WHERE embedding != ''",
-            ).fetchall()
-
-        results: list[tuple[float, dict]] = []
-        for row in rows:
-            d = self._row_to_dict(row)
-            try:
-                emb = json.loads(row["embedding"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            sim = _cosine_similarity(query_embedding, emb)
-            if sim >= min_similarity:
-                d["similarity"] = round(sim, 4)
-                results.append((sim, d))
-
-        results.sort(key=lambda x: x[0], reverse=True)
-        return [d for _, d in results[:limit]]
-
     def hybrid_search(
         self,
         keywords: list[str],
-        query_embedding: list[float] | None = None,
         limit: int = 5,
     ) -> list[dict]:
-        """Mixed search: keywords + vector similarity.
+        """Keyword-based search across all entries.
 
-        Score = 0.4 * keyword_score + 0.6 * vector_score (when embedding available).
-        Falls back to pure keyword search when no embedding is provided.
+        Score = fraction of query keywords found in entry keywords.
         """
-        if not keywords and query_embedding is None:
+        if not keywords:
             return []
 
         with self._connect() as con:
             rows = con.execute("SELECT * FROM memory ORDER BY id DESC").fetchall()
 
-        kw_set = {kw.lower() for kw in keywords} if keywords else set()
+        kw_set = {kw.lower() for kw in keywords}
 
         scored: list[tuple[float, dict]] = []
         for row in rows:
@@ -656,28 +538,11 @@ class MemoryStore(SQLiteStore):
             kw_score = 0.0
             if kw_set:
                 matches = len(kw_set & entry_kw_set)
-                kw_score = matches / len(kw_set) if kw_set else 0.0
+                kw_score = matches / len(kw_set)
 
-            # Vector score.
-            vec_score = 0.0
-            has_embedding = False
-            if query_embedding and row["embedding"]:
-                try:
-                    emb = json.loads(row["embedding"])
-                    vec_score = _cosine_similarity(query_embedding, emb)
-                    has_embedding = True
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Combined score.
-            if has_embedding:
-                score = 0.4 * kw_score + 0.6 * vec_score
-            else:
-                score = kw_score
-
-            if score > 0:
-                d["search_score"] = round(score, 4)
-                scored.append((score, d))
+            if kw_score > 0:
+                d["search_score"] = round(kw_score, 4)
+                scored.append((kw_score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
@@ -685,15 +550,14 @@ class MemoryStore(SQLiteStore):
     def recall(
         self,
         keywords: list[str],
-        query_embedding: list[float] | None = None,
         limit: int = 2,
     ) -> list[dict]:
         """Search only the archive tier for related old memories.
 
-        Uses hybrid search logic (keyword + vector) restricted to archive.
+        Uses keyword search restricted to archive.
         Returns entries with ``recalled = True`` marker, or empty list.
         """
-        if not keywords and query_embedding is None:
+        if not keywords:
             return []
 
         with self._connect() as con:
@@ -704,7 +568,7 @@ class MemoryStore(SQLiteStore):
         if not rows:
             return []
 
-        kw_set = {kw.lower() for kw in keywords} if keywords else set()
+        kw_set = {kw.lower() for kw in keywords}
 
         scored: list[tuple[float, dict]] = []
         for row in rows:
@@ -718,27 +582,10 @@ class MemoryStore(SQLiteStore):
                 matches = len(kw_set & entry_kw_set)
                 kw_score = matches / len(kw_set)
 
-            # Vector score.
-            vec_score = 0.0
-            has_embedding = False
-            if query_embedding and row["embedding"]:
-                try:
-                    emb = json.loads(row["embedding"])
-                    vec_score = _cosine_similarity(query_embedding, emb)
-                    has_embedding = True
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Combined score (same weights as hybrid_search).
-            if has_embedding:
-                score = 0.4 * kw_score + 0.6 * vec_score
-            else:
-                score = kw_score
-
-            if score > 0:
-                d["search_score"] = round(score, 4)
+            if kw_score > 0:
+                d["search_score"] = round(kw_score, 4)
                 d["recalled"] = True
-                scored.append((score, d))
+                scored.append((kw_score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
@@ -837,67 +684,6 @@ class MemoryStore(SQLiteStore):
             )
             return len(ids)
 
-    _BATCH_VECTOR_DEDUP_THRESHOLD = 0.85
-
-    def deduplicate_by_vector(
-        self,
-        threshold: float = _BATCH_VECTOR_DEDUP_THRESHOLD,
-    ) -> int:
-        """Archive semantically duplicate non-archived entries by cosine similarity.
-
-        For each similar pair, archive the one with lower importance (ties: keep newer).
-        Returns count archived.
-        """
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT id, importance, embedding FROM memory "
-                "WHERE embedding != '' AND tier != 'archive' "
-                "ORDER BY id DESC",
-            ).fetchall()
-
-        if len(rows) < 2:
-            return 0
-
-        # Parse embeddings up front.
-        entries: list[tuple[int, float, list[float]]] = []
-        for row in rows:
-            try:
-                emb = json.loads(row["embedding"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            entries.append((row["id"], row["importance"], emb))
-
-        to_archive: set[int] = set()
-        for i in range(len(entries)):
-            if entries[i][0] in to_archive:
-                continue
-            for j in range(i + 1, len(entries)):
-                if entries[j][0] in to_archive:
-                    continue
-                sim = _cosine_similarity(entries[i][2], entries[j][2])
-                if sim >= threshold:
-                    # Archive the one with lower importance; ties: archive older (higher j = lower id).
-                    if entries[j][1] < entries[i][1]:
-                        to_archive.add(entries[j][0])
-                    elif entries[j][1] > entries[i][1]:
-                        to_archive.add(entries[i][0])
-                    else:
-                        # Same importance — archive the older one (entries ordered id DESC,
-                        # so j has the smaller/older id).
-                        to_archive.add(entries[j][0])
-
-        if not to_archive:
-            return 0
-
-        ids = list(to_archive)
-        placeholders = ",".join("?" * len(ids))
-        with self._connect() as con:
-            con.execute(
-                f"UPDATE memory SET tier = 'archive' WHERE id IN ({placeholders})",
-                ids,
-            )
-        return len(ids)
-
     def compact(self, current_generation: int, curator=None) -> dict:
         """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup.
 
@@ -907,11 +693,10 @@ class MemoryStore(SQLiteStore):
 
         Returns dict with counts: hot_to_warm, warm_to_cold, deleted, llm_curated.
         """
-        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0, "vector_deduped": 0}
+        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0}
 
         # --- Phase 0: Deduplication ---
         result["deduped"] = self.deduplicate()
-        result["vector_deduped"] = self.deduplicate_by_vector()
 
         # --- Phase 1: Hot → Warm (rule-driven) ---
         result["hot_to_warm"] = self._compact_hot_to_warm(current_generation)
@@ -1104,7 +889,6 @@ class MemoryStore(SQLiteStore):
         current_task: str,
         user_profile: dict,
         limit: int = 3,
-        query_embedding: list[float] | None = None,
     ) -> list[dict]:
         """Cross-domain associative search: find memories from *different* domains
         that might inspire connections with the current task.
@@ -1112,13 +896,12 @@ class MemoryStore(SQLiteStore):
         Strategy:
         1. Determine the current task's primary category from user_profile.
         2. Search memories tagged with OTHER high-weight categories.
-        3. Rank by embedding similarity (if available) or keyword overlap.
+        3. Rank by keyword overlap.
 
         Args:
             current_task: The current task text.
             user_profile: Dict with 'categories' mapping category → weight.
             limit: Max results to return.
-            query_embedding: Optional embedding of the current task.
 
         Returns:
             List of memory dicts with added 'cross_domain_score' field.
@@ -1160,7 +943,6 @@ class MemoryStore(SQLiteStore):
         # Use hybrid search across all tiers.
         candidates = self.hybrid_search(
             keywords=search_keywords,
-            query_embedding=query_embedding,
             limit=limit * 3,
         )
 
@@ -1189,18 +971,16 @@ class MemoryStore(SQLiteStore):
         self,
         reference_text: str,
         limit: int = 3,
-        query_embedding: list[float] | None = None,
     ) -> list[dict]:
         """Fuzzy reference recall: find memories matching vague references
         like "上次那个XX" or "the thing about YY".
 
         Searches ALL tiers (including cold and archive) to find old memories.
-        Uses hybrid search (keyword + embedding) for best results.
+        Uses keyword + content matching for best results.
 
         Args:
             reference_text: The user's vague reference text.
             limit: Max results to return.
-            query_embedding: Optional embedding for semantic matching.
 
         Returns:
             List of memory dicts with 'recall_score' field, most relevant first.
@@ -1213,7 +993,7 @@ class MemoryStore(SQLiteStore):
         # Filter very short tokens.
         keywords = [kw for kw in keywords if len(kw) >= 2]
 
-        if not keywords and query_embedding is None:
+        if not keywords:
             return []
 
         # Search across ALL tiers (including archive).
@@ -1244,22 +1024,8 @@ class MemoryStore(SQLiteStore):
             content_hits = sum(1 for kw in keywords if kw in content_lower)
             content_score = content_hits / len(keywords) if keywords else 0.0
 
-            # Vector score.
-            vec_score = 0.0
-            has_embedding = False
-            if query_embedding and row["embedding"]:
-                try:
-                    emb = json.loads(row["embedding"])
-                    vec_score = _cosine_similarity(query_embedding, emb)
-                    has_embedding = True
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Combined score: keyword + content + vector.
-            if has_embedding:
-                score = 0.25 * kw_score + 0.25 * content_score + 0.5 * vec_score
-            else:
-                score = 0.4 * kw_score + 0.6 * content_score
+            # Combined score: keyword + content.
+            score = 0.4 * kw_score + 0.6 * content_score
 
             if score > 0.1:  # Minimum threshold.
                 d["recall_score"] = round(score, 4)

@@ -58,11 +58,11 @@ class Ring1Config(NamedTuple):
             max_tokens = self.llm_max_tokens or self.claude_max_tokens
         else:
             env_var = self.llm_api_key_env
-            if not env_var:
+            if not env_var and not self.llm_api_url:
                 raise LLMError(
                     f"llm_api_key_env must be set for provider {provider!r}"
                 )
-            api_key = os.environ.get(env_var, "")
+            api_key = os.environ.get(env_var, "") if env_var else ""
             model = self.llm_model
             max_tokens = self.llm_max_tokens or self.claude_max_tokens
 

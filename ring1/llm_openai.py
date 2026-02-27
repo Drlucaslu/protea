@@ -42,9 +42,7 @@ class OpenAIClient(LLMClient):
         max_tokens: int = 4096,
         api_url: str = "https://api.openai.com/v1/chat/completions",
     ) -> None:
-        if not api_key:
-            raise LLMError("API key is not set")
-        self.api_key = api_key
+        self.api_key = api_key or ""
         self.model = model
         self.max_tokens = max_tokens
         self.api_url = api_url
@@ -56,10 +54,9 @@ class OpenAIClient(LLMClient):
     def _call_api(self, payload: dict) -> dict:
         """POST *payload* to the chat completions endpoint with retry."""
         data = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         return self._call_api_with_retry(self.api_url, data, headers)
 
     # ------------------------------------------------------------------

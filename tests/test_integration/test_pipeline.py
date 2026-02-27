@@ -68,18 +68,6 @@ class TestTaskToMemory:
         rid = memory.add(1, "task", "好的")
         assert rid == -1  # Below quality gate (importance 0.1 < 0.25)
 
-    def test_task_with_embedding(self, tmp_path):
-        """Tasks can be stored with embeddings for vector search."""
-        _, memory, *_ = _make_db(tmp_path)
-        emb = [0.1, 0.2, 0.3]
-        rid = memory.add_with_embedding(
-            1, "task", "帮我搜索关于机器学习的最新论文，要关注 transformer 架构的改进",
-            embedding=emb,
-        )
-        assert rid > 0
-        results = memory.search_similar(emb, limit=1)
-        assert len(results) == 1
-
 
 # ---------------------------------------------------------------------------
 # Stage 2: Memory → Profile

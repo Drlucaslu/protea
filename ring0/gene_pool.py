@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import json
 import logging
-import math
 import pathlib
 import re
 import sqlite3
@@ -47,29 +45,16 @@ _STOPWORDS = frozenset({
 })
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b) or not a:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
 class GenePool(SQLiteStore):
     """Top-N gene storage for evolutionary inheritance."""
 
     _TABLE_NAME = "gene_pool"
     _CREATE_TABLE = _CREATE_TABLE
 
-    def __init__(self, db_path: pathlib.Path, max_size: int = 100, embedding_provider=None) -> None:
+    def __init__(self, db_path: pathlib.Path, max_size: int = 100) -> None:
         self.max_size = max_size
-        self.embedding_provider = embedding_provider
         super().__init__(db_path)
         self._backfill_tags()
-        self._backfill_embeddings()
 
     def _migrate(self, con: sqlite3.Connection) -> None:
         migrations = [
@@ -117,28 +102,6 @@ class GenePool(SQLiteStore):
             if rows:
                 log.info("Gene pool: backfilled tags for %d genes", len(rows))
 
-    def _backfill_embeddings(self) -> None:
-        """Compute and store embeddings for existing genes that lack them."""
-        if not self.embedding_provider:
-            return
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT id, gene_summary FROM gene_pool "
-                "WHERE (embedding IS NULL OR embedding = '') AND gene_summary != ''"
-            ).fetchall()
-            for row in rows:
-                try:
-                    vecs = self.embedding_provider.embed([row["gene_summary"]])
-                    if vecs:
-                        con.execute(
-                            "UPDATE gene_pool SET embedding = ? WHERE id = ?",
-                            (json.dumps(vecs[0]), row["id"]),
-                        )
-                except Exception:
-                    pass
-            if rows:
-                log.info("Gene pool: backfilled embeddings for %d genes", len(rows))
-
     def add(self, generation: int, score: float, source_code: str, detail: str | None = None) -> bool:
         """Extract gene summary from source_code and store if score qualifies.
 
@@ -150,15 +113,6 @@ class GenePool(SQLiteStore):
             return False
 
         tags_str = " ".join(self.extract_tags(gene_summary))
-
-        embedding_json = ""
-        if self.embedding_provider:
-            try:
-                vecs = self.embedding_provider.embed([gene_summary])
-                if vecs:
-                    embedding_json = json.dumps(vecs[0])
-            except Exception:
-                pass
 
         with self._connect() as con:
             # Check blacklist (tombstoned genes can never be re-added).
@@ -192,8 +146,8 @@ class GenePool(SQLiteStore):
                             # Better variant — replace, preserve hit_count.
                             con.execute(
                                 "UPDATE gene_pool SET generation = ?, score = ?, "
-                                "source_hash = ?, gene_summary = ?, tags = ?, embedding = ? WHERE id = ?",
-                                (generation, score, source_hash, gene_summary, tags_str, embedding_json, row["id"]),
+                                "source_hash = ?, gene_summary = ?, tags = ? WHERE id = ?",
+                                (generation, score, source_hash, gene_summary, tags_str, row["id"]),
                             )
                             log.info(
                                 "Gene pool: replaced similar gene %d (%.2f→%.2f, jaccard=%.2f)",
@@ -211,9 +165,9 @@ class GenePool(SQLiteStore):
 
             if count < self.max_size:
                 con.execute(
-                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags, embedding) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (generation, score, source_hash, gene_summary, tags_str, embedding_json),
+                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (generation, score, source_hash, gene_summary, tags_str),
                 )
                 log.info("Gene pool: added gen-%d (score=%.2f, pool=%d/%d)",
                          generation, score, count + 1, self.max_size)
@@ -226,9 +180,9 @@ class GenePool(SQLiteStore):
             if min_row and score > min_row["score"]:
                 con.execute("DELETE FROM gene_pool WHERE id = ?", (min_row["id"],))
                 con.execute(
-                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags, embedding) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (generation, score, source_hash, gene_summary, tags_str, embedding_json),
+                    "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (generation, score, source_hash, gene_summary, tags_str),
                 )
                 log.info("Gene pool: replaced lowest (%.2f) with gen-%d (score=%.2f)",
                          min_row["score"], generation, score)
@@ -291,27 +245,25 @@ class GenePool(SQLiteStore):
         self,
         context: str,
         n: int = 3,
-        query_embedding: list[float] | None = None,
         min_semantic: float = 0.0,
     ) -> list[dict]:
         """Return top N genes by hybrid relevance score.
 
-        Scores each gene by tag overlap, embedding cosine similarity,
-        fitness score, and task hit count.  No fallback needed — the
-        unified score always produces a meaningful ranking.
+        Scores each gene by tag overlap, fitness score, and task hit
+        count.  No fallback needed — the unified score always produces
+        a meaningful ranking.
 
         Args:
-            min_semantic: Minimum semantic score (tag overlap * 2 +
-                cosine_sim * 3) required.  Genes below this threshold
-                are excluded.  Default 0.0 keeps backward-compatible
-                behaviour.
+            min_semantic: Minimum semantic score (tag overlap * 2)
+                required.  Genes below this threshold are excluded.
+                Default 0.0 keeps backward-compatible behaviour.
         """
         context_tags = set(self.extract_tags(context))
 
         with self._connect() as con:
             rows = con.execute(
                 "SELECT id, generation, score, gene_summary, tags, hit_count, last_hit_gen, "
-                "task_hit_count, last_task_hit_gen, total_task_hits, embedding "
+                "task_hit_count, last_task_hit_gen, total_task_hits "
                 "FROM gene_pool"
             ).fetchall()
 
@@ -328,16 +280,7 @@ class GenePool(SQLiteStore):
             # Tag overlap score
             overlap = len(context_tags & gene_tags) if context_tags else 0
 
-            # Embedding cosine similarity score
-            cos_sim = 0.0
-            if query_embedding and gene.get("embedding"):
-                try:
-                    gene_emb = json.loads(gene["embedding"])
-                    cos_sim = _cosine_similarity(query_embedding, gene_emb)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            semantic = overlap * 2 + cos_sim * 3
+            semantic = overlap * 2
             if semantic < min_semantic:
                 continue
 
@@ -348,10 +291,8 @@ class GenePool(SQLiteStore):
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # Strip embedding from returned dicts (large, not needed by callers)
         results = []
         for relevance, gene in scored[:n]:
-            gene.pop("embedding", None)
             gene["_relevance"] = relevance
             results.append(gene)
         return results
