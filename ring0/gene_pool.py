@@ -51,7 +51,7 @@ class GenePool(SQLiteStore):
     _TABLE_NAME = "gene_pool"
     _CREATE_TABLE = _CREATE_TABLE
 
-    def __init__(self, db_path: pathlib.Path, max_size: int = 100) -> None:
+    def __init__(self, db_path: pathlib.Path, max_size: int = 200) -> None:
         self.max_size = max_size
         super().__init__(db_path)
         self._backfill_tags()
@@ -483,6 +483,23 @@ class GenePool(SQLiteStore):
                 )
                 decayed += 1
             return decayed
+
+    def purge_zombies(self) -> int:
+        """Delete genes at decay floor (score <= 0.10) with no task hits.
+
+        These genes have never proven user value and have fully decayed.
+        They are permanently removed (not blacklisted) to free slots.
+        Returns number of genes purged.
+        """
+        with self._connect() as con:
+            cursor = con.execute(
+                "DELETE FROM gene_pool WHERE score <= 0.10 "
+                "AND (total_task_hits IS NULL OR total_task_hits = 0)"
+            )
+            purged = cursor.rowcount
+            if purged:
+                log.info("Gene pool: purged %d zombie genes (score<=0.10, no task hits)", purged)
+            return purged
 
     def backfill(self, skill_store) -> int:
         """One-time backfill from existing crystallized skills.

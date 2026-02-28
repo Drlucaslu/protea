@@ -959,6 +959,65 @@ if __name__ == "__main__":
         assert gp.count() == 2  # both kept
 
 
+class TestMaxSizeDefault:
+    def test_max_size_default_200(self, tmp_path):
+        db = tmp_path / "test.db"
+        gp = GenePool(db)
+        assert gp.max_size == 200
+
+
+class TestPurgeZombies:
+    def test_purge_zombies_removes_floor_genes(self, tmp_path):
+        """Genes at score 0.10 with 0 task_hits get purged."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.10, SAMPLE_SOURCE + "\n# zombie1\n")
+        assert gp.count() == 1
+        purged = gp.purge_zombies()
+        assert purged == 1
+        assert gp.count() == 0
+
+    def test_purge_zombies_keeps_valued_genes(self, tmp_path):
+        """Genes at score 0.10 with task_hits > 0 survive."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.10, SAMPLE_SOURCE + "\n# valued1\n")
+        gene_id = gp.get_top(1)[0]["id"]
+        gp.record_task_hits([gene_id], generation=5)
+        purged = gp.purge_zombies()
+        assert purged == 0
+        assert gp.count() == 1
+
+    def test_purge_zombies_keeps_above_floor(self, tmp_path):
+        """Genes at score 0.11+ are not purged even with 0 task_hits."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        gp.add(1, 0.11, SAMPLE_SOURCE + "\n# above_floor\n")
+        purged = gp.purge_zombies()
+        assert purged == 0
+        assert gp.count() == 1
+
+    def test_purge_zombies_mixed(self, tmp_path):
+        """Only zombies are purged; healthy genes survive."""
+        db = tmp_path / "test.db"
+        gp = GenePool(db, max_size=10)
+        # Zombie: floor score, no task hits
+        gp.add(1, 0.10, DISTINCT_SOURCES[0])
+        # Healthy: above floor
+        gp.add(2, 0.50, DISTINCT_SOURCES[1])
+        # Valued: floor score but has task hits
+        gp.add(3, 0.10, DISTINCT_SOURCES[2])
+        valued_id = [g["id"] for g in gp.get_top(0) if g["generation"] == 3][0]
+        gp.record_task_hits([valued_id], generation=5)
+
+        assert gp.count() == 3
+        purged = gp.purge_zombies()
+        assert purged == 1
+        assert gp.count() == 2
+        scores = sorted([g["score"] for g in gp.get_top(0)])
+        assert 0.50 in scores
+
+
 class TestHypothesisTracking:
     def test_record_and_close_hypothesis(self, tmp_path):
         """Basic flow: record hypotheses, close with outcome, verify data."""

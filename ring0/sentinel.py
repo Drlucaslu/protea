@@ -1001,6 +1001,15 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
 
+    # Purge zombie genes (at decay floor with no task hits).
+    if gene_pool:
+        try:
+            purged = gene_pool.purge_zombies()
+            if purged:
+                log.info("Gene pool: purged %d zombie genes", purged)
+        except Exception as exc:
+            log.debug("Gene pool zombie purge failed (non-fatal): %s", exc)
+
     # Backfill skill lineage (one-time heuristic).
     lineage_backfilled = 0
     if skill_store and gene_pool:
