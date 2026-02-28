@@ -92,7 +92,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
@@ -120,7 +121,7 @@ class TestEvolver:
         fitness = _make_fitness()
 
         from ring1.llm_base import LLMError
-        config.get_llm_client.return_value.send_message.side_effect = LLMError("timeout")
+        config.get_llm_client.return_value.send_message_ex.side_effect = LLMError("timeout")
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
@@ -135,7 +136,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = "Sorry, no code today."
+        config.get_llm_client.return_value.send_message_ex.return_value = ("Sorry, no code today.", {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
@@ -151,7 +153,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = bad_code
+        config.get_llm_client.return_value.send_message_ex.return_value = (bad_code, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=0, params={}, survived=True)
 
@@ -167,7 +170,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         # Use adapt intent so blast radius gate allows full rewrite.
         result = evolver.evolve(
@@ -189,7 +193,8 @@ class TestEvolver:
         config = _make_config(max_prompt_history=7)
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         evolver.evolve(ring2, generation=3, params={}, survived=True)
 
@@ -212,7 +217,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -234,7 +240,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -256,7 +263,8 @@ class TestEvolver:
         fitness = _make_fitness()
         memories = [{"generation": 1, "entry_type": "observation", "content": "test"}]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -282,7 +290,8 @@ class TestEvolver:
         fitness = _make_fitness()
         memory_store = MagicMock()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness, memory_store=memory_store)
         result = evolver.evolve(ring2, generation=5, params={}, survived=True)
 
@@ -302,7 +311,8 @@ class TestEvolver:
         fitness = _make_fitness()
         memory_store = MagicMock()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness, memory_store=memory_store)
         evolver.evolve(ring2, generation=1, params={}, survived=True)
 
@@ -321,7 +331,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)  # no memory_store
         result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
@@ -338,7 +349,8 @@ class TestEvolver:
         fitness = _make_fitness()
         task_history = [{"content": "test task"}]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -360,7 +372,8 @@ class TestEvolver:
         fitness = _make_fitness()
         skills = [{"name": "greet", "description": "Greeting"}]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -381,7 +394,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -403,7 +417,8 @@ class TestEvolver:
         fitness = _make_fitness()
         crash_logs = [{"generation": 1, "content": "Gen 1 died."}]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -424,7 +439,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -447,7 +463,8 @@ class TestEvolver:
             {"generation": 5, "score": 0.90, "gene_summary": "class Foo: pass"},
         ]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -468,7 +485,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -493,7 +511,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
@@ -512,7 +531,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
@@ -530,7 +550,8 @@ class TestEvolver:
         fitness = _make_fitness()
         caps = [{"name": "test_cap", "description": "d", "dependencies": [], "usage_count": 1}]
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -550,7 +571,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -571,7 +593,8 @@ class TestEvolver:
         fitness = _make_fitness()
         hit_summary = {"total": 10, "skill": 7, "ratio": 0.7, "top_skills": {"s1": 5}}
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -591,7 +614,8 @@ class TestEvolver:
         config = _make_config()
         fitness = _make_fitness()
 
-        config.get_llm_client.return_value.send_message.return_value = llm_response
+        config.get_llm_client.return_value.send_message_ex.return_value = (llm_response, {"stop_reason": "end_turn"})
+        config.get_llm_client.return_value.last_usage = {"input_tokens": 0, "output_tokens": 0}
         with patch("ring1.evolver.build_evolution_prompt") as mock_prompt:
             mock_prompt.return_value = ("system", "user")
             evolver = Evolver(config, fitness)
@@ -599,3 +623,126 @@ class TestEvolver:
 
         call_kwargs = mock_prompt.call_args
         assert call_kwargs[1].get("skill_hit_summary") is None
+
+
+class TestTruncationDetection:
+    """Tests for truncation detection and compact retry logic."""
+
+    def _setup(self, tmp_path):
+        ring2 = tmp_path / "ring2"
+        ring2.mkdir()
+        (ring2 / "main.py").write_text(VALID_SOURCE)
+        config = _make_config()
+        fitness = _make_fitness()
+        return ring2, config, fitness
+
+    def test_truncated_response_triggers_compact_retry(self, tmp_path):
+        """When send_message_ex returns max_tokens and no code, retry with compact."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        truncated_response = "## Reflection\nAnalyzing the code structure and..."
+        compact_response = f"```python\n{VALID_SOURCE}```"
+
+        client = config.get_llm_client.return_value
+        client.send_message_ex.side_effect = [
+            (truncated_response, {"stop_reason": "max_tokens"}),
+            (compact_response, {"stop_reason": "end_turn"}),
+        ]
+        client.last_usage = {"input_tokens": 100, "output_tokens": 50}
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert client.send_message_ex.call_count == 2
+
+    def test_normal_no_code_does_not_retry(self, tmp_path):
+        """When stop_reason=end_turn and no code, do not retry — just fail."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        client = config.get_llm_client.return_value
+        client.send_message_ex.return_value = (
+            "Sorry, I cannot generate code today.",
+            {"stop_reason": "end_turn"},
+        )
+        client.last_usage = {"input_tokens": 100, "output_tokens": 50}
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is False
+        assert "No code block" in result.reason
+        assert client.send_message_ex.call_count == 1
+
+    def test_truncated_but_has_code_succeeds(self, tmp_path):
+        """If truncated but code was still extracted, no retry needed."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        response_with_code = f"## Reflection\nShort.\n\n```python\n{VALID_SOURCE}```"
+
+        client = config.get_llm_client.return_value
+        client.send_message_ex.return_value = (
+            response_with_code,
+            {"stop_reason": "max_tokens"},
+        )
+        client.last_usage = {"input_tokens": 100, "output_tokens": 50}
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert client.send_message_ex.call_count == 1
+
+    def test_compact_retry_also_truncated(self, tmp_path):
+        """Both attempts truncated — log error and fail gracefully."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        truncated = "Analyzing the code..."
+
+        client = config.get_llm_client.return_value
+        client.send_message_ex.side_effect = [
+            (truncated, {"stop_reason": "max_tokens"}),
+            (truncated, {"stop_reason": "max_tokens"}),
+        ]
+        client.last_usage = {"input_tokens": 100, "output_tokens": 50}
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is False
+        assert "compact retry" in result.reason
+        assert client.send_message_ex.call_count == 2
+
+    def test_compact_retry_aggregates_usage(self, tmp_path):
+        """Token usage from both attempts should be aggregated."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        truncated = "Analyzing..."
+        compact_response = f"```python\n{VALID_SOURCE}```"
+
+        client = config.get_llm_client.return_value
+        # Return different usage on each call
+        usage_sequence = [
+            {"input_tokens": 5000, "output_tokens": 3000},
+            {"input_tokens": 2000, "output_tokens": 4000},
+        ]
+        call_count = [0]
+
+        def side_effect(*args, **kwargs):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 0:
+                return (truncated, {"stop_reason": "max_tokens"})
+            return (compact_response, {"stop_reason": "end_turn"})
+
+        client.send_message_ex.side_effect = side_effect
+        type(client).last_usage = property(
+            lambda self: usage_sequence[min(call_count[0] - 1, 1)]
+        )
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert result.metadata["llm_usage"]["input_tokens"] == 7000
+        assert result.metadata["llm_usage"]["output_tokens"] == 7000

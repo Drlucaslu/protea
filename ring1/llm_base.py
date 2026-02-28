@@ -154,6 +154,21 @@ class LLMClient(abc.ABC):
     def send_message(self, system_prompt: str, user_message: str) -> str:
         """Send a message and return the assistant's text response."""
 
+    def send_message_ex(
+        self, system_prompt: str, user_message: str,
+        max_tokens: int | None = None,
+    ) -> tuple[str, dict]:
+        """Like send_message but returns (text, metadata) with stop_reason.
+
+        metadata keys:
+          - stop_reason: "end_turn" | "max_tokens" | "error" | "timeout"
+
+        Default implementation wraps send_message() for backward compat.
+        Subclasses should override to return the real stop_reason.
+        """
+        text = self.send_message(system_prompt, user_message)
+        return text, {"stop_reason": "end_turn"}
+
     @abc.abstractmethod
     def send_message_with_tools(
         self,

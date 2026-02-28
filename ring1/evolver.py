@@ -149,10 +149,10 @@ class Evolver:
             rejected_directions=rejected_directions,
         )
 
-        # 4. Call Claude API.
+        # 4. Call LLM API (with truncation detection).
         try:
             client = self._get_client()
-            response = client.send_message(system_prompt, user_message)
+            response, meta = client.send_message_ex(system_prompt, user_message)
             llm_usage = client.last_usage
         except LLMError as exc:
             log.error("LLM call failed: %s", exc)
@@ -178,8 +178,46 @@ class Evolver:
                 log.info("Capability proposal detected: %s (no deps — stdlib only)",
                          capability_proposal.get("name"))
 
-        # 6. Extract code.
+        # 6. Extract code (with compact retry on truncation).
         new_source = extract_python_code(response)
+        if new_source is None and meta.get("stop_reason") == "max_tokens":
+            log.warning(
+                "Evolution truncated (stop_reason=max_tokens), "
+                "retrying with compact prompt"
+            )
+            system_compact, user_compact = build_evolution_prompt(
+                current_source=current_source,
+                fitness_history=fitness_history,
+                best_performers=best_performers,
+                params=params,
+                generation=generation,
+                survived=survived,
+                directive=directive,
+                compact_mode=True,
+            )
+            try:
+                response, meta = client.send_message_ex(
+                    system_compact, user_compact,
+                )
+                retry_usage = client.last_usage
+                llm_usage = {
+                    "input_tokens": llm_usage["input_tokens"] + retry_usage["input_tokens"],
+                    "output_tokens": llm_usage["output_tokens"] + retry_usage["output_tokens"],
+                }
+            except LLMError as exc:
+                log.error("Compact retry LLM call failed: %s", exc)
+                return EvolutionResult(False, f"LLM error on compact retry: {exc}", "")
+            new_source = extract_python_code(response)
+            if new_source is None:
+                log.error(
+                    "Evolution failed even with compact prompt "
+                    "(stop_reason=%s, first 500 chars): %s",
+                    meta.get("stop_reason"), response[:500],
+                )
+                return EvolutionResult(
+                    False, "No code block in response (even after compact retry)", "",
+                )
+
         if new_source is None:
             log.error("No Python code block found in LLM response (first 500 chars): %s", response[:500])
             return EvolutionResult(False, "No code block in response", "")

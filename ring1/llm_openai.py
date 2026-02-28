@@ -79,6 +79,31 @@ class OpenAIClient(LLMClient):
         self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
         return self._extract_text(body)
 
+    def send_message_ex(
+        self, system_prompt: str, user_message: str,
+        max_tokens: int | None = None,
+    ) -> tuple[str, dict]:
+        """Send a message and return (text, metadata) with stop_reason."""
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        body = self._call_api(payload)
+        self._reset_usage()
+        usage = body.get("usage", {})
+        self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        choice = body.get("choices", [{}])[0]
+        text = choice.get("message", {}).get("content")
+        if not text:
+            raise LLMError("No text content in API response")
+        finish = choice.get("finish_reason", "stop")
+        stop_reason = "max_tokens" if finish == "length" else "end_turn"
+        return text, {"stop_reason": stop_reason}
+
     # ------------------------------------------------------------------
     # Public: message with tool-call loop
     # ------------------------------------------------------------------

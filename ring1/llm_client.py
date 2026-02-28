@@ -71,6 +71,31 @@ class ClaudeClient(LLMClient):
                 return block["text"]
         raise LLMError("No text content in API response")
 
+    def send_message_ex(
+        self, system_prompt: str, user_message: str,
+        max_tokens: int | None = None,
+    ) -> tuple[str, dict]:
+        """Send a message and return (text, metadata) with stop_reason."""
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        body = self._call_api(payload)
+        self._reset_usage()
+        usage = body.get("usage", {})
+        self._add_usage(usage.get("input_tokens", 0), usage.get("output_tokens", 0))
+        text = ""
+        for block in body.get("content", []):
+            if block.get("type") == "text":
+                text = block["text"]
+                break
+        if not text:
+            raise LLMError("No text content in API response")
+        stop_reason = body.get("stop_reason", "end_turn")
+        return text, {"stop_reason": stop_reason}
+
     # ------------------------------------------------------------------
     # Public: message with tool_use loop
     # ------------------------------------------------------------------

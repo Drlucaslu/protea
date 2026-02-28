@@ -168,8 +168,37 @@ def build_evolution_prompt(
     evolution_direction: str = "",
     accepted_capabilities: list[dict] | None = None,
     rejected_directions: list[dict] | None = None,
+    compact_mode: bool = False,
 ) -> tuple[str, str]:
-    """Build (system_prompt, user_message) for the evolution LLM call."""
+    """Build (system_prompt, user_message) for the evolution LLM call.
+
+    When *compact_mode* is True, strips non-essential sections (genes,
+    memories, history) to reduce prompt size by ~40-50%, giving the LLM
+    more output token headroom on retry after truncation.
+    """
+    if compact_mode:
+        system = (
+            "You are evolving a Python program. Output ONLY a complete "
+            "```python code block. Skip all analysis and reflection to "
+            "stay within token limits.\n\n"
+            "Constraints: must have main(), must use PROTEA_HEARTBEAT env var "
+            "for heartbeat, pure stdlib only."
+        )
+        score = 0.0
+        if fitness_history:
+            score = fitness_history[0].get("score", 0.0)
+        user_parts = [
+            f"Current score: {score:.3f}",
+        ]
+        if directive:
+            user_parts.append(f"Directive: {directive}")
+        user_parts.extend([
+            "Current source code:",
+            f"```python\n{_compress_source(current_source).rstrip()}\n```",
+            "Output the improved version as a single ```python block.",
+        ])
+        return system, "\n\n".join(user_parts)
+
     parts: list[str] = []
 
     parts.append(f"## Generation {generation}")
