@@ -256,8 +256,8 @@ class TestBuildEvolutionPrompt:
         assert "task 4" in user
         assert "task 5" not in user
 
-    def test_task_history_truncates_at_100(self):
-        task_history = [{"content": "x" * 150}]
+    def test_task_history_truncates_at_200(self):
+        task_history = [{"content": "x" * 300}]
         _, user = build_evolution_prompt(
             current_source="x=1",
             fitness_history=[],
@@ -267,8 +267,8 @@ class TestBuildEvolutionPrompt:
             survived=True,
             task_history=task_history,
         )
-        assert "x" * 100 + "..." in user
-        assert "x" * 101 not in user
+        assert "x" * 200 + "..." in user
+        assert "x" * 201 not in user
 
     def test_no_task_history_no_section(self):
         _, user = build_evolution_prompt(
@@ -573,9 +573,9 @@ class TestBuildEvolutionPrompt:
         )
         assert "Inherited Patterns" not in user
 
-    def test_gene_pool_summary_truncated_at_150(self):
+    def test_gene_pool_summary_truncated_at_300(self):
         gene_pool = [
-            {"generation": 1, "score": 0.80, "gene_summary": "x" * 200},
+            {"generation": 1, "score": 0.80, "gene_summary": "x" * 400},
         ]
         _, user = build_evolution_prompt(
             current_source="x=1",
@@ -586,8 +586,8 @@ class TestBuildEvolutionPrompt:
             survived=True,
             gene_pool=gene_pool,
         )
-        assert "x" * 147 + "..." in user
-        assert "x" * 148 not in user
+        assert "x" * 297 + "..." in user
+        assert "x" * 298 not in user
 
     def test_gene_pool_before_instructions(self):
         gene_pool = [

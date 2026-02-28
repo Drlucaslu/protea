@@ -113,8 +113,8 @@ class Evolver:
         except FileNotFoundError:
             return EvolutionResult(False, "ring2/main.py not found", "")
 
-        # 2. Query fitness history (compact: 5 entries to save tokens).
-        history_limit = min(self.config.max_prompt_history, 5)
+        # 2. Query fitness history.
+        history_limit = min(self.config.max_prompt_history, 8)
         fitness_history = self.fitness.get_history(limit=history_limit)
         best_performers = self.fitness.get_best(n=3)
 

@@ -220,10 +220,10 @@ def _is_system_noise(entry_type: str, content: str) -> bool:
     if entry_type in ("task", "directive"):
         return False
 
-    # Reflections are machine-generated and consumed in-context by the evolver.
-    # They don't need to persist in long-term memory.
+    # Reflections are machine-generated but contain valuable self-learned
+    # patterns.  Keep them — they're filtered by importance during compaction.
     if entry_type == "reflection":
-        return True
+        return False
 
     # Additional heuristics for crash_log (special handling before general pattern matching)
     if entry_type == "crash_log":
@@ -724,12 +724,12 @@ class MemoryStore(SQLiteStore):
 
     def _compact_hot_to_warm(self, current_generation: int) -> int:
         """Demote old, low-importance hot entries to warm tier."""
-        threshold_gen = current_generation - 5
+        threshold_gen = current_generation - 15
         with self._connect() as con:
-            # Get hot entries older than 5 generations with importance < 0.6
+            # Get hot entries older than 15 generations with importance < 0.4
             rows = con.execute(
                 "SELECT * FROM memory WHERE tier = 'hot' "
-                "AND generation <= ? AND importance < 0.6 "
+                "AND generation <= ? AND importance < 0.4 "
                 "ORDER BY entry_type, importance DESC",
                 (threshold_gen,),
             ).fetchall()
@@ -737,16 +737,16 @@ class MemoryStore(SQLiteStore):
             if not rows:
                 return 0
 
-            # Group by entry_type, keep top 3 per group, merge rest.
+            # Group by entry_type, keep top 8 per group, merge rest.
             groups: dict[str, list[sqlite3.Row]] = {}
             for r in rows:
                 groups.setdefault(r["entry_type"], []).append(r)
 
             demoted = 0
             for entry_type, entries in groups.items():
-                # Keep top 3 by importance (just demote them).
-                keep = entries[:3]
-                merge = entries[3:]
+                # Keep top 8 by importance (just demote them).
+                keep = entries[:8]
+                merge = entries[8:]
 
                 for row in keep:
                     con.execute(
@@ -783,9 +783,9 @@ class MemoryStore(SQLiteStore):
 
             return demoted
 
-    def _get_warm_candidates(self, current_generation: int, limit: int = 20) -> list[dict]:
+    def _get_warm_candidates(self, current_generation: int, limit: int = 40) -> list[dict]:
         """Get warm-tier entries eligible for cold transition."""
-        threshold_gen = current_generation - 30
+        threshold_gen = current_generation - 80
         with self._connect() as con:
             rows = con.execute(
                 "SELECT id, entry_type, content, importance FROM memory "

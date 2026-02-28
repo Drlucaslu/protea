@@ -246,15 +246,15 @@ def build_evolution_prompt(
             parts.append(f"- {err}")
         parts.append("")
 
-    # Learned patterns from memory (compact — limit to 3)
+    # Learned patterns from memory
     if memories:
         parts.append("## Learned Patterns")
-        for mem in memories[:3]:
+        for mem in memories[:5]:
             gen = mem.get("generation", "?")
             content = mem.get("content", "")
             # Truncate long memories to save tokens.
-            if len(content) > 200:
-                content = content[:200] + "..."
+            if len(content) > 400:
+                content = content[:400] + "..."
             parts.append(f"- [Gen {gen}] {content}")
         parts.append("")
 
@@ -274,8 +274,8 @@ def build_evolution_prompt(
         parts.append("## User Tasks (PRIORITY)")
         for task in task_history[:task_history_limit]:
             content = task.get("content", "")
-            if len(content) > 100:
-                content = content[:100] + "..."
+            if len(content) > 200:
+                content = content[:200] + "..."
             parts.append(f"- {content}")
         parts.append("")
 
@@ -373,13 +373,13 @@ def build_evolution_prompt(
     # Inherited gene patterns from best past generations (intent-gated).
     if include_gene_pool and gene_pool:
         parts.append("## Inherited Patterns")
-        for gene in gene_pool[:3]:
+        for gene in gene_pool[:5]:
             gen = gene.get("generation", "?")
             score = gene.get("score", 0)
             task_hits = gene.get("task_hit_count", 0) or 0
             summary = gene.get("gene_summary", "")
-            if len(summary) > 150:
-                summary = summary[:147] + "..."
+            if len(summary) > 300:
+                summary = summary[:297] + "..."
             parts.append(f"- [Gen {gen}, score={score:.2f}, task_hits={task_hits}] {summary}")
         parts.append("")
 

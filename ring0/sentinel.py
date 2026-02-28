@@ -463,16 +463,16 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             log.warning("LLM API key not configured — skipping evolution")
             return False, [], []
 
-        # Compact context: directives and 1 reflection only.
-        # Reflections/crash_logs are machine-generated with low priority;
-        # user tasks are the primary evolution signal.
+        # Pass directives and reflections to evolution context.
+        # Reflections contain self-learned patterns; limiting too aggressively
+        # causes the system to repeat mistakes.
         memories = []
         if memory_store:
             try:
                 for t in ("directive", "reflection"):
-                    memories.extend(memory_store.get_by_type(t, limit=1))
+                    memories.extend(memory_store.get_by_type(t, limit=3))
                 memories.sort(key=lambda m: m.get("id", 0), reverse=True)
-                memories = memories[:2]
+                memories = memories[:5]
             except Exception:
                 memories = []
 

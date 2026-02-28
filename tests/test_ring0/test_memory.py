@@ -369,11 +369,11 @@ class TestCompact:
 
     def test_hot_to_warm_basic(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        # Add old entries (generation 1) with low importance
+        # Add old entries (generation 1) with low importance (below 0.4 threshold)
         for i in range(5):
-            store.add(1, "observation", f"old entry {i}", importance=0.5)
+            store.add(1, "observation", f"old entry {i}", importance=0.3)
         # Add recent entries (generation 50)
-        store.add(50, "observation", "recent", importance=0.5)
+        store.add(50, "observation", "recent", importance=0.3)
 
         result = store.compact(current_generation=50)
         assert result["hot_to_warm"] > 0
@@ -503,28 +503,28 @@ class TestArchiveTier:
     def test_compact_hot_to_warm_archives_originals(self, tmp_path):
         """Merged originals go to archive tier with archived_ids in summary."""
         store = MemoryStore(tmp_path / "mem.db")
-        # Add 5 old low-importance entries of same type → 3 kept, 2 merged+archived
+        # Add 10 old low-importance entries of same type → 8 kept, 2 merged+archived
         ids = []
-        for i in range(5):
-            rid = store.add(1, "observation", f"old obs {i}", importance=0.5)
+        for i in range(10):
+            rid = store.add(1, "observation", f"old obs {i}", importance=0.35)
             ids.append(rid)
 
         result = store.compact(current_generation=50)
-        assert result["hot_to_warm"] == 5
+        assert result["hot_to_warm"] == 10
 
         # The 2 merged originals should be in archive tier.
         archived = store.get_by_tier("archive")
         assert len(archived) == 2
         archived_ids = {e["id"] for e in archived}
-        # They should be the last 2 entries (ids[3], ids[4]).
-        assert ids[3] in archived_ids
-        assert ids[4] in archived_ids
+        # They should be the last 2 entries (ids[8], ids[9]).
+        assert ids[8] in archived_ids
+        assert ids[9] in archived_ids
 
         # The compacted summary should contain archived_ids metadata.
         warm = store.get_by_tier("warm")
         summaries = [e for e in warm if "Compacted" in e["content"]]
         assert len(summaries) == 1
-        assert set(summaries[0]["metadata"]["archived_ids"]) == {ids[3], ids[4]}
+        assert set(summaries[0]["metadata"]["archived_ids"]) == {ids[8], ids[9]}
 
     def test_get_recent_excludes_archive(self, tmp_path):
         import sqlite3
@@ -773,34 +773,34 @@ class TestDeduplicate:
 class TestCompactThresholds:
     """Verify tightened hot→warm compaction thresholds."""
 
-    def test_importance_059_gets_demoted(self, tmp_path):
-        """Entries with importance < 0.6 and old enough should be demoted."""
+    def test_importance_039_gets_demoted(self, tmp_path):
+        """Entries with importance < 0.4 and old enough should be demoted."""
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "observation", "low importance entry", importance=0.59)
-        result = store.compact(current_generation=10)
+        store.add(1, "observation", "low importance entry", importance=0.39)
+        result = store.compact(current_generation=20)
         assert result["hot_to_warm"] > 0
 
-    def test_importance_060_stays_hot(self, tmp_path):
-        """Entries with importance >= 0.6 should remain hot."""
+    def test_importance_040_stays_hot(self, tmp_path):
+        """Entries with importance >= 0.4 should remain hot."""
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "observation", "moderate importance", importance=0.6)
-        result = store.compact(current_generation=10)
+        store.add(1, "observation", "moderate importance", importance=0.4)
+        result = store.compact(current_generation=20)
         hot = store.get_by_tier("hot")
         assert any(e["content"] == "moderate importance" for e in hot)
 
-    def test_generation_gap_5(self, tmp_path):
-        """Entries within 5 generations should not be compacted."""
+    def test_generation_gap_15(self, tmp_path):
+        """Entries within 15 generations should not be compacted."""
         store = MemoryStore(tmp_path / "mem.db")
         store.add(6, "observation", "recent low importance", importance=0.3)
-        result = store.compact(current_generation=10)
+        result = store.compact(current_generation=20)
         hot = store.get_by_tier("hot")
         assert any(e["content"] == "recent low importance" for e in hot)
 
-    def test_generation_gap_6_gets_compacted(self, tmp_path):
-        """Entries older than 5 generations with low importance get compacted."""
+    def test_generation_gap_16_gets_compacted(self, tmp_path):
+        """Entries older than 15 generations with low importance get compacted."""
         store = MemoryStore(tmp_path / "mem.db")
         store.add(4, "observation", "old low importance entry", importance=0.3)
-        result = store.compact(current_generation=10)
+        result = store.compact(current_generation=20)
         assert result["hot_to_warm"] > 0
 
 
