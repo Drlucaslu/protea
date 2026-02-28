@@ -780,27 +780,29 @@ class TestCompactThresholds:
         result = store.compact(current_generation=20)
         assert result["hot_to_warm"] > 0
 
-    def test_importance_040_stays_hot(self, tmp_path):
-        """Entries with importance >= 0.4 should remain hot."""
+    def test_high_importance_stays_hot(self, tmp_path):
+        """Entries with high temperature (high importance + recent) should remain hot."""
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(1, "observation", "moderate importance", importance=0.4)
+        # importance=0.7 at gen 10, current=20 → T ≈ 0.4*0.7+0.3*exp(-0.15)+0.3*0 ≈ 0.54
+        store.add(10, "observation", "moderate importance", importance=0.7)
         result = store.compact(current_generation=20)
         hot = store.get_by_tier("hot")
         assert any(e["content"] == "moderate importance" for e in hot)
 
-    def test_generation_gap_15(self, tmp_path):
-        """Entries within 15 generations should not be compacted."""
+    def test_very_recent_entry_stays_hot(self, tmp_path):
+        """Very recent entries (high age_factor) stay hot even at low importance."""
         store = MemoryStore(tmp_path / "mem.db")
-        store.add(6, "observation", "recent low importance", importance=0.3)
+        # importance=0.3 at gen=19, current=20 → age=1 → T ≈ 0.12+0.3*0.985 ≈ 0.42
+        store.add(19, "observation", "recent low importance", importance=0.3)
         result = store.compact(current_generation=20)
         hot = store.get_by_tier("hot")
         assert any(e["content"] == "recent low importance" for e in hot)
 
-    def test_generation_gap_16_gets_compacted(self, tmp_path):
-        """Entries older than 15 generations with low importance get compacted."""
+    def test_old_low_importance_gets_compacted(self, tmp_path):
+        """Old entries with low importance (low temperature) get compacted."""
         store = MemoryStore(tmp_path / "mem.db")
         store.add(4, "observation", "old low importance entry", importance=0.3)
-        result = store.compact(current_generation=20)
+        result = store.compact(current_generation=50)
         assert result["hot_to_warm"] > 0
 
 

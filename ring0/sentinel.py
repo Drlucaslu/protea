@@ -1307,6 +1307,37 @@ def run(project_root: pathlib.Path) -> None:
                 # Note: We no longer store observations in memory (see line 234 comment).
                 # They're noisy per-generation logs that crowd out useful memories.
 
+                # Write status snapshot — "NOW.md" for the system.
+                if memory_store:
+                    try:
+                        snap_parts = [
+                            f"Generation: {generation}",
+                            f"Score: {score:.3f}",
+                            f"Survived: yes",
+                        ]
+                        with state.lock:
+                            _snap_directive = state.evolution_directive
+                        if _snap_directive:
+                            snap_parts.append(f"Directive: {_snap_directive}")
+                        if task_store:
+                            try:
+                                pending = task_store.get_pending(limit=5)
+                                if pending:
+                                    snap_parts.append(f"Pending tasks: {len(pending)}")
+                                    for t in pending[:3]:
+                                        snap_parts.append(f"  - {t.get('text', '')[:80]}")
+                            except Exception:
+                                pass
+                        snapshot_content = "\n".join(snap_parts)
+                        memory_store.add(
+                            generation=generation,
+                            entry_type="status_snapshot",
+                            content=snapshot_content,
+                            importance=0.6,
+                        )
+                    except Exception:
+                        log.debug("Status snapshot failed (non-fatal)", exc_info=True)
+
                 # Store gene in pool (best-effort).
                 if gene_pool:
                     try:

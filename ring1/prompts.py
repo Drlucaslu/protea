@@ -254,10 +254,12 @@ def build_evolution_prompt(
         for mem in memories[:5]:
             gen = mem.get("generation", "?")
             content = mem.get("content", "")
+            status = mem.get("status", "active")
             # Truncate long memories to save tokens.
             if len(content) > 400:
                 content = content[:400] + "..."
-            parts.append(f"- [Gen {gen}] {content}")
+            prefix = "[STALE] " if status == "stale" else ""
+            parts.append(f"- [Gen {gen}] {prefix}{content}")
         parts.append("")
 
     # Semantic rules — validated patterns from experience (intent-gated)
@@ -673,13 +675,14 @@ def parse_crystallize_response(response: str) -> dict | None:
 
 MEMORY_CURATION_SYSTEM_PROMPT = """\
 You are the memory curator for Protea, a self-evolving AI system.
-Your task: review memory entries and decide which to keep, discard, summarize, or extract_rule.
+Your task: review memory entries and decide which to keep, discard, summarize, extract_rule, or conflict.
 
 ## Decision criteria
 - keep: Unique insights, user preferences, important lessons, recurring patterns
 - summarize: Valuable but verbose — condense to 1-2 sentences
 - discard: Redundant, outdated, trivial, or superseded by newer memories
 - extract_rule: When you see 2+ related entries forming a pattern, distill into a reusable rule/preference. Return: {"id": [1, 2, 3], "action": "extract_rule", "rule": "Concise rule text"}
+- conflict: Two entries contain contradictory information. Include "conflict_with": <other_entry_id>. Use when the same topic has conflicting claims (e.g., "user prefers A" vs "user prefers B").
 
 ## Response format
 Respond with a JSON array (no markdown fences):
@@ -709,6 +712,6 @@ def build_memory_curation_prompt(candidates: list[dict]) -> tuple[str, str]:
             f"- **ID {entry_id}** [{entry_type}] (importance: {importance:.2f}): {content}"
         )
     parts.append("")
-    parts.append(f"Total: {len(candidates)} entries. Review each and decide: keep, discard, summarize, or extract_rule.")
+    parts.append(f"Total: {len(candidates)} entries. Review each and decide: keep, discard, summarize, extract_rule, or conflict.")
 
     return MEMORY_CURATION_SYSTEM_PROMPT, "\n".join(parts)

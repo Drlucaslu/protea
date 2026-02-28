@@ -94,7 +94,7 @@ class MemoryCurator:
             return []
 
         valid_ids = {c["id"] for c in candidates}
-        valid_actions = {"keep", "discard", "summarize", "extract_rule"}
+        valid_actions = {"keep", "discard", "summarize", "extract_rule", "conflict"}
 
         result = []
         for d in decisions:
@@ -127,6 +127,8 @@ class MemoryCurator:
                 entry = {"id": entry_id, "action": action}
                 if action == "summarize" and d.get("summary"):
                     entry["summary"] = d["summary"]
+                if action == "conflict" and d.get("conflict_with"):
+                    entry["conflict_with"] = d["conflict_with"]
                 result.append(entry)
 
         return result
@@ -181,6 +183,31 @@ class MemoryCurator:
         # Parse response.
         insights = self._parse_consolidation_response(response)
         result["insights_found"] = len(insights)
+
+        # Check insights against existing semantic_rules for contradictions.
+        if memory_store and insights:
+            try:
+                existing_rules = memory_store.get_semantic_rules(limit=20)
+                if existing_rules:
+                    conflicts = self._check_conflicts(insights, existing_rules)
+                    for conflict_id in conflicts:
+                        try:
+                            with memory_store._connect() as con:
+                                meta_row = con.execute(
+                                    "SELECT metadata FROM memory WHERE id = ?",
+                                    (conflict_id,),
+                                ).fetchone()
+                                meta = json.loads(meta_row["metadata"] or "{}") if meta_row else {}
+                                meta["conflict"] = True
+                                meta["superseded_by"] = "nightly_consolidation"
+                                con.execute(
+                                    "UPDATE memory SET status = 'superseded', metadata = ? WHERE id = ?",
+                                    (json.dumps(meta), conflict_id),
+                                )
+                        except Exception:
+                            log.debug("Failed to mark conflict for id=%s", conflict_id, exc_info=True)
+            except Exception:
+                log.debug("Conflict check failed (non-fatal)", exc_info=True)
 
         # Store insights as preference moments.
         if preference_store and insights:
@@ -247,3 +274,54 @@ class MemoryCurator:
             results.append(item)
 
         return results
+
+    def _check_conflicts(
+        self, insights: list[dict], existing_rules: list[dict],
+    ) -> list[int]:
+        """Check if new insights contradict existing semantic rules.
+
+        Returns list of rule IDs that are superseded by new insights.
+        """
+        if not insights or not existing_rules:
+            return []
+
+        system_prompt, user_message = _build_conflict_check_prompt(insights, existing_rules)
+        try:
+            response = self._client.send_message(system_prompt, user_message)
+        except LLMError:
+            return []
+
+        text = response.strip()
+        m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        valid_ids = {r["id"] for r in existing_rules}
+        return [item["rule_id"] for item in data
+                if isinstance(item, dict) and item.get("rule_id") in valid_ids]
+
+
+def _build_conflict_check_prompt(
+    insights: list[dict], rules: list[dict],
+) -> tuple[str, str]:
+    """Build prompt to check if new insights conflict with existing rules."""
+    system = (
+        "You detect contradictions between new insights and existing semantic rules.\n"
+        "Output a JSON array of conflicts: [{\"rule_id\": <id>, \"reason\": \"...\"}]\n"
+        "If no conflicts, return []. No markdown fences."
+    )
+    parts = ["## New Insights\n"]
+    for i, ins in enumerate(insights):
+        parts.append(f"{i}. {ins.get('content', '')}")
+    parts.append("\n## Existing Rules\n")
+    for rule in rules:
+        parts.append(f"- ID {rule['id']}: {rule.get('content', '')[:150]}")
+    return system, "\n".join(parts)

@@ -627,7 +627,11 @@ class TaskExecutor:
             memories = []
             if self.memory_store:
                 try:
-                    memories = self.memory_store.get_recent(3)
+                    # Load latest status snapshot as context anchor.
+                    snapshots = self.memory_store.get_by_type("status_snapshot", limit=1)
+                    recent = self.memory_store.get_recent(3)
+                    recent = [m for m in recent if m.get("entry_type") != "status_snapshot"]
+                    memories = snapshots + recent[:2]
                 except Exception:
                     pass
 
@@ -1192,7 +1196,10 @@ class TaskExecutor:
             memories = []
             if self.memory_store:
                 try:
-                    memories = self.memory_store.get_recent(3)
+                    snapshots = self.memory_store.get_by_type("status_snapshot", limit=1)
+                    recent = self.memory_store.get_recent(3)
+                    recent = [m for m in recent if m.get("entry_type") != "status_snapshot"]
+                    memories = snapshots + recent[:2]
                 except Exception:
                     pass
 
