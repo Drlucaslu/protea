@@ -22,6 +22,7 @@ Output ONLY a single directive line (no markdown, no explanation):
 - Must be specific and actionable (not vague like "improve performance")
 - Must address a concrete gap between what the user needs and what exists
 - Must be phrased as an imperative ("Add ...", "Improve ...", "Build ...")
+- Your directive MUST address a DIFFERENT aspect than the recent directives listed below
 
 Example good directives:
 - "Add calendar event parsing from natural language input"
@@ -66,8 +67,14 @@ class DirectiveGenerator:
         self,
         task_history: list[dict],
         user_profile_summary: str = "",
+        recent_directives: list[str] | None = None,
     ) -> str | None:
         """Summarize recent tasks + user profile into an evolution directive.
+
+        Args:
+            task_history: Recent user tasks.
+            user_profile_summary: Optional user profile context.
+            recent_directives: Recent directives to avoid repeating.
 
         Returns a directive string or None if insufficient data or failure.
         """
@@ -77,6 +84,12 @@ class DirectiveGenerator:
         parts = []
         if user_profile_summary:
             parts.append(f"## User Profile\n{user_profile_summary}\n")
+
+        if recent_directives:
+            parts.append("## Recent Directives (DO NOT repeat or rephrase these)")
+            for d in recent_directives:
+                parts.append(f"- {d}")
+            parts.append("")
 
         parts.append("## Recent Tasks (newest first)")
         for task in task_history[:30]:

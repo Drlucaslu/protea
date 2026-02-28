@@ -751,6 +751,59 @@ class TestExtractPythonCode:
         assert "        print" in code
 
 
+    def test_bare_fence_extracted(self):
+        """Tier 2: bare ``` fence (no language tag) with valid Python."""
+        response = "Here is the code:\n```\nprint('hello')\nx = 1 + 2\n```\n"
+        code = extract_python_code(response)
+        assert code is not None
+        assert "print('hello')" in code
+
+    def test_bare_fence_invalid_python_rejected(self):
+        """Tier 2: bare ``` fence with non-Python content fails compile → None."""
+        response = "```\nthis is not valid python {{{ }}}\n```\n"
+        code = extract_python_code(response)
+        assert code is None
+
+    def test_whole_response_as_code_fallback(self):
+        """Tier 3: whole response as code when it looks like valid Ring 2."""
+        raw_code = (
+            "import os\nimport time\n\n"
+            "HEARTBEAT_PATH = os.environ.get('PROTEA_HEARTBEAT', '')\n\n"
+            "def main():\n"
+            "    while True:\n"
+            "        with open(HEARTBEAT_PATH, 'w') as f:\n"
+            "            f.write(f'{os.getpid()}\\n{time.time()}\\n')\n"
+            "        time.sleep(2)\n"
+        )
+        # Prefix with some prose — should be stripped
+        response = "Here is my evolved code:\n\n" + raw_code
+        code = extract_python_code(response)
+        assert code is not None
+        assert "PROTEA_HEARTBEAT" in code
+        assert "def main" in code
+
+    def test_whole_response_missing_heartbeat_rejected(self):
+        """Tier 3: code without PROTEA_HEARTBEAT is rejected."""
+        response = "import os\n\ndef main():\n    print('hello')\n"
+        code = extract_python_code(response)
+        assert code is None
+
+    def test_whole_response_missing_main_rejected(self):
+        """Tier 3: code without def main is rejected."""
+        response = "import os\nPROTEA_HEARTBEAT = 'test'\nprint('hello')\n"
+        code = extract_python_code(response)
+        assert code is None
+
+    def test_python_fence_preferred_over_bare(self):
+        """Tier 1 takes precedence over Tier 2."""
+        response = (
+            "```\nbare_code()\n```\n"
+            "```python\npython_code()\n```\n"
+        )
+        code = extract_python_code(response)
+        assert code == "python_code()"
+
+
 class TestExtractReflection:
     def test_extracts_reflection(self):
         response = (

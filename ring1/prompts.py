@@ -93,6 +93,8 @@ If no capability is needed, omit this section entirely.
 Start with a SHORT reflection (1-2 sentences max), then the complete code.
 Keep the reflection brief — the code is what matters.
 
+CRITICAL: Your response MUST contain a ```python code block. Responses without code are REJECTED.
+
 ## Reflection
 [1-2 sentences: what pattern you noticed and your mutation strategy]
 
@@ -452,17 +454,53 @@ def build_evolution_prompt(
 
 
 def extract_python_code(response: str) -> str | None:
-    """Extract the first ```python code block from an LLM response.
+    """Extract Python code from an LLM response with 3-tier fallback.
 
-    Returns None if no valid code block is found.
+    Tier 1: ```python / ```py fenced block (preferred).
+    Tier 2: Bare ``` fenced block (no language tag) — validated with compile().
+    Tier 3: Whole response as code — strip leading prose, validate with
+            compile() + must contain "PROTEA_HEARTBEAT" and "def main".
+
+    Returns None if no valid code is found.
     """
-    # Match ```python/```py/```Python ... ``` blocks (non-greedy).
+    # Tier 1: ```python/```py/```Python block (existing behavior).
     pattern = r"```(?:python|py)\s*\n(.*?)```"
     match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
     if match:
         code = match.group(1).strip()
         if code:
             return code
+
+    # Tier 2: Bare ``` block (no language tag).
+    bare_pattern = r"```\s*\n(.*?)```"
+    match = re.search(bare_pattern, response, re.DOTALL)
+    if match:
+        code = match.group(1).strip()
+        if code:
+            try:
+                compile(code, "<extract>", "exec")
+                return code
+            except SyntaxError:
+                pass
+
+    # Tier 3: Whole response as code — strip leading non-code lines.
+    lines = response.strip().splitlines()
+    # Find first line that looks like Python code.
+    start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(("import ", "from ", "def ", "class ", "#!")):
+            start = i
+            break
+    if start > 0 or lines:
+        candidate = "\n".join(lines[start:]).strip()
+        if candidate and "PROTEA_HEARTBEAT" in candidate and "def main" in candidate:
+            try:
+                compile(candidate, "<extract>", "exec")
+                return candidate
+            except SyntaxError:
+                pass
+
     return None
 
 

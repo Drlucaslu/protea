@@ -120,3 +120,41 @@ class TestDirectiveGenerator:
         user_msg = call_args[0][1]
         # Each task line should have truncated content with "..."
         assert "..." in user_msg
+
+    def test_recent_directives_included_in_prompt(self):
+        """Recent directives are injected into the LLM prompt."""
+        client = MagicMock()
+        client.send_message.return_value = "Build a new calendar skill"
+        gen = DirectiveGenerator(client)
+
+        recent = ["Add chat_id tracking", "Improve chat_id routing"]
+        result = gen.generate(_make_tasks(5), recent_directives=recent)
+        assert result == "Build a new calendar skill"
+
+        call_args = client.send_message.call_args
+        user_msg = call_args[0][1]
+        assert "Recent Directives (DO NOT repeat or rephrase these)" in user_msg
+        assert "Add chat_id tracking" in user_msg
+        assert "Improve chat_id routing" in user_msg
+
+    def test_empty_recent_directives_no_section(self):
+        """Empty recent_directives list → no section in prompt (backward compat)."""
+        client = MagicMock()
+        client.send_message.return_value = "Some directive"
+        gen = DirectiveGenerator(client)
+
+        gen.generate(_make_tasks(5), recent_directives=[])
+        call_args = client.send_message.call_args
+        user_msg = call_args[0][1]
+        assert "Recent Directives" not in user_msg
+
+    def test_none_recent_directives_no_section(self):
+        """None recent_directives → no section in prompt (backward compat)."""
+        client = MagicMock()
+        client.send_message.return_value = "Some directive"
+        gen = DirectiveGenerator(client)
+
+        gen.generate(_make_tasks(5), recent_directives=None)
+        call_args = client.send_message.call_args
+        user_msg = call_args[0][1]
+        assert "Recent Directives" not in user_msg

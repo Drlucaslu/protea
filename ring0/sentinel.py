@@ -353,9 +353,21 @@ def _try_auto_directive(memory_store, user_profiler, project_root):
             except Exception:
                 pass
 
+        # Fetch recent directives for deduplication.
+        recent_directives = []
+        if memory_store:
+            try:
+                directive_entries = memory_store.get_by_type("directive", limit=5)
+                recent_directives = [
+                    e.get("content", "") for e in directive_entries
+                    if e.get("content")
+                ]
+            except Exception:
+                pass
+
         client = r1_config.get_llm_client()
         generator = DirectiveGenerator(client)
-        return generator.generate(task_history, profile_summary)
+        return generator.generate(task_history, profile_summary, recent_directives=recent_directives)
     except Exception as exc:
         log.debug("Auto-directive generation failed: %s", exc)
         return None
@@ -427,7 +439,7 @@ def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_sto
     return "\n".join(parts) if parts else ""
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction=""):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0):
     """Best-effort evolution.  Returns (success, gene_ids, adopted_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
@@ -511,6 +523,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             persistent_errors=persistent_errors,
             crash_logs=crash_logs or [],
             directive=directive,
+            is_auto_directive=is_auto_directive,
+            auto_directive_attempt=auto_directive_attempt,
         )
         log.info(
             "Evolution intent: %s (signals: %s)",
@@ -1114,6 +1128,8 @@ def run(project_root: pathlib.Path) -> None:
     last_attributed_task_id: int = 0
     directive_remaining_cycles: int = 0
     consecutive_plateau_skips: int = 0  # Track how many times plateau suppressed evolution
+    auto_directive_attempt: int = 0    # Track auto-directive attempts for intent rotation
+    _is_auto_directive: bool = False   # Whether current directive is auto-generated
     _MAX_PLATEAU_AUTO_DIRECTIVES = 3   # Stop auto-directives after this many consecutive plateaus
 
     try:
@@ -1318,7 +1334,9 @@ def run(project_root: pathlib.Path) -> None:
                                     state.evolution_directive = auto_dir
                                 should_evo = True
                                 pending_directive = auto_dir
-                                log.info("Auto-directive (%d/%d): %s", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES, auto_dir[:80])
+                                _is_auto_directive = True
+                                auto_directive_attempt += 1
+                                log.info("Auto-directive (%d/%d, attempt=%d): %s", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES, auto_directive_attempt, auto_dir[:80])
                             else:
                                 log.info("Plateau, no auto-directive — skipping (%d/%d)", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES)
                         else:
@@ -1334,11 +1352,15 @@ def run(project_root: pathlib.Path) -> None:
                     with state.lock:
                         directive = state.evolution_directive
                         if directive:
+                            # If this is a user-set directive (not auto), reset auto counters.
+                            if not _is_auto_directive:
+                                auto_directive_attempt = 0
                             if directive_remaining_cycles <= 0:
                                 directive_remaining_cycles = 3  # new directive lives for 3 cycles
                             directive_remaining_cycles -= 1
                             if directive_remaining_cycles <= 0:
                                 state.evolution_directive = ""
+                                _is_auto_directive = False
                     if directive and memory_store:
                         memory_store.add(generation, "directive", directive)
                     crash_logs = []
@@ -1380,6 +1402,8 @@ def run(project_root: pathlib.Path) -> None:
                         allowed_packages=allowed_packages,
                         skill_hit_summary=skill_hit,
                         evolution_direction=evo_direction,
+                        is_auto_directive=_is_auto_directive,
+                        auto_directive_attempt=auto_directive_attempt,
                     )
                     if gene_pool and last_injected_gene_ids:
                         try:

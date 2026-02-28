@@ -158,6 +158,54 @@ class TestClassifyIntent:
         assert "KeyError" in result["signals"]
         assert "RuntimeError" in result["signals"]
 
+    # --- Auto-directive intent rotation ---
+
+    def test_auto_directive_attempt_0_adapt(self):
+        """Auto-directive attempt 0 → adapt."""
+        result = classify_intent(
+            survived=True, is_plateaued=True, persistent_errors=[],
+            crash_logs=[], directive="Add feature X",
+            is_auto_directive=True, auto_directive_attempt=0,
+        )
+        assert result["intent"] == "adapt"
+
+    def test_auto_directive_attempt_1_adapt(self):
+        """Auto-directive attempt 1 → adapt."""
+        result = classify_intent(
+            survived=True, is_plateaued=True, persistent_errors=[],
+            crash_logs=[], directive="Add feature X",
+            is_auto_directive=True, auto_directive_attempt=1,
+        )
+        assert result["intent"] == "adapt"
+
+    def test_auto_directive_attempt_2_explore(self):
+        """Auto-directive attempt 2 → explore."""
+        result = classify_intent(
+            survived=True, is_plateaued=True, persistent_errors=[],
+            crash_logs=[], directive="Add feature X",
+            is_auto_directive=True, auto_directive_attempt=2,
+        )
+        assert result["intent"] == "explore"
+
+    def test_auto_directive_attempt_3_optimize(self):
+        """Auto-directive attempt 3 → optimize."""
+        result = classify_intent(
+            survived=True, is_plateaued=True, persistent_errors=[],
+            crash_logs=[], directive="Add feature X",
+            is_auto_directive=True, auto_directive_attempt=3,
+        )
+        assert result["intent"] == "optimize"
+
+    def test_user_directive_always_adapt_regardless_of_attempt(self):
+        """User directive (is_auto_directive=False) → always adapt."""
+        for attempt in (0, 1, 2, 3, 5):
+            result = classify_intent(
+                survived=True, is_plateaued=True, persistent_errors=[],
+                crash_logs=[], directive="Build a game",
+                is_auto_directive=False, auto_directive_attempt=attempt,
+            )
+            assert result["intent"] == "adapt", f"Failed at attempt={attempt}"
+
 
 # ---------------------------------------------------------------------------
 # compute_blast_radius

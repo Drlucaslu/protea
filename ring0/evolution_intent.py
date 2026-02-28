@@ -18,13 +18,16 @@ def classify_intent(
     persistent_errors: list[str],
     crash_logs: list[dict],
     directive: str,
+    is_auto_directive: bool = False,
+    auto_directive_attempt: int = 0,
 ) -> dict:
     """Classify evolution intent from available signals.
 
     Returns {"intent": str, "signals": list[str]}
 
     Classification rules (priority order):
-    1. directive non-empty -> intent="adapt"
+    1. directive non-empty -> intent="adapt" (user directive)
+       - Auto-directive rotates: attempt 0-1 → adapt, 2 → explore, 3+ → optimize
     2. not survived -> intent="repair"
     3. persistent_errors non-empty (even if survived) -> intent="repair"
     4. is_plateaued -> intent="explore"
@@ -35,6 +38,11 @@ def classify_intent(
     # 1. Directive overrides everything.
     if directive:
         signals.append(f"directive: {directive[:80]}")
+        # Auto-directives rotate intent to break adapt monopoly.
+        if is_auto_directive and auto_directive_attempt >= 3:
+            return {"intent": "optimize", "signals": signals}
+        if is_auto_directive and auto_directive_attempt >= 2:
+            return {"intent": "explore", "signals": signals}
         return {"intent": "adapt", "signals": signals}
 
     # 2. Crashed — repair.
