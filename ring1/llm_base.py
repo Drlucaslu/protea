@@ -56,7 +56,7 @@ class LLMClient(abc.ABC):
     # HTTP retry
     # ------------------------------------------------------------------
 
-    _HARD_TIMEOUT: float = 90.0  # daemon-thread hard timeout (seconds)
+    _HARD_TIMEOUT: float = 180.0  # daemon-thread hard timeout (seconds)
 
     def _call_api_with_retry(self, url: str, data: bytes, headers: dict) -> dict:
         """HTTP POST with exponential-backoff retry on transient errors.
