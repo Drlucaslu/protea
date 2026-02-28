@@ -279,9 +279,11 @@ If a skill interaction fails, do NOT repeatedly try shell commands to debug. Ins
 use view_skill to read the source and understand the correct usage.
 
 FILE OUTPUT RULES:
-- Write all generated files (scripts, PDFs, reports, data) to the output/ directory.
-- Example: write_file with path "output/report.pdf", NOT "report.pdf".
-- Use subdirectories for organization: output/scripts/, output/reports/, output/data/.
+- Write all generated files to the output/ directory.  Files are auto-routed
+  by extension into subdirectories: data/ (.json .csv .xml .yaml), reports/ (.pdf),
+  scripts/ (.py .sh), docs/ (.md), logs/ (.txt .log).
+- Example: write_file with path "output/report.pdf" → saved to output/reports/report.pdf.
+- You can also use task subdirs: "output/bitcoin/data.json" → output/data/bitcoin/data.json.
 - NEVER write generated files directly to the project root directory.
 - You may read any project file, but generated content must go to output/.
 

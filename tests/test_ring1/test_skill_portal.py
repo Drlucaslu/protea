@@ -239,8 +239,8 @@ class TestSkillPage:
 
 class TestReportsPage:
     def test_lists_html_files(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "analysis.html").write_text("<h1>Report</h1>")
         (reports_dir / "summary.html").write_text("<h1>Summary</h1>")
         portal = _start_portal(tmp_path)
@@ -254,8 +254,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_lists_md_and_pdf(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "research.md").write_text("# Research")
         (reports_dir / "research.pdf").write_bytes(b"%PDF-1.4 fake")
         portal = _start_portal(tmp_path)
@@ -270,8 +270,8 @@ class TestReportsPage:
 
     def test_multi_format_grouped(self, tmp_path):
         """Same stem with .html, .md, .pdf should appear as one card."""
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "report.html").write_text("<h1>HTML</h1>")
         (reports_dir / "report.md").write_text("# MD")
         (reports_dir / "report.pdf").write_bytes(b"%PDF-1.4 fake")
@@ -301,8 +301,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_serve_report_content(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "test.html").write_text("<h1>Test Report</h1>")
         portal = _start_portal(tmp_path)
         try:
@@ -313,8 +313,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_serve_markdown(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "notes.md").write_text("# Notes\n\nHello world")
         portal = _start_portal(tmp_path)
         try:
@@ -325,8 +325,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_serve_pdf(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         pdf_content = b"%PDF-1.4 fake pdf content"
         (reports_dir / "doc.pdf").write_bytes(pdf_content)
         portal = _start_portal(tmp_path)
@@ -341,8 +341,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_reject_unsupported_extension(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         (reports_dir / "data.json").write_text("{}")
         portal = _start_portal(tmp_path)
         try:
@@ -352,8 +352,8 @@ class TestReportsPage:
             portal.stop()
 
     def test_reject_path_traversal(self, tmp_path):
-        reports_dir = tmp_path / "reports"
-        reports_dir.mkdir()
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
         # Create a file outside reports dir.
         (tmp_path / "secret.html").write_text("secret")
         portal = _start_portal(tmp_path)

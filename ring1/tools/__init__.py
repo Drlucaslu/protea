@@ -85,6 +85,6 @@ def create_default_registry(
     # Register send_file tool
     if send_file_fn is not None:
         from ring1.tools.send_file import make_send_file_tool
-        registry.register(make_send_file_tool(send_file_fn))
+        registry.register(make_send_file_tool(send_file_fn, workspace))
 
     return registry

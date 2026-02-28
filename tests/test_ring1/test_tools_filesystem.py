@@ -10,6 +10,7 @@ import pytest
 from ring1.tools.filesystem import (
     _check_write_allowed,
     _resolve_safe,
+    _route_output_path,
     make_filesystem_tools,
 )
 
@@ -278,3 +279,99 @@ class TestListDir:
         file_indices = [i for i, l in enumerate(lines) if not l.endswith("/")]
         if dir_indices and file_indices:
             assert max(dir_indices) < min(file_indices)
+
+
+# ---------------------------------------------------------------------------
+# Output routing
+# ---------------------------------------------------------------------------
+
+class TestOutputRouting:
+    """Test _route_output_path and write_file integration."""
+
+    def test_json_routed_to_data(self, workspace):
+        target = workspace / "output" / "result.json"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "result.json"
+
+    def test_csv_routed_to_data(self, workspace):
+        target = workspace / "output" / "table.csv"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "table.csv"
+
+    def test_xml_routed_to_data(self, workspace):
+        target = workspace / "output" / "feed.xml"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "feed.xml"
+
+    def test_yaml_routed_to_data(self, workspace):
+        target = workspace / "output" / "config.yaml"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "config.yaml"
+
+    def test_yml_routed_to_data(self, workspace):
+        target = workspace / "output" / "config.yml"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "config.yml"
+
+    def test_pdf_routed_to_reports(self, workspace):
+        target = workspace / "output" / "report.pdf"
+        assert _route_output_path(workspace, target) == workspace / "output" / "reports" / "report.pdf"
+
+    def test_py_routed_to_scripts(self, workspace):
+        target = workspace / "output" / "analyze.py"
+        assert _route_output_path(workspace, target) == workspace / "output" / "scripts" / "analyze.py"
+
+    def test_sh_routed_to_scripts(self, workspace):
+        target = workspace / "output" / "run.sh"
+        assert _route_output_path(workspace, target) == workspace / "output" / "scripts" / "run.sh"
+
+    def test_md_routed_to_docs(self, workspace):
+        target = workspace / "output" / "notes.md"
+        assert _route_output_path(workspace, target) == workspace / "output" / "docs" / "notes.md"
+
+    def test_txt_routed_to_logs(self, workspace):
+        target = workspace / "output" / "debug.txt"
+        assert _route_output_path(workspace, target) == workspace / "output" / "logs" / "debug.txt"
+
+    def test_log_routed_to_logs(self, workspace):
+        target = workspace / "output" / "app.log"
+        assert _route_output_path(workspace, target) == workspace / "output" / "logs" / "app.log"
+
+    def test_unknown_extension_unchanged(self, workspace):
+        target = workspace / "output" / "image.png"
+        assert _route_output_path(workspace, target) == target
+
+    def test_no_extension_unchanged(self, workspace):
+        target = workspace / "output" / "Makefile"
+        assert _route_output_path(workspace, target) == target
+
+    def test_already_in_type_subdir(self, workspace):
+        """Files already in a type subdir should not be double-nested."""
+        target = workspace / "output" / "data" / "existing.json"
+        assert _route_output_path(workspace, target) == target
+
+    def test_already_in_reports_subdir(self, workspace):
+        target = workspace / "output" / "reports" / "q1.pdf"
+        assert _route_output_path(workspace, target) == target
+
+    def test_non_output_path_unchanged(self, workspace):
+        """Paths outside output/ are never routed."""
+        target = workspace / "config" / "settings.json"
+        assert _route_output_path(workspace, target) == target
+
+    def test_task_subdir_preserved(self, workspace):
+        """output/bitcoin/data.json → output/data/bitcoin/data.json"""
+        target = workspace / "output" / "bitcoin" / "data.json"
+        assert _route_output_path(workspace, target) == workspace / "output" / "data" / "bitcoin" / "data.json"
+
+    def test_write_file_routes_output(self, tools, workspace):
+        """Integration: write_file should auto-route output files."""
+        result = tools["write_file"].execute(
+            {"path": "output/report.json", "content": '{"key": "value"}'}
+        )
+        assert "Written" in result
+        assert "output/data/report.json" in result
+        assert (workspace / "output" / "data" / "report.json").read_text() == '{"key": "value"}'
+
+    def test_write_file_non_output_unchanged(self, tools, workspace):
+        """write_file for paths outside output/ should not route."""
+        result = tools["write_file"].execute(
+            {"path": "scratch/notes.json", "content": "{}"}
+        )
+        assert "Written" in result
+        assert (workspace / "scratch" / "notes.json").read_text() == "{}"

@@ -385,7 +385,7 @@ class SkillPortal:
                 "skill_store": self._skill_store,
                 "skill_runner": self._skill_runner,
                 "project_root": self._project_root,
-                "reports_dir": self._project_root / "reports",
+                "reports_dir": self._project_root / "output" / "reports",
             },
         )
         self._server = ThreadingHTTPServer((self._host, self._port), handler)

@@ -84,23 +84,66 @@ class TestSendFileTool:
         assert "too large" in result2
         send_fn.assert_called_once()  # only the first call
 
-    def test_resolves_output_prefix(self, tmp_path, monkeypatch):
+    def test_resolves_output_prefix(self, tmp_path):
         """If file_path is relative and not found, try output/ prefix."""
-        import os
-        monkeypatch.chdir(tmp_path)
         out_dir = tmp_path / "output"
         out_dir.mkdir()
         f = out_dir / "report.pdf"
         f.write_bytes(b"data")
 
         send_fn = MagicMock(return_value=True)
-        tool = make_send_file_tool(send_fn)
+        tool = make_send_file_tool(send_fn, str(tmp_path))
 
         result = tool.execute({"file_path": "report.pdf"})
         assert "File sent" in result
         # Should have resolved to output/report.pdf
         call_args = send_fn.call_args[0]
         assert "output" in call_args[0]
+
+    def test_resolves_output_data_subdir(self, tmp_path):
+        """Find file in output/data/ subdirectory."""
+        data_dir = tmp_path / "output" / "data"
+        data_dir.mkdir(parents=True)
+        f = data_dir / "result.json"
+        f.write_text('{"ok": true}')
+
+        send_fn = MagicMock(return_value=True)
+        tool = make_send_file_tool(send_fn, str(tmp_path))
+
+        result = tool.execute({"file_path": "result.json"})
+        assert "File sent" in result
+        call_args = send_fn.call_args[0]
+        assert "data" in call_args[0]
+
+    def test_resolves_output_reports_subdir(self, tmp_path):
+        """Find file in output/reports/ subdirectory."""
+        reports_dir = tmp_path / "output" / "reports"
+        reports_dir.mkdir(parents=True)
+        f = reports_dir / "q1.pdf"
+        f.write_bytes(b"%PDF")
+
+        send_fn = MagicMock(return_value=True)
+        tool = make_send_file_tool(send_fn, str(tmp_path))
+
+        result = tool.execute({"file_path": "q1.pdf"})
+        assert "File sent" in result
+        call_args = send_fn.call_args[0]
+        assert "reports" in call_args[0]
+
+    def test_resolves_output_scripts_subdir(self, tmp_path):
+        """Find file in output/scripts/ subdirectory."""
+        scripts_dir = tmp_path / "output" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        f = scripts_dir / "analyze.py"
+        f.write_text("print('hi')")
+
+        send_fn = MagicMock(return_value=True)
+        tool = make_send_file_tool(send_fn, str(tmp_path))
+
+        result = tool.execute({"file_path": "analyze.py"})
+        assert "File sent" in result
+        call_args = send_fn.call_args[0]
+        assert "scripts" in call_args[0]
 
     def test_schema_structure(self):
         send_fn = MagicMock()

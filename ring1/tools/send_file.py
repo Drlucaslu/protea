@@ -16,23 +16,39 @@ log = logging.getLogger("protea.tools.send_file")
 _MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB Telegram limit
 
 
-def make_send_file_tool(send_file_fn) -> Tool:
+def make_send_file_tool(send_file_fn, workspace_path: str = ".") -> Tool:
     """Create a Tool that sends a local file to the user via Telegram.
 
     Args:
         send_file_fn: Callable(file_path: str, caption: str) -> bool
+        workspace_path: Root workspace directory for resolving relative paths.
     """
+    _ws = pathlib.Path(workspace_path)
+
+    # Directories to search (in order) when a relative path isn't found as-is.
+    _SEARCH_DIRS = [
+        "output",
+        "output/data",
+        "output/reports",
+        "output/scripts",
+        "output/docs",
+        "output/logs",
+    ]
 
     def _exec_send_file(inp: dict) -> str:
         raw_path = inp["file_path"]
         caption = inp.get("caption", "")
 
-        # Resolve the file — check output/ prefix first, then as-is.
+        # Resolve the file — try as-is, then search output subdirectories.
         path = pathlib.Path(raw_path)
+        if not path.is_absolute():
+            path = _ws / raw_path
         if not path.is_file():
-            alt = pathlib.Path("output") / raw_path
-            if alt.is_file():
-                path = alt
+            for search_dir in _SEARCH_DIRS:
+                alt = _ws / search_dir / raw_path
+                if alt.is_file():
+                    path = alt
+                    break
             else:
                 return f"Error: file not found: {raw_path}"
 

@@ -36,8 +36,8 @@ def make_report_tool(workspace_path: str) -> Tool:
         if result.startswith("Error:"):
             return result
 
-        # Copy to reports/ directory if not already there
-        reports_dir = ws / "reports"
+        # Copy to output/reports/ directory if not already there
+        reports_dir = ws / "output" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
         dest = reports_dir / pdf_full.name
         if pdf_full.resolve() != dest.resolve():
@@ -50,7 +50,7 @@ def make_report_tool(workspace_path: str) -> Tool:
         description=(
             "Generate a PDF report from a Markdown file.  Supports Chinese "
             "and other CJK characters.  The PDF is also copied to the "
-            "reports/ directory for web portal access."
+            "output/reports/ directory for web portal access."
         ),
         input_schema={
             "type": "object",

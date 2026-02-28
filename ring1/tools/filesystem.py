@@ -86,6 +86,46 @@ def _resolve_safe(workspace: pathlib.Path, path_str: str) -> pathlib.Path:
     return target
 
 
+# Auto-routing: map file extensions to output/ subdirectories.
+_OUTPUT_TYPE_DIRS = {
+    ".json": "data", ".csv": "data", ".xml": "data",
+    ".yaml": "data", ".yml": "data",
+    ".pdf": "reports",
+    ".py": "scripts", ".sh": "scripts",
+    ".md": "docs",
+    ".txt": "logs", ".log": "logs",
+}
+_OUTPUT_TYPE_SUBDIRS = frozenset(_OUTPUT_TYPE_DIRS.values())
+
+
+def _route_output_path(workspace: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+    """Re-route files under workspace/output/ into type-based subdirectories.
+
+    - Only applies to paths under ``workspace/output/``.
+    - If already inside a known type subdir (e.g. ``output/data/``), return
+      unchanged to avoid double-nesting.
+    - Unknown or missing extensions are left unchanged.
+    - Task subdirs are preserved: ``output/bitcoin/data.json`` →
+      ``output/data/bitcoin/data.json``.
+    """
+    output_dir = workspace / "output"
+    try:
+        rel = target.relative_to(output_dir)
+    except ValueError:
+        return target  # not under output/
+
+    # Already in a known type subdir?  e.g. output/data/foo.json
+    if rel.parts and rel.parts[0] in _OUTPUT_TYPE_SUBDIRS:
+        return target
+
+    ext = target.suffix.lower()
+    subdir = _OUTPUT_TYPE_DIRS.get(ext)
+    if not subdir:
+        return target  # unknown extension — leave in place
+
+    return output_dir / subdir / rel
+
+
 def _check_write_allowed(workspace: pathlib.Path, target: pathlib.Path) -> str | None:
     """Return an error message if *target* is inside a read-only source dir."""
     try:
@@ -170,21 +210,30 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
         if err:
             return err
 
+        # Auto-route output files into type-based subdirectories.
+        target = _route_output_path(workspace, target)
+
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(inp["content"])
         except Exception as exc:
             return f"Error writing file: {exc}"
 
-        return f"Written {len(inp['content'])} bytes to {inp['path']}"
+        # Report the actual path (may differ from input due to routing).
+        try:
+            actual = target.relative_to(workspace)
+        except ValueError:
+            actual = target
+        return f"Written {len(inp['content'])} bytes to {actual}"
 
     write_file = Tool(
         name="write_file",
         description=(
             "Write content to a file (creates parent directories if needed). "
-            "Paths are relative to workspace. Generated files (scripts, reports, "
-            "data) should be written to output/ subdirectory, not the root. "
-            "Overwrites existing content."
+            "Paths are relative to workspace. Generated files should be written "
+            "to output/ — they are auto-routed by extension into subdirectories: "
+            "data/ (.json .csv .xml .yaml), reports/ (.pdf), scripts/ (.py .sh), "
+            "docs/ (.md), logs/ (.txt .log). Overwrites existing content."
         ),
         input_schema={
             "type": "object",
