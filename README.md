@@ -51,6 +51,7 @@ protea/
 │   ├── gene_pool.py            # Gene pool — evolutionary inheritance
 │   ├── task_store.py           # Task persistence store
 │   ├── scheduled_task_store.py # Cron / one-shot scheduled tasks
+│   ├── output_queue.py         # Evolution output queue — user feedback loop
 │   ├── user_profile.py         # User profiling — topic extraction + interest decay
 │   ├── preference_store.py     # Structured preference store
 │   ├── evolution_intent.py     # Intent classification + blast radius
@@ -107,7 +108,7 @@ protea/
 │
 ├── config/config.toml          # Configuration
 ├── data/                       # SQLite databases (auto-created)
-├── tests/                      # 1952 tests
+├── tests/                      # 1900+ tests
 ├── run.py                      # Entry point
 ├── run_with_nohup.sh           # Background launcher with watchdog
 └── setup.sh                    # One-step installer
@@ -151,6 +152,19 @@ Each evolution is classified by intent (priority order):
 4. **optimize** — Code survived, make incremental improvements
 
 When scores plateau and no directive is pending, LLM evolution calls are **skipped** to save tokens.
+
+## Closed-Loop Evolution Feedback
+
+After evolution survives, new capabilities are detected (via AST diff) and pushed to the user through Telegram with inline buttons:
+
+| Button | Effect |
+|--------|--------|
+| 👍 不错 | Boost gene fitness; mark as "accepted" — future evolution preserves this direction |
+| 📌 定期执行 | Create a scheduled task from the capability; boost gene fitness |
+| 👎 不要了 | Delete the gene; mark as "rejected" — future evolution avoids this direction |
+| *(silence)* | Auto-expire after 24h; mild decay |
+
+Accepted and rejected capabilities are injected into the evolution prompt as constraints, so the LLM doesn't re-evolve solved problems or pursue unwanted directions. Rate-limited to 5 pushes/day.
 
 ## Gene Pool
 
