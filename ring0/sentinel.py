@@ -1001,14 +1001,18 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
 
-    # Purge zombie genes (at decay floor with no task hits).
+    # Purge zombie genes and retag with updated skip list.
     if gene_pool:
         try:
-            purged = gene_pool.purge_zombies()
+            max_gen = fitness.get_max_generation()
+            purged = gene_pool.purge_zombies(current_generation=max_gen)
             if purged:
                 log.info("Gene pool: purged %d zombie genes", purged)
+            retagged = gene_pool.retag_all()
+            if retagged:
+                log.info("Gene pool: retagged %d genes", retagged)
         except Exception as exc:
-            log.debug("Gene pool zombie purge failed (non-fatal): %s", exc)
+            log.debug("Gene pool purge/retag failed (non-fatal): %s", exc)
 
     # Backfill skill lineage (one-time heuristic).
     lineage_backfilled = 0

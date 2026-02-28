@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS gene_pool (
 _SKIP_NAMES = frozenset({
     "heartbeat_loop", "write_heartbeat", "main", "_heartbeat_loop",
     "heartbeat_thread", "start_heartbeat", "_write_heartbeat",
+    # Infrastructure utilities — not capability genes.
+    "safe_json_dump", "load_telegram_config", "load_telegram_context",
+    "load_evolution_stats", "load_alert_config", "save_alert_config",
+    "fetch_btc_price", "fetch_mining_hardware", "route_and_send_message",
 })
 
 _STOPWORDS = frozenset({
@@ -484,22 +488,62 @@ class GenePool(SQLiteStore):
                 decayed += 1
             return decayed
 
-    def purge_zombies(self) -> int:
-        """Delete genes at decay floor (score <= 0.10) with no task hits.
+    def purge_zombies(self, current_generation: int = 0) -> int:
+        """Delete zombie genes with no task hits.
 
-        These genes have never proven user value and have fully decayed.
-        They are permanently removed (not blacklisted) to free slots.
+        Two conditions (OR):
+        1. Score at decay floor (<= 0.10) — fully decayed, no value.
+        2. Score < 0.50 and 100+ generations old — stale low-performers.
+
+        Pass current_generation=0 to skip the age check (backward compat).
         Returns number of genes purged.
         """
         with self._connect() as con:
             cursor = con.execute(
-                "DELETE FROM gene_pool WHERE score <= 0.10 "
-                "AND (total_task_hits IS NULL OR total_task_hits = 0)"
+                "DELETE FROM gene_pool "
+                "WHERE (total_task_hits IS NULL OR total_task_hits = 0) "
+                "AND (score <= 0.10 OR (score < 0.50 AND ? - generation > 100))",
+                (current_generation,),
             )
             purged = cursor.rowcount
             if purged:
-                log.info("Gene pool: purged %d zombie genes (score<=0.10, no task hits)", purged)
+                log.info("Gene pool: purged %d zombie genes", purged)
             return purged
+
+    def retag_all(self) -> int:
+        """Regenerate summaries and tags for all genes, applying current _SKIP_NAMES.
+
+        Strips lines defining skipped functions (and their docstrings) from
+        stored summaries, then re-extracts tags.  Returns number of genes updated.
+        """
+        with self._connect() as con:
+            rows = con.execute("SELECT id, gene_summary FROM gene_pool").fetchall()
+            updated = 0
+            for row in rows:
+                lines = row["gene_summary"].split("\n")
+                cleaned: list[str] = []
+                skip_next_doc = False
+                for line in lines:
+                    match = re.match(r'\s*def\s+(\w+)', line)
+                    if match and match.group(1).lower() in _SKIP_NAMES:
+                        skip_next_doc = True
+                        continue
+                    if skip_next_doc and line.strip().startswith('"""'):
+                        skip_next_doc = False
+                        continue
+                    skip_next_doc = False
+                    cleaned.append(line)
+                new_summary = "\n".join(cleaned).strip()
+                if new_summary != row["gene_summary"]:
+                    new_tags = " ".join(self.extract_tags(new_summary))
+                    con.execute(
+                        "UPDATE gene_pool SET gene_summary = ?, tags = ? WHERE id = ?",
+                        (new_summary, new_tags, row["id"]),
+                    )
+                    updated += 1
+            if updated:
+                log.info("Gene pool: retagged %d genes", updated)
+            return updated
 
     def backfill(self, skill_store) -> int:
         """One-time backfill from existing crystallized skills.
