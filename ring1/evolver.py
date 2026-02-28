@@ -166,7 +166,13 @@ class Evolver:
         # 5b. Extract optional capability proposal.
         capability_proposal = extract_capability_proposal(response)
         if capability_proposal:
-            log.info("Capability proposal detected: %s", capability_proposal.get("name"))
+            deps = capability_proposal.get("dependencies", [])
+            if deps:
+                log.info("Capability proposal detected: %s (deps: %s)",
+                         capability_proposal.get("name"), deps)
+            else:
+                log.info("Capability proposal detected: %s (no deps — stdlib only)",
+                         capability_proposal.get("name"))
 
         # 6. Extract code.
         new_source = extract_python_code(response)

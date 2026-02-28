@@ -130,12 +130,14 @@ class TestEvaluateOutput:
         assert detail["basis"] == "survived"
         assert detail["volume"] == 0.0
         assert detail["novelty"] == 0.05
+        assert detail["functional"] == 0.0
 
     def test_rich_diverse_output_scores_high(self):
         lines = [f"result_{i}: {i * 3.14:.4f}" for i in range(60)]
         score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
-        assert score > 0.80
-        assert detail["volume"] == 0.10  # saturated at 50+ (max 0.10)
+        assert score > 0.70
+        # volume: min(60/200, 1.0) * 0.05 = 0.015
+        assert detail["volume"] == 0.015
         assert detail["diversity"] > 0.05
 
     def test_duplicate_output_low_diversity(self):
@@ -275,7 +277,40 @@ class TestFunctionalScoring:
     def test_pure_computation_no_functional(self):
         lines = [f"pi digit {i}: {i}" for i in range(50)]
         score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        # "digit" matches no functional pattern — these are pure label lines
         assert detail["functional"] == 0.0
+
+    def test_system_monitoring_triggers_functional(self):
+        lines = [
+            "cpu usage: 45%",
+            "memory used: 3.2 GB",
+            "disk free: 120 GB",
+            "uptime: 5 days",
+            "load average: 1.23",
+        ]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["functional"] > 0.0
+
+    def test_computation_results_trigger_functional(self):
+        lines = [
+            "calculated total: 1234.56",
+            "average response time: 42ms",
+            "processed 100 records",
+        ]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        assert detail["functional"] > 0.0
+
+    def test_volume_saturates_at_200(self):
+        lines = [f"line {i}" for i in range(250)]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        # min(250/200, 1.0) * 0.05 = 0.05 (saturated)
+        assert detail["volume"] == 0.05
+
+    def test_volume_gradient_below_200(self):
+        lines = [f"line {i}" for i in range(100)]
+        score, detail = evaluate_output(lines, survived=True, elapsed=60, max_runtime=60)
+        # min(100/200, 1.0) * 0.05 = 0.025
+        assert detail["volume"] == 0.025
 
 
 class TestNoveltyInScoring:
@@ -471,6 +506,44 @@ class TestPlateau:
         for i in range(2):
             tracker.record(i + 3, f"f{i}", 0.10, 10.0, False)
         assert tracker.is_plateaued(window=5) is False
+
+
+class TestDeclining:
+    """FitnessTracker.is_declining detects consistent downward trends."""
+
+    def test_declining_scores_detected(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        # Insert oldest first: 0.80, 0.78, 0.76, 0.74, 0.72 (monotonic decline)
+        scores = [0.80, 0.78, 0.76, 0.74, 0.72]
+        for i, s in enumerate(scores):
+            tracker.record(i, f"h{i}", s, 60.0, True)
+        assert tracker.is_declining(window=5, min_decline=0.02) is True
+
+    def test_stable_scores_not_declining(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        for i in range(5):
+            tracker.record(i, f"h{i}", 0.75, 60.0, True)
+        assert tracker.is_declining(window=5, min_decline=0.02) is False
+
+    def test_improving_scores_not_declining(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        scores = [0.70, 0.72, 0.74, 0.76, 0.78]
+        for i, s in enumerate(scores):
+            tracker.record(i, f"h{i}", s, 60.0, True)
+        assert tracker.is_declining(window=5, min_decline=0.02) is False
+
+    def test_insufficient_data_not_declining(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        tracker.record(1, "h1", 0.80, 60.0, True)
+        assert tracker.is_declining(window=5, min_decline=0.02) is False
+
+    def test_small_decline_ignored(self, tmp_path):
+        tracker = FitnessTracker(tmp_path / "fitness.db")
+        # Total decline: 0.01 < min_decline=0.02
+        scores = [0.80, 0.798, 0.796, 0.794, 0.79]
+        for i, s in enumerate(scores):
+            tracker.record(i, f"h{i}", s, 60.0, True)
+        assert tracker.is_declining(window=5, min_decline=0.02) is False
 
 
 class TestRealErrorDetection:

@@ -265,6 +265,19 @@ def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int =
         except Exception:
             pass
 
+    # Detect decline (novelty decay spiral).
+    declining = False
+    if fitness:
+        try:
+            declining = fitness.is_declining(window=5, min_decline=0.02)
+        except Exception:
+            pass
+
+    # Treat decline like plateau — signals need for exploration.
+    if declining and not has_directive:
+        log.info("Scores declining — treating as plateau to trigger explore")
+        return False, True  # is_plateaued=True → triggers auto-directive/explore
+
     # Adaptive: skip evolution when plateaued unless a directive is pending.
     if plateaued and not has_directive:
         log.info("Scores plateaued — skipping evolution to save tokens (set a directive to force)")
@@ -1283,11 +1296,12 @@ def run(project_root: pathlib.Path) -> None:
                     except Exception as exc:
                         log.debug("Gene pool add failed (non-fatal): %s", exc)
 
-                # Crystallize skill (best-effort) — skip if source unchanged.
+                # Crystallize skill (best-effort) — skip if source unchanged or low fitness.
+                _CRYSTALLIZE_MIN_SCORE = 0.70
                 if skill_store:
                     import hashlib
                     source_hash = hashlib.sha256(source.encode()).hexdigest()
-                    if source_hash != last_crystallized_hash:
+                    if score >= _CRYSTALLIZE_MIN_SCORE and source_hash != last_crystallized_hash:
                         # Build gene_ids: current gene + any injected parent genes.
                         crystallize_gene_ids = list(last_injected_gene_ids)
                         if gene_pool:
@@ -1302,6 +1316,8 @@ def run(project_root: pathlib.Path) -> None:
                             gene_ids=crystallize_gene_ids,
                         )
                         last_crystallized_hash = source_hash
+                    elif score < _CRYSTALLIZE_MIN_SCORE:
+                        log.debug("Skipping crystallization — score %.4f < %.2f threshold", score, _CRYSTALLIZE_MIN_SCORE)
                     else:
                         log.debug("Skipping crystallization — source unchanged (hash=%s…)", source_hash[:12])
 

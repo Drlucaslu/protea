@@ -56,6 +56,9 @@ _FUNCTIONAL_PATTERNS = [
     re.compile(r"wrote .+ bytes|saved to|created file", re.IGNORECASE),
     re.compile(r"connected to|socket|tcp|udp", re.IGNORECASE),
     re.compile(r"api response|fetched|downloaded", re.IGNORECASE),
+    re.compile(r"result|calculated|computed|total|sum|average", re.IGNORECASE),
+    re.compile(r"parsed|processed|extracted|converted|formatted", re.IGNORECASE),
+    re.compile(r"cpu|memory|disk|uptime|load|process", re.IGNORECASE),
 ]
 
 
@@ -145,8 +148,8 @@ def evaluate_output(
     meaningful = [ln for ln in output_lines if ln.strip()]
     total = len(meaningful)
 
-    # Volume: up to 0.10 (reduced from 0.15 to make room for novelty).
-    volume = min(total / 50, 1.0) * 0.10
+    # Volume: up to 0.05 (50 lines trivially easy; 200 provides gradient).
+    volume = min(total / 200, 1.0) * 0.05
 
     # Diversity: unique content ratio.  Up to 0.10 (reduced from 0.15).
     if total > 0:
@@ -170,12 +173,12 @@ def evaluate_output(
             structured_count += 1
     structure = min(structured_count / max(total, 1) * 2, 1.0) * 0.10
 
-    # Functional bonus: output suggests real I/O or API interaction.  Up to 0.05.
+    # Functional bonus: output suggests real work (I/O, computation, monitoring).  Up to 0.10.
     functional_count = 0
     for ln in meaningful:
         if any(pat.search(ln) for pat in _FUNCTIONAL_PATTERNS):
             functional_count += 1
-    functional = min(functional_count / max(total, 1) * 5, 1.0) * 0.05
+    functional = min(functional_count / max(total, 1) * 5, 1.0) * 0.10
 
     # Error penalty: only count actual program errors (tracebacks, exceptions).
     error_count = sum(1 for ln in output_lines if _is_real_error_line(ln))
@@ -494,6 +497,37 @@ class FitnessTracker(SQLiteStore):
             alignment = cat_alignment
 
         return round(min(alignment * 0.15, 0.15), 4)
+
+    def is_declining(self, window: int = 5, min_decline: float = 0.02) -> bool:
+        """Check if recent scores show a consistent downward trend.
+
+        Returns True if the score dropped by at least min_decline across
+        the last window survived entries AND at least 60% of consecutive
+        pairs are declining.
+        """
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT score FROM fitness_log "
+                "WHERE survived = 1 "
+                "ORDER BY id DESC LIMIT ?",
+                (window,),
+            ).fetchall()
+
+        scores = [row["score"] for row in rows]
+        if len(scores) < window:
+            return False  # not enough data yet
+
+        # scores[0] is newest, scores[-1] is oldest.
+        total_decline = scores[-1] - scores[0]
+        if total_decline < min_decline:
+            return False
+
+        # Check that at least 60% of consecutive pairs are declining.
+        declining_pairs = 0
+        for i in range(len(scores) - 1):
+            if scores[i] < scores[i + 1]:  # newer < older = decline
+                declining_pairs += 1
+        return declining_pairs >= (len(scores) - 1) * 0.6
 
     def is_plateaued(self, window: int = 5, epsilon: float = 0.03) -> bool:
         """Check if recent survived scores are stagnant.

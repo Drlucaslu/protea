@@ -918,6 +918,22 @@ class TestBuildCrystallizePrompt:
         )
         assert "FULL" in user
 
+    def test_source_compressed_strips_comments_and_docstrings(self):
+        source = '''def foo():
+    """This docstring should be stripped."""
+    # This comment should be stripped
+    return 42
+'''
+        _, user = build_crystallize_prompt(
+            source_code=source,
+            output="",
+            generation=1,
+            existing_skills=[],
+        )
+        assert "return 42" in user
+        assert "This docstring should be stripped" not in user
+        assert "This comment should be stripped" not in user
+
 
 class TestParseCrystallizeResponse:
     """parse_crystallize_response() should parse JSON from LLM responses."""

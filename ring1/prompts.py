@@ -54,11 +54,11 @@ Avoid duplicating existing skills — develop complementary capabilities.
 ## Fitness (scored 0.0–1.0)
 Survival is necessary but NOT sufficient — a program that only heartbeats scores 0.50.
 - Base survival: 0.50 (survived max_runtime)
-- Output volume: up to +0.10 (meaningful non-empty lines, saturates at 50 lines)
+- Output volume: up to +0.05 (meaningful non-empty lines, saturates at 200 lines)
 - Output diversity: up to +0.10 (unique lines / total lines)
 - Output novelty: up to +0.05 (minor bonus for varied output)
 - Structured output: up to +0.10 (JSON blocks, tables, key:value reports)
-- Functional bonus: up to +0.05 (real I/O, HTTP, file operations, API interaction)
+- Functional bonus: up to +0.10 (computation results, data processing, system monitoring, I/O)
 - Error penalty: up to −0.10 (traceback/error/exception lines reduce score)
 
 NOTE: Stability is valued over novelty. A working program that produces consistent,
@@ -74,6 +74,7 @@ Propose a capability ONLY when:
 2. No existing skill already covers it
 3. The required packages are on the Allowed Packages list shown below
    IMPORTANT: NEVER propose packages outside the allowed list — they WILL be rejected
+4. Do NOT propose Telegram-related capabilities — Telegram is already handled by Ring 1
 
 Format: After the Ring 2 code block, add:
 
@@ -596,7 +597,7 @@ def build_crystallize_prompt(
 
     parts.append(f"## Ring 2 Source (Generation {generation})")
     parts.append("```python")
-    parts.append(source_code.rstrip())
+    parts.append(_compress_source(source_code).rstrip())
     parts.append("```")
     parts.append("")
 
