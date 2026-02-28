@@ -171,6 +171,10 @@ _DEFAULT_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
     "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "minimax": "https://api.minimax.chat/v1/text/chatcompletion_v2",
+    "kimi": "https://api.moonshot.cn/v1/chat/completions",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "ollama": "http://localhost:11434/v1/chat/completions",
 }
 
 
@@ -201,7 +205,7 @@ def create_llm_client(
 
         return ClaudeClient(api_key=api_key, model=model, max_tokens=max_tokens)
 
-    if provider in ("openai", "deepseek", "qwen"):
+    if provider in ("openai", "deepseek", "qwen", "minimax", "kimi", "gemini", "ollama"):
         from ring1.llm_openai import OpenAIClient
 
         url = api_url or _DEFAULT_URLS[provider]

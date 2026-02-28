@@ -25,7 +25,7 @@ class Ring1Config(NamedTuple):
     shell_timeout: int = 120
     max_tool_rounds: int = 50
     p1_max_tool_rounds: int = 15  # lower limit for autonomous P1 tasks
-    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen" (empty = anthropic)
+    llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen"|"minimax"|"kimi"|"gemini"|"ollama" (empty = anthropic)
     llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
     llm_model: str = ""          # model name (empty = claude_model)
     llm_max_tokens: int = 0      # 0 = use claude_max_tokens

@@ -72,7 +72,7 @@ class TestCreateLLMClient:
     def test_unknown_provider_raises(self):
         with pytest.raises(LLMError, match="Unknown LLM provider"):
             create_llm_client(
-                provider="gemini", api_key="sk-test", model="gemini-pro",
+                provider="nonexistent", api_key="sk-test", model="test",
             )
 
     def test_llm_error_importable_from_llm_client(self):

@@ -76,6 +76,34 @@ dimensions = 256
 # model = "qwen3.5-plus"
 # max_tokens = 8192
 
+# --- MiniMax ---
+# [ring1.llm]
+# provider = "minimax"
+# api_key_env = "MINIMAX_API_KEY"
+# model = "MiniMax-Text-01"
+# max_tokens = 8192
+
+# --- Kimi (Moonshot) ---
+# [ring1.llm]
+# provider = "kimi"
+# api_key_env = "MOONSHOT_API_KEY"
+# model = "moonshot-v1-8k"
+# max_tokens = 8192
+
+# --- Gemini (Google) ---
+# [ring1.llm]
+# provider = "gemini"
+# api_key_env = "GEMINI_API_KEY"
+# model = "gemini-2.0-flash"
+# max_tokens = 8192
+
+# --- Ollama (local) ---
+# [ring1.llm]
+# provider = "ollama"
+# model = "llama3"
+# api_url = "http://localhost:11434/v1/chat/completions"
+# max_tokens = 8192
+
 [ring1.skill_sandbox]
 enabled = true
 base_dir = "data/skill_envs"
