@@ -692,6 +692,18 @@ class GenePool(SQLiteStore):
             summary = summary[:497] + "..."
         return summary
 
+    @staticmethod
+    def diff_capabilities(old_summary: str, new_summary: str) -> list[str]:
+        """Return capability names present in new_summary but not old_summary.
+
+        Extracts class/function names from both summaries and returns
+        the set difference (new - old).
+        """
+        pattern = re.compile(r'(?:class|def)\s+(\w+)')
+        old_names = set(pattern.findall(old_summary))
+        new_names = set(pattern.findall(new_summary))
+        return sorted(new_names - old_names)
+
 
 def _extract_summary_ast(source_code: str) -> str:
     """AST-based extraction — precise, handles methods inside classes."""

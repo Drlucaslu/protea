@@ -57,6 +57,9 @@ class SentinelState:
         "convergence_proposals", "_convergence_context",
         # Preference store reference (for feedback)
         "_preference_store",
+        # Output queue + evolution feedback
+        "output_queue", "gene_pool", "_last_gene_summary",
+        "_pending_evo_schedule",
     )
 
     def __init__(self) -> None:
@@ -100,6 +103,11 @@ class SentinelState:
         self.convergence_proposals: queue.Queue = queue.Queue()
         self._convergence_context: dict[str, dict] = {}
         self._preference_store = None  # Set by Sentinel after creation
+        # Output queue + evolution feedback
+        self.output_queue = None  # Set by Sentinel after creation
+        self.gene_pool = None  # Set by Sentinel after creation
+        self._last_gene_summary: str = ""
+        self._pending_evo_schedule: dict | None = None
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -360,18 +368,43 @@ class TelegramBot:
             self._send_reply(text, chat_id=chat_id, reply_to_message_id=reply_to_message_id)
         return reply
 
-    def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> None:
-        """Send a message with an inline keyboard (fire-and-forget).
+    def _send_message_with_keyboard(self, text: str, buttons: list[list[dict]]) -> dict | None:
+        """Send a message with an inline keyboard.
 
         *buttons* is a list of rows, each row a list of dicts with
         ``text`` and ``callback_data`` keys.
+        Returns the Telegram API response dict, or None on failure.
         """
-        self._api_call("sendMessage", {
+        return self._api_call("sendMessage", {
             "chat_id": self.chat_id,
             "text": self._md_to_tg_html(text),
             "parse_mode": "HTML",
             "reply_markup": json.dumps({"inline_keyboard": buttons}),
         })
+
+    def deliver_evolution_outputs(self) -> None:
+        """Check output queue and send pending evolution outputs to user."""
+        oq = getattr(self.state, 'output_queue', None)
+        if not oq:
+            return
+        try:
+            pending = oq.get_pending(limit=2)
+        except Exception:
+            log.debug("Output queue get_pending failed", exc_info=True)
+            return
+        for item in pending:
+            text = f"\U0001f9ec 新进化能力: **{item['capability']}**\n\n{item['summary'][:300]}"
+            buttons = [[
+                {"text": "\U0001f44d 不错", "callback_data": f"evo:accept:{item['id']}"},
+                {"text": "\U0001f4cc 定期执行", "callback_data": f"evo:schedule:{item['id']}"},
+                {"text": "\U0001f44e 不要了", "callback_data": f"evo:reject:{item['id']}"},
+            ]]
+            result = self._send_message_with_keyboard(text, buttons)
+            msg_id = result.get("result", {}).get("message_id") if result else None
+            try:
+                oq.mark_delivered(item['id'], msg_id)
+            except Exception:
+                log.debug("Output queue mark_delivered failed", exc_info=True)
 
     def send_feedback_prompt(self) -> None:
         """Send a quick feedback prompt after a completed task.
@@ -1381,6 +1414,50 @@ class TelegramBot:
             self.state._convergence_context.pop(rule_key, None)
             return "好的，不保存这条规则。"
 
+        # --- evolution output callbacks ---
+        if data.startswith("evo:accept:"):
+            item_id = int(data.split(":")[-1])
+            oq = getattr(self.state, 'output_queue', None)
+            if oq:
+                item = oq.get_by_id(item_id)
+                oq.mark_feedback(item_id, "accepted")
+                gp = getattr(self.state, 'gene_pool', None)
+                if gp and item and item.get("gene_id"):
+                    try:
+                        gp.record_task_hits([item["gene_id"]], self.state.generation)
+                    except Exception:
+                        pass
+            return "\U0001f44d 已记录，将继续往这个方向进化！"
+
+        if data.startswith("evo:schedule:"):
+            item_id = int(data.split(":")[-1])
+            oq = getattr(self.state, 'output_queue', None)
+            if oq:
+                item = oq.get_by_id(item_id)
+                oq.mark_feedback(item_id, "scheduled")
+                gp = getattr(self.state, 'gene_pool', None)
+                if gp and item and item.get("gene_id"):
+                    try:
+                        gp.record_task_hits([item["gene_id"]], self.state.generation)
+                    except Exception:
+                        pass
+                self.state._pending_evo_schedule = item
+            return "多久执行一次？请回复，例如：每天、每小时、每周一"
+
+        if data.startswith("evo:reject:"):
+            item_id = int(data.split(":")[-1])
+            oq = getattr(self.state, 'output_queue', None)
+            if oq:
+                item = oq.get_by_id(item_id)
+                oq.mark_feedback(item_id, "rejected")
+                gp = getattr(self.state, 'gene_pool', None)
+                if gp and item and item.get("gene_id"):
+                    try:
+                        gp.delete_gene(item["gene_id"])
+                    except Exception:
+                        pass
+            return "\U0001f44e 已删除，不会再往这个方向进化。"
+
         if data.startswith("run:"):
             name = data[4:]
             sr = self.state.skill_runner
@@ -1726,6 +1803,35 @@ class TelegramBot:
                             if handled:
                                 continue
 
+                        # Check if there's a pending evolution schedule reply
+                        pending_evo = getattr(self.state, '_pending_evo_schedule', None)
+                        if (pending_evo and text.strip()
+                                and not text.strip().startswith("/")):
+                            cron = _parse_schedule_text(text.strip())
+                            if cron and self.state.scheduled_store:
+                                try:
+                                    self.state.scheduled_store.add(
+                                        name=pending_evo["capability"],
+                                        task_text=pending_evo["summary"][:500],
+                                        cron_expr=cron,
+                                        chat_id=msg_chat_id,
+                                    )
+                                    self._send_reply(
+                                        f"\u2705 已创建定期任务: {pending_evo['capability']} ({cron})",
+                                        **_reply_kw,
+                                    )
+                                except Exception:
+                                    log.debug("Failed to create evo scheduled task", exc_info=True)
+                                    self._send_reply("创建定期任务失败，请重试。", **_reply_kw)
+                            else:
+                                self._send_reply(
+                                    "无法识别时间，请用：每天、每小时、每周一 等格式",
+                                    **_reply_kw,
+                                )
+                            self.state._pending_evo_schedule = None
+                            handled = True
+                            continue
+
                         # Strip @botname from group messages
                         if is_group and self.bot_username:
                             text = text.replace(f"@{self.bot_username}", "").strip()
@@ -1771,6 +1877,12 @@ class TelegramBot:
                     except Exception:
                         log.debug("Error sending convergence proposal", exc_info=True)
                         break
+
+                # Deliver pending evolution outputs to user.
+                try:
+                    self.deliver_evolution_outputs()
+                except Exception:
+                    log.debug("Error delivering evolution outputs", exc_info=True)
             except Exception:
                 log.warning("Error in polling loop", exc_info=True)
                 # Back off on repeated errors.
@@ -1781,6 +1893,37 @@ class TelegramBot:
     def stop(self) -> None:
         """Signal the polling loop to stop."""
         self._running.clear()
+
+
+# ---------------------------------------------------------------------------
+# Schedule text parser
+# ---------------------------------------------------------------------------
+
+def _parse_schedule_text(text: str) -> str | None:
+    """Parse Chinese/English schedule text into a cron expression.
+
+    Returns a cron string or None if unrecognized.
+    """
+    t = text.strip().lower()
+    _MAP = {
+        "每小时": "0 * * * *",
+        "每天": "0 9 * * *",
+        "每日": "0 9 * * *",
+        "每周": "0 9 * * 1",
+        "每周一": "0 9 * * 1",
+        "每周二": "0 9 * * 2",
+        "每周三": "0 9 * * 3",
+        "每周四": "0 9 * * 4",
+        "每周五": "0 9 * * 5",
+        "每周六": "0 9 * * 6",
+        "每周日": "0 9 * * 0",
+        "每月": "0 9 1 * *",
+        "hourly": "0 * * * *",
+        "daily": "0 9 * * *",
+        "weekly": "0 9 * * 1",
+        "monthly": "0 9 1 * *",
+    }
+    return _MAP.get(t)
 
 
 # ---------------------------------------------------------------------------

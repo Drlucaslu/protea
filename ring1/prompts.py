@@ -166,6 +166,8 @@ def build_evolution_prompt(
     skill_hit_summary: dict | None = None,
     semantic_rules: list[dict] | None = None,
     evolution_direction: str = "",
+    accepted_capabilities: list[dict] | None = None,
+    rejected_directions: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call."""
     parts: list[str] = []
@@ -319,6 +321,20 @@ def build_evolution_prompt(
             usage = cap.get("usage_count", 0)
             cap_items.append(f"{name}({usage}x)")
         parts.append(", ".join(cap_items))
+        parts.append("")
+
+    # Accepted capabilities (user confirmed — preserve, don't re-evolve)
+    if accepted_capabilities:
+        parts.append("## Accepted Capabilities (已被用户确认 — 保留不要重新开发)")
+        for cap in accepted_capabilities:
+            parts.append(f"- {cap['capability']}: 用户已确认有价值")
+        parts.append("")
+
+    # Rejected directions (user refused — do NOT evolve these)
+    if rejected_directions:
+        parts.append("## Rejected Directions (用户明确拒绝 — 禁止进化)")
+        for rej in rejected_directions:
+            parts.append(f"- {rej['capability']}: 用户不需要")
         parts.append("")
 
     # Allowed packages for capability proposals

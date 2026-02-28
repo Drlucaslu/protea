@@ -452,7 +452,7 @@ def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_sto
     return "\n".join(parts) if parts else ""
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0, accepted_capabilities=None, rejected_directions=None):
     """Best-effort evolution.  Returns (success, gene_ids, adopted_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
@@ -597,6 +597,8 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             skill_hit_summary=skill_hit_summary,
             semantic_rules=semantic_rules or None,
             evolution_direction=evolution_direction,
+            accepted_capabilities=accepted_capabilities,
+            rejected_directions=rejected_directions,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -927,6 +929,7 @@ def run(project_root: pathlib.Path) -> None:
     scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
     preference_store = _best_effort("PreferenceStore", lambda: __import__("ring0.preference_store", fromlist=["PreferenceStore"]).PreferenceStore(db_path, cfg.get("ring1", {}).get("user_profile", {})))
+    output_queue = _best_effort("OutputQueue", lambda: __import__("ring0.output_queue", fromlist=["OutputQueue"]).OutputQueue(db_path))
     memory_curator = _create_memory_curator(project_root)
 
     # Capability skill sandbox — venv manager + allowed packages.
@@ -961,6 +964,8 @@ def run(project_root: pathlib.Path) -> None:
     state.task_store = task_store
     state.scheduled_store = scheduled_store
     state._preference_store = preference_store
+    state.output_queue = output_queue
+    state.gene_pool = gene_pool
     bot = _create_bot(project_root, state, fitness, ring2_path)
     matrix_bot = _create_matrix_bot(project_root, state)
 
@@ -1309,6 +1314,22 @@ def run(project_root: pathlib.Path) -> None:
                     except Exception as exc:
                         log.debug("Gene pool add failed (non-fatal): %s", exc)
 
+                # Capture new capabilities for user review.
+                if output_queue and gene_pool and evolved:
+                    try:
+                        new_summary = gene_pool.extract_summary(source)
+                        old_summary = getattr(state, '_last_gene_summary', '')
+                        new_caps = gene_pool.diff_capabilities(old_summary, new_summary)
+                        if new_caps and output_queue.daily_push_count() < 5:
+                            import hashlib as _hl
+                            source_hash_oq = _hl.sha256(source.encode()).hexdigest()
+                            gene_id = gene_pool.get_id_by_hash(source_hash_oq)
+                            for cap_name in new_caps[:3]:
+                                output_queue.add(gene_id, generation, cap_name, new_summary)
+                        state._last_gene_summary = new_summary
+                    except Exception:
+                        log.debug("Output capture failed (non-fatal)", exc_info=True)
+
                 # Crystallize skill (best-effort) — skip if source unchanged or low fitness.
                 _CRYSTALLIZE_MIN_SCORE = 0.70
                 if skill_store:
@@ -1416,6 +1437,15 @@ def run(project_root: pathlib.Path) -> None:
                     evo_direction = _build_evolution_direction(
                         gene_pool, user_profiler, skill_store, memory_store,
                     )
+                    # Query user feedback constraints for evolution.
+                    accepted_caps = []
+                    rejected_dirs = []
+                    if output_queue:
+                        try:
+                            accepted_caps = output_queue.get_accepted()
+                            rejected_dirs = output_queue.get_rejected()
+                        except Exception:
+                            pass
                     evolved, last_injected_gene_ids, adopted_gene_ids = _try_evolve(
                         project_root, fitness, ring2_path,
                         generation, params, True, notifier,
@@ -1433,6 +1463,8 @@ def run(project_root: pathlib.Path) -> None:
                         evolution_direction=evo_direction,
                         is_auto_directive=_is_auto_directive,
                         auto_directive_attempt=auto_directive_attempt,
+                        accepted_capabilities=accepted_caps or None,
+                        rejected_directions=rejected_dirs or None,
                     )
                     if gene_pool and last_injected_gene_ids:
                         try:
@@ -1550,6 +1582,14 @@ def run(project_root: pathlib.Path) -> None:
                                          task_boosted, boosted, decayed)
                         except Exception:
                             log.debug("Gene scoring failed (non-fatal)", exc_info=True)
+
+                    if output_queue:
+                        try:
+                            expired = output_queue.expire_old(max_age_hours=24)
+                            if expired:
+                                log.info("Output queue: expired %d stale items", expired)
+                        except Exception:
+                            log.debug("Output queue expiry failed (non-fatal)", exc_info=True)
 
                     # Nightly consolidation: cross-task correlation + insights (once per day).
                     from datetime import datetime as _dt
@@ -1711,6 +1751,15 @@ def run(project_root: pathlib.Path) -> None:
                 evo_direction = _build_evolution_direction(
                     gene_pool, user_profiler, skill_store, memory_store,
                 )
+                # Query user feedback constraints for death-path evolution.
+                death_accepted = []
+                death_rejected = []
+                if output_queue:
+                    try:
+                        death_accepted = output_queue.get_accepted()
+                        death_rejected = output_queue.get_rejected()
+                    except Exception:
+                        pass
                 evolved, last_injected_gene_ids, _ = _try_evolve(
                     project_root, fitness, ring2_path,
                     generation, params, False, notifier,
@@ -1726,6 +1775,8 @@ def run(project_root: pathlib.Path) -> None:
                     allowed_packages=allowed_packages,
                     skill_hit_summary=skill_hit,
                     evolution_direction=evo_direction,
+                    accepted_capabilities=death_accepted or None,
+                    rejected_directions=death_rejected or None,
                 )
                 if gene_pool and last_injected_gene_ids:
                     try:

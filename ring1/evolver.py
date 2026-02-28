@@ -92,6 +92,8 @@ class Evolver:
         skill_hit_summary: dict | None = None,
         semantic_rules: list[dict] | None = None,
         evolution_direction: str = "",
+        accepted_capabilities: list[dict] | None = None,
+        rejected_directions: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -143,6 +145,8 @@ class Evolver:
             skill_hit_summary=skill_hit_summary,
             semantic_rules=semantic_rules,
             evolution_direction=evolution_direction,
+            accepted_capabilities=accepted_capabilities,
+            rejected_directions=rejected_directions,
         )
 
         # 4. Call Claude API.
