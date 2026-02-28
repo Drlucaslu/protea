@@ -6,12 +6,14 @@ alongside the Sentinel main loop.  Errors never propagate to the caller.
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import mimetypes
 import os
 import pathlib
 import queue
+import re
 import threading
 import time
 import urllib.request
@@ -181,6 +183,81 @@ class TelegramBot:
             self.bot_username = result["result"].get("username", "")
             log.info("Bot username: @%s", self.bot_username)
 
+    # ------------------------------------------------------------------
+    # Markdown → Telegram HTML conversion
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _md_to_tg_html(text: str) -> str:
+        """Convert Markdown to Telegram-compatible HTML.
+
+        Handles both standard Markdown (``**bold**``) and Telegram-legacy
+        Markdown (``*bold*``), converting everything to HTML so we can use
+        ``parse_mode=HTML`` which is the most forgiving Telegram mode.
+        """
+        preserved: list[str] = []
+
+        def _hold(s: str) -> str:
+            idx = len(preserved)
+            preserved.append(s)
+            return f"\x00\x01{idx}\x00"
+
+        # 1. Fenced code blocks: ```lang\ncode\n```
+        def _block(m: re.Match) -> str:
+            lang = m.group(1) or ""
+            code = _html.escape(m.group(2).strip())
+            if lang:
+                return _hold(f'<pre><code class="language-{lang}">'
+                             f"{code}</code></pre>")
+            return _hold(f"<pre>{code}</pre>")
+
+        text = re.sub(r"```(\w*)\n?(.*?)```", _block, text, flags=re.DOTALL)
+
+        # 2. Inline code: `code`
+        text = re.sub(
+            r"`([^`\n]+)`",
+            lambda m: _hold(f"<code>{_html.escape(m.group(1))}</code>"),
+            text,
+        )
+
+        # 3. Links: [text](url)
+        text = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: _hold(
+                f'<a href="{_html.escape(m.group(2))}">'
+                f"{_html.escape(m.group(1))}</a>"
+            ),
+            text,
+        )
+
+        # 4. Escape HTML entities in remaining text
+        text = _html.escape(text)
+
+        # 5. Apply formatting (order matters: longest match first)
+        # ***bold italic***
+        text = re.sub(r"\*\*\*(.+?)\*\*\*", r"<b><i>\1</i></b>", text)
+        # **bold**  (standard Markdown)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        # *bold*  (Telegram-legacy — treat as bold, not italic)
+        text = re.sub(
+            r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<b>\1</b>", text
+        )
+        # _italic_
+        text = re.sub(
+            r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"<i>\1</i>", text
+        )
+        # ### headers → bold
+        text = re.sub(
+            r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE
+        )
+        # ~~strikethrough~~
+        text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+
+        # 6. Restore preserved content
+        for i, content in enumerate(preserved):
+            text = text.replace(f"\x00\x01{i}\x00", content)
+
+        return text
+
     def _api_call(self, method: str, params: dict | None = None) -> dict | None:
         """Call a Telegram Bot API method.  Returns parsed JSON or None."""
         url = _API_BASE.format(token=self.bot_token, method=method)
@@ -198,6 +275,10 @@ class TelegramBot:
                 if body.get("ok"):
                     return body
                 return None
+        except urllib.error.HTTPError as exc:
+            # One-line log for HTTP errors (no traceback) — reduces noise
+            log.warning("API call %s failed: HTTP %d", method, exc.code)
+            return None
         except Exception:
             log.warning("API call %s failed", method, exc_info=True)
             return None
@@ -247,12 +328,14 @@ class TelegramBot:
         for i, seg in enumerate(segments):
             if len(segments) > 1:
                 seg = f"[{i + 1}/{len(segments)}]\n{seg}"
-            params: dict = {"chat_id": target, "text": seg, "parse_mode": "Markdown"}
+            html_seg = self._md_to_tg_html(seg)
+            params: dict = {"chat_id": target, "text": html_seg, "parse_mode": "HTML"}
             if reply_to_message_id:
                 params["reply_to_message_id"] = reply_to_message_id
             result = self._api_call("sendMessage", params)
             if result is None:
-                # Markdown was rejected — retry as plain text.
+                # HTML was rejected — retry as plain text.
+                params["text"] = seg  # original text, no conversion
                 params.pop("parse_mode", None)
                 params.pop("reply_to_message_id", None)  # might fail if original deleted
                 result = self._api_call("sendMessage", params)
@@ -285,8 +368,8 @@ class TelegramBot:
         """
         self._api_call("sendMessage", {
             "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
+            "text": self._md_to_tg_html(text),
+            "parse_mode": "HTML",
             "reply_markup": json.dumps({"inline_keyboard": buttons}),
         })
 

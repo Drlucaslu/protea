@@ -72,7 +72,8 @@ a CAPABILITY SKILL alongside your Ring 2 code mutation.
 Propose a capability ONLY when:
 1. Recent user tasks clearly need it (evidence in task history)
 2. No existing skill already covers it
-3. The required packages are well-known and safe
+3. The required packages are on the Allowed Packages list shown below
+   IMPORTANT: NEVER propose packages outside the allowed list — they WILL be rejected
 
 Format: After the Ring 2 code block, add:
 

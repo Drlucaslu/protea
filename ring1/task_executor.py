@@ -444,6 +444,7 @@ class TaskExecutor:
         p1_idle_threshold_sec: int = 600,
         p1_check_interval_sec: int = 60,
         max_tool_rounds: int = 25,
+        p1_max_tool_rounds: int = 15,
         user_profiler=None,
         embedding_provider=None,
         prefer_local_skills: bool = True,
@@ -483,6 +484,7 @@ class TaskExecutor:
         self.p1_idle_threshold_sec = p1_idle_threshold_sec
         self.p1_check_interval_sec = p1_check_interval_sec
         self.max_tool_rounds = max_tool_rounds
+        self.p1_max_tool_rounds = p1_max_tool_rounds
         self.user_profiler = user_profiler
         self.embedding_provider = embedding_provider
         self.prefer_local_skills = prefer_local_skills
@@ -1119,6 +1121,22 @@ class TaskExecutor:
                 parts.append(f"  Result: {summary[:100]}")
         parts.append("")
 
+        # Include recent P1 tasks to prevent re-triggering the same work
+        try:
+            p1_history = self.memory_store.get_by_type("p1_task", limit=5)
+        except Exception:
+            p1_history = []
+        if p1_history:
+            parts.append("## Recent Autonomous Work (DO NOT repeat these)")
+            for p1 in p1_history:
+                p1_content = p1.get("content", "")
+                p1_meta = p1.get("metadata", {})
+                p1_summary = p1_meta.get("response_summary", "")
+                parts.append(f"- P1: {p1_content}")
+                if p1_summary:
+                    parts.append(f"  Result: {p1_summary[:100]}")
+            parts.append("")
+
         # Include directive if set
         snap = self.state.snapshot()
         directive = snap.get("evolution_directive", "")
@@ -1246,7 +1264,7 @@ class TaskExecutor:
                         TASK_SYSTEM_PROMPT, user_message,
                         tools=self.registry.get_schemas(),
                         tool_executor=tracking_execute,
-                        max_rounds=self.max_tool_rounds,
+                        max_rounds=self.p1_max_tool_rounds,
                     )
                 else:
                     response = self.client.send_message(
@@ -1339,6 +1357,7 @@ def create_executor(
     (pathlib.Path(workspace) / "output").mkdir(parents=True, exist_ok=True)
     shell_timeout = getattr(config, "shell_timeout", 30)
     max_tool_rounds = getattr(config, "max_tool_rounds", 25)
+    p1_max_tool_rounds = getattr(config, "p1_max_tool_rounds", 15)
 
     # Create subagent manager (needs registry, so we build in two steps)
     base_registry = create_default_registry(
@@ -1375,6 +1394,7 @@ def create_executor(
         p1_idle_threshold_sec=config.p1_idle_threshold_sec,
         p1_check_interval_sec=config.p1_check_interval_sec,
         max_tool_rounds=max_tool_rounds,
+        p1_max_tool_rounds=p1_max_tool_rounds,
         user_profiler=user_profiler,
         embedding_provider=embedding_provider,
         prefer_local_skills=prefer_local_skills,
