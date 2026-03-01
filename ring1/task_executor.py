@@ -19,7 +19,6 @@ import queue
 import threading
 import time
 
-from ring1.habit_detector import _strip_context_prefix
 from ring1.llm_base import LLMClient, LLMError
 from ring1.tool_registry import ToolRegistry
 
@@ -32,6 +31,19 @@ _TG_MSG_LIMIT = 4000  # Telegram hard limit ~4096, leave margin
 import re as _re
 
 _RECALL_KEYWORD_RE = _re.compile(r"[a-zA-Z0-9_\u4e00-\u9fff]+")
+
+# Regex to strip conversation context prefix injected by telegram_bot.
+_CONTEXT_PREFIX_RE = _re.compile(
+    r"^\[Context:[^\]]*\]\n"
+    r"Your (?:previous )?message: \".*?\"[\n]+"
+    r"User(?:'s reply|\s+now says): ",
+    _re.DOTALL,
+)
+
+
+def _strip_context_prefix(text: str) -> str:
+    """Remove conversation context prefix, returning only the user's text."""
+    return _CONTEXT_PREFIX_RE.sub("", text)
 
 _SKILL_TOKEN_RE = _re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")
 
@@ -500,9 +512,6 @@ class TaskExecutor:
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
-        self._last_habit_check: float = 0.0
-        # Habit detector — initialized later in create_executor() with templates.
-        self.habit_detector = None
         # Convergence detector — initialized later in create_executor().
         self.convergence_detector = None
         # Conversation history: list of (timestamp, user_text, response_text)
@@ -990,94 +999,6 @@ class TaskExecutor:
             log.debug("Cross-domain inspiration check failed", exc_info=True)
             return None
 
-    def _propose_habit(self, pattern) -> None:
-        """Push a habit proposal to state.habit_proposals for the bot to send."""
-        if not self.habit_detector:
-            return
-        self.habit_detector.mark_proposed(pattern.pattern_key)
-
-        # Build message text depending on pattern type.
-        if pattern.pattern_type == "template":
-            label = pattern.task_summary or pattern.template_name
-            if pattern.all_samples:
-                samples_text = "\n".join(f"• {s}" for s in pattern.all_samples[:5])
-                text = (
-                    f"*发现重复模式*\n\n"
-                    f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
-                    f"{samples_text}\n\n"
-                    f"建议创建定时任务自动执行。"
-                )
-            else:
-                text = (
-                    f"*发现重复模式*\n\n"
-                    f"你最近 {pattern.count} 次执行了「{label}」相关任务：\n"
-                    f"「{pattern.sample_task}」\n\n"
-                    f"建议创建定时任务自动执行。"
-                )
-        else:
-            text = (
-                f"*发现重复模式*\n\n"
-                f"你最近 {pattern.count} 次执行了类似任务：\n"
-                f"「{pattern.sample_task}」\n\n"
-                f"建议创建定时任务自动执行。"
-            )
-
-        buttons = []
-        cron = pattern.suggested_cron or "0 9 * * *"
-        try:
-            from ring0.cron import describe
-            desc = describe(cron)
-        except Exception:
-            desc = cron
-
-        # Encode auto_stop_hours into callback_data after "|"
-        auto_stop = getattr(pattern, "auto_stop_hours", 0) or 0
-        cb_suffix = f"|{auto_stop}" if auto_stop else ""
-
-        btn_text = f"自动执行 ({desc})"
-        if auto_stop:
-            btn_text = f"自动执行 ({desc}, {auto_stop}小时后自动停止)"
-
-        buttons.append([{
-            "text": btn_text,
-            "callback_data": f"habit:schedule:{pattern.pattern_key}:{cron}{cb_suffix}",
-        }])
-        buttons.append([{
-            "text": "不需要",
-            "callback_data": f"habit:dismiss:{pattern.pattern_key}",
-        }])
-
-        # Store proposal context so callback can build a proper task_text.
-        habit_ctx = getattr(self.state, "_habit_context", None)
-        if habit_ctx is not None:
-            # Look up clarification_prompt from template config.
-            clarification_prompt = ""
-            if self.habit_detector and pattern.template_name:
-                for tmpl in self.habit_detector._templates:
-                    if tmpl.get("id") == pattern.template_name:
-                        clarification_prompt = tmpl.get("clarification_prompt", "")
-                        break
-            habit_ctx[pattern.pattern_key] = {
-                "task_text": pattern.sample_task,
-                "task_summary": pattern.task_summary,
-                "all_samples": pattern.all_samples,
-                "clarification_prompt": clarification_prompt,
-                "cron_expr": cron,
-                "auto_stop_hours": auto_stop,
-            }
-
-        # Put into state queue for bot to consume.
-        habit_q = getattr(self.state, "habit_proposals", None)
-        if habit_q is not None:
-            habit_q.put((text, buttons))
-        else:
-            # Fallback: send directly via reply_fn (no keyboard).
-            if self.reply_fn:
-                try:
-                    self.reply_fn(text)
-                except Exception:
-                    log.debug("Failed to send habit proposal", exc_info=True)
-
     def _check_p1_opportunity(self) -> None:
         """Check if we should trigger a P1 autonomous task."""
         if not self.p1_enabled:
@@ -1085,16 +1006,6 @@ class TaskExecutor:
 
         now = time.time()
 
-        # Habit detection — two-layer: template + high-threshold repetitive
-        if self.habit_detector and now - self._last_habit_check >= 3600:
-            self._last_habit_check = now
-            try:
-                patterns = self.habit_detector.detect()
-                log.info("Habit detection: found %d patterns", len(patterns))
-                if patterns:
-                    self._propose_habit(patterns[0])  # max 1 proposal at a time
-            except Exception:
-                log.debug("Habit detection failed", exc_info=True)
         # Check idle threshold
         if now - self._last_p0_time < self.p1_idle_threshold_sec:
             return
@@ -1428,18 +1339,6 @@ def create_executor(
             log.info("PreferenceExtractor initialized (rate_limit=%ds)", rate_limit)
         except Exception:
             log.debug("PreferenceExtractor init failed (non-fatal)", exc_info=True)
-
-    # Initialize habit detector with templates and LLM client.
-    if memory_store:
-        from ring1.habit_detector import HabitDetector, load_templates
-        project_root = pathlib.Path(ring2_path).parent
-        templates = load_templates(project_root / "config" / "task_templates.json")
-        executor.habit_detector = HabitDetector(
-            memory_store,
-            scheduled_store,
-            templates=templates,
-            llm_client=client,
-        )
 
     # Initialize convergence detector.
     if memory_store and embedding_provider:

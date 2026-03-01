@@ -50,9 +50,6 @@ class SentinelState:
         "memory_store", "skill_store", "task_store", "scheduled_store",
         # Service references
         "notifier", "skill_runner", "registry_client", "subagent_manager",
-        # Habit detection
-        "habit_proposals", "_habit_dismissed", "_habit_context",
-        "_pending_habits",
         # Convergence detection
         "convergence_proposals", "_convergence_context",
         # Preference store reference (for feedback)
@@ -94,11 +91,6 @@ class SentinelState:
         self.skill_runner = None
         self.registry_client = None
         self.subagent_manager = None
-        # Habit detection
-        self.habit_proposals: queue.Queue = queue.Queue()
-        self._habit_dismissed: set[str] = set()
-        self._habit_context: dict[str, dict] = {}  # pattern_key -> proposal details
-        self._pending_habits: dict[str, dict] = {}  # pattern_key -> {cron, auto_stop_hours, timestamp}
         # Convergence detection
         self.convergence_proposals: queue.Queue = queue.Queue()
         self._convergence_context: dict[str, dict] = {}
@@ -1319,8 +1311,8 @@ class TelegramBot:
     def _handle_callback(self, data: str) -> str:
         """Handle an inline keyboard callback by prefix.
 
-        ``data`` format: ``run:<name>``, ``skill:<name>``, ``habit:…``,
-        or ``feedback:positive|negative``.
+        ``data`` format: ``run:<name>``, ``skill:<name>``,
+        ``convergence:…``, or ``feedback:positive|negative``.
         Returns a text reply.
         """
         # --- feedback callbacks ---
@@ -1347,51 +1339,6 @@ class TelegramBot:
             except Exception:
                 log.debug("Feedback processing failed", exc_info=True)
             return "\U0001f44e 收到，我会改进的！"
-
-        # --- habit callbacks ---
-        if data.startswith("habit:schedule:"):
-            # format: habit:schedule:<pattern_key>:<cron_expr>
-            # or:     habit:schedule:<pattern_key>:<cron_expr>|<auto_stop_hours>
-            # pattern_key formats: "template:X", "repetitive:X+Y+Z"
-            rest = data[len("habit:schedule:"):]
-            parts = rest.split(":")
-            if len(parts) >= 3:
-                pattern_key = f"{parts[0]}:{parts[1]}"
-                cron_and_stop = ":".join(parts[2:])
-            elif len(parts) == 2:
-                pattern_key = parts[0]
-                cron_and_stop = parts[1]
-            else:
-                return "格式错误。"
-
-            # Parse optional auto_stop_hours from "|" suffix.
-            auto_stop_hours = 0
-            if "|" in cron_and_stop:
-                cron_expr, auto_stop_str = cron_and_stop.rsplit("|", 1)
-                try:
-                    auto_stop_hours = int(auto_stop_str)
-                except ValueError:
-                    auto_stop_hours = 0
-            else:
-                cron_expr = cron_and_stop
-
-            # Store as pending — ask user to clarify the topic first.
-            ctx = getattr(self.state, "_habit_context", {}).get(pattern_key, {})
-            prompt = ctx.get("clarification_prompt", "")
-            if not prompt:
-                prompt = "请具体描述你想自动执行的任务内容："
-
-            self.state._pending_habits[pattern_key] = {
-                "cron": cron_expr,
-                "auto_stop_hours": auto_stop_hours,
-                "timestamp": time.time(),
-            }
-            return prompt
-
-        if data.startswith("habit:dismiss:"):
-            pattern_key = data[len("habit:dismiss:"):]
-            self.state._habit_dismissed.add(pattern_key)
-            return "好的，不再提醒这个模式。"
 
         if data.startswith("convergence:confirm:"):
             rule_key = data[len("convergence:confirm:"):]
@@ -1759,50 +1706,6 @@ class TelegramBot:
                         if not text:
                             continue
 
-                        # Check if there's a pending habit awaiting clarification
-                        if (self.state._pending_habits
-                                and text.strip()
-                                and not text.strip().startswith("/")):
-                            now_ph = time.time()
-                            for pk, info in list(self.state._pending_habits.items()):
-                                if now_ph - info["timestamp"] > 300:  # 5min expiry
-                                    del self.state._pending_habits[pk]
-                                    continue
-                                # User's reply is the topic
-                                topic = text.strip()
-                                ctx_h = self.state._habit_context.get(pk, {})
-                                default_text = ctx_h.get("task_text", "自动任务")
-                                task_text = f"{topic} — {default_text}"
-                                # Create the scheduled task
-                                expires_at = None
-                                if info["auto_stop_hours"] > 0:
-                                    expires_at = now_ph + info["auto_stop_hours"] * 3600
-                                ss = self.state.scheduled_store
-                                if ss:
-                                    safe_name = pk.replace(":", "_")
-                                    sched_id = ss.add(
-                                        name=f"auto_{safe_name}",
-                                        task_text=task_text,
-                                        cron_expr=info["cron"],
-                                        schedule_type="cron",
-                                        chat_id=msg_chat_id,
-                                        expires_at=expires_at,
-                                    )
-                                    try:
-                                        from ring0.cron import describe
-                                        desc = describe(info["cron"])
-                                    except Exception:
-                                        desc = info["cron"]
-                                    reply_msg = f"已创建定时任务: {desc}\n任务: {task_text}\n(ID: {sched_id})"
-                                    if info["auto_stop_hours"] > 0:
-                                        reply_msg += f"\n将在 {info['auto_stop_hours']} 小时后自动停止"
-                                    self._send_reply(reply_msg, **_reply_kw)
-                                del self.state._pending_habits[pk]
-                                handled = True
-                                break
-                            if handled:
-                                continue
-
                         # Check if there's a pending evolution schedule reply
                         pending_evo = getattr(self.state, '_pending_evo_schedule', None)
                         if (pending_evo and text.strip()
@@ -1855,17 +1758,6 @@ class TelegramBot:
                                 self._send_reply(reply)
                     except Exception:
                         log.debug("Error handling update", exc_info=True)
-
-                # Consume habit proposals from the executor.
-                while not self.state.habit_proposals.empty():
-                    try:
-                        text, buttons = self.state.habit_proposals.get_nowait()
-                        self._send_message_with_keyboard(text, buttons)
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        log.debug("Error sending habit proposal", exc_info=True)
-                        break
 
                 # Consume convergence proposals from the executor.
                 while not self.state.convergence_proposals.empty():

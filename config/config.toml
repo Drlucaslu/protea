@@ -123,11 +123,6 @@ min_corrections = 2
 similarity_threshold = 0.5
 cooldown_sec = 600
 
-[ring1.habit_detection]
-enabled = true
-check_interval_sec = 3600
-template_file = "config/task_templates.json"
-
 [ring1.proactive]
 enabled = true
 morning_hour = 9
