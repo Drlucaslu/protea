@@ -324,7 +324,11 @@ class TelegramBot:
 
     def _get_updates(self) -> list[dict]:
         """Fetch new updates via long polling."""
-        params = {"offset": self._offset, "timeout": 30}
+        params = {
+            "offset": self._offset,
+            "timeout": 30,
+            "allowed_updates": ["message", "callback_query"],
+        }
         result = self._api_call("getUpdates", params)
         if not result:
             return []
