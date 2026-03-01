@@ -1903,24 +1903,35 @@ class TelegramBot:
                         break
 
                 # Proactive nudge check (periodic, during active usage).
+                # Runs in a background thread to avoid blocking the poll loop
+                # when the LLM API is slow or timing out.
                 _nudge_engine = getattr(self, "_nudge_engine", None)
-                if _nudge_engine:
+                if _nudge_engine and not getattr(self, "_proactive_nudge_running", False):
                     _nudge_interval = getattr(self, "_nudge_interval", 600)
                     _last_proactive = getattr(self, "_last_nudge_proactive", 0.0)
                     if time.time() - _last_proactive >= _nudge_interval:
                         last_active = getattr(self.state, "last_task_completion", 0)
                         if time.time() - last_active < 1800:
                             self._last_nudge_proactive = time.time()
-                            try:
-                                result = _nudge_engine.proactive_nudge()
-                                if result:
-                                    text, buttons, nudge_meta = result
-                                    h = nudge_meta.get("task_hash", "")
-                                    if h:
-                                        self.state.set_nudge_context(h, nudge_meta)
-                                    self._send_message_with_keyboard(text, buttons)
-                            except Exception:
-                                log.debug("Proactive nudge failed", exc_info=True)
+                            self._proactive_nudge_running = True
+                            def _run_proactive(bot_self, engine):
+                                try:
+                                    result = engine.proactive_nudge()
+                                    if result:
+                                        text, buttons, nudge_meta = result
+                                        h = nudge_meta.get("task_hash", "")
+                                        if h:
+                                            bot_self.state.set_nudge_context(h, nudge_meta)
+                                        bot_self._send_message_with_keyboard(text, buttons)
+                                except Exception:
+                                    log.debug("Proactive nudge failed", exc_info=True)
+                                finally:
+                                    bot_self._proactive_nudge_running = False
+                            t = threading.Thread(
+                                target=_run_proactive, args=(self, _nudge_engine),
+                                daemon=True,
+                            )
+                            t.start()
 
                 # Deliver pending evolution outputs to user.
                 try:
