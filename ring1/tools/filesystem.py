@@ -29,6 +29,12 @@ _SENSITIVE_DIRS = frozenset({
 # Task executor LLM must not modify core source code.
 _READONLY_SOURCE_DIRS = frozenset({"ring0", "ring1", "tests"})
 
+# Specific files that are never writable via task tools.
+# ring2/main.py is auto-evolved code — only the evolution engine may modify it.
+_PROTECTED_FILES = frozenset({
+    "ring2/main.py",
+})
+
 # Sensitive file names (exact match, case-insensitive) blocked anywhere.
 _SENSITIVE_FILES = frozenset({
     ".env", ".netrc", ".npmrc", ".pypirc",
@@ -132,6 +138,11 @@ def _check_write_allowed(workspace: pathlib.Path, target: pathlib.Path) -> str |
         rel = target.relative_to(workspace)
     except ValueError:
         return None  # outside workspace — handled by _resolve_safe
+    # Check specific protected files.
+    rel_posix = rel.as_posix()
+    if rel_posix in _PROTECTED_FILES:
+        return f"Error: {rel} is auto-evolved code and cannot be modified by tasks"
+    # Check read-only source dirs.
     top_dir = rel.parts[0] if rel.parts else ""
     if top_dir in _READONLY_SOURCE_DIRS:
         return f"Error: {rel} is in protected source directory '{top_dir}/' (read-only)"

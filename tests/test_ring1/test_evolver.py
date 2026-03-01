@@ -656,23 +656,42 @@ class TestTruncationDetection:
         assert result.success is True
         assert client.send_message_ex.call_count == 2
 
-    def test_normal_no_code_does_not_retry(self, tmp_path):
-        """When stop_reason=end_turn and no code, do not retry — just fail."""
+    def test_end_turn_no_code_triggers_compact_retry(self, tmp_path):
+        """When stop_reason=end_turn and no code, retry with compact prompt."""
+        ring2, config, fitness = self._setup(tmp_path)
+
+        compact_response = f"```python\n{VALID_SOURCE}```"
+
+        client = config.get_llm_client.return_value
+        client.send_message_ex.side_effect = [
+            ("Sorry, I cannot generate code today.", {"stop_reason": "end_turn"}),
+            (compact_response, {"stop_reason": "end_turn"}),
+        ]
+        client.last_usage = {"input_tokens": 100, "output_tokens": 50}
+
+        evolver = Evolver(config, fitness)
+        result = evolver.evolve(ring2, generation=1, params={}, survived=True)
+
+        assert result.success is True
+        assert client.send_message_ex.call_count == 2
+
+    def test_end_turn_no_code_both_fail(self, tmp_path):
+        """When stop_reason=end_turn and both attempts produce no code, fail."""
         ring2, config, fitness = self._setup(tmp_path)
 
         client = config.get_llm_client.return_value
-        client.send_message_ex.return_value = (
-            "Sorry, I cannot generate code today.",
-            {"stop_reason": "end_turn"},
-        )
+        client.send_message_ex.side_effect = [
+            ("Sorry, I cannot generate code today.", {"stop_reason": "end_turn"}),
+            ("Still no code.", {"stop_reason": "end_turn"}),
+        ]
         client.last_usage = {"input_tokens": 100, "output_tokens": 50}
 
         evolver = Evolver(config, fitness)
         result = evolver.evolve(ring2, generation=1, params={}, survived=True)
 
         assert result.success is False
-        assert "No code block" in result.reason
-        assert client.send_message_ex.call_count == 1
+        assert "compact retry" in result.reason
+        assert client.send_message_ex.call_count == 2
 
     def test_truncated_but_has_code_succeeds(self, tmp_path):
         """If truncated but code was still extracted, no retry needed."""

@@ -172,6 +172,15 @@ class TestWriteFile:
         assert "Error" in result
         assert "protected source" in result
 
+    def test_write_ring2_main_blocked(self, tools, workspace):
+        """write_file should reject writes to ring2/main.py."""
+        (workspace / "ring2").mkdir(exist_ok=True)
+        result = tools["write_file"].execute(
+            {"path": "ring2/main.py", "content": "hacked"}
+        )
+        assert "Error" in result
+        assert "auto-evolved" in result
+
     def test_write_output_allowed(self, tools, workspace):
         """output/ and other dirs are not protected."""
         result = tools["write_file"].execute(
@@ -229,6 +238,20 @@ class TestEditFile:
         })
         assert "Error" in result
         assert "outside home" in result
+
+    def test_edit_ring2_main_blocked(self, tools, workspace):
+        """edit_file should reject edits to ring2/main.py."""
+        (workspace / "ring2").mkdir(exist_ok=True)
+        (workspace / "ring2" / "main.py").write_text("original")
+        result = tools["edit_file"].execute({
+            "path": "ring2/main.py",
+            "old_string": "original",
+            "new_string": "modified",
+        })
+        assert "Error" in result
+        assert "auto-evolved" in result
+        # File unchanged
+        assert (workspace / "ring2" / "main.py").read_text() == "original"
 
     def test_edit_ring0_blocked(self, tools, workspace):
         (workspace / "ring0").mkdir(exist_ok=True)

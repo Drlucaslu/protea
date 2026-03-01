@@ -178,12 +178,14 @@ class Evolver:
                 log.info("Capability proposal detected: %s (no deps — stdlib only)",
                          capability_proposal.get("name"))
 
-        # 6. Extract code (with compact retry on truncation).
+        # 6. Extract code (with compact retry on truncation or missing code).
         new_source = extract_python_code(response)
-        if new_source is None and meta.get("stop_reason") == "max_tokens":
+        if new_source is None:
+            reason = meta.get("stop_reason", "unknown")
             log.warning(
-                "Evolution truncated (stop_reason=max_tokens), "
-                "retrying with compact prompt"
+                "Evolution produced no code (stop_reason=%s), "
+                "retrying with compact prompt",
+                reason,
             )
             system_compact, user_compact = build_evolution_prompt(
                 current_source=current_source,
