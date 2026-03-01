@@ -123,6 +123,11 @@ min_corrections = 2
 similarity_threshold = 0.5
 cooldown_sec = 600
 
+[ring1.nudge]
+enabled = true
+interval_sec = 600          # 10 min between proactive nudges
+max_daily_nudges = 20       # generous for testing phase
+
 [ring1.proactive]
 enabled = true
 morning_hour = 9

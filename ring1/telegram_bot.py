@@ -57,6 +57,8 @@ class SentinelState:
         # Output queue + evolution feedback
         "output_queue", "gene_pool", "_last_gene_summary",
         "_pending_evo_schedule",
+        # Nudge engine
+        "nudge_queue", "_nudge_context",
     )
 
     def __init__(self) -> None:
@@ -100,6 +102,9 @@ class SentinelState:
         self.gene_pool = None  # Set by Sentinel after creation
         self._last_gene_summary: str = ""
         self._pending_evo_schedule: dict | None = None
+        # Nudge engine
+        self.nudge_queue: queue.Queue = queue.Queue()
+        self._nudge_context: dict[str, dict] = {}
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -414,6 +419,80 @@ class TelegramBot:
         self._send_message_with_keyboard(
             "这次回答还行吗？", buttons,
         )
+
+    def _handle_nudge_callback(self, data: str) -> str:
+        """Handle nudge-related inline keyboard callbacks."""
+        if data == "nudge:dismiss":
+            return "好的 \U0001f44c"
+
+        # nudge:schedule:<hash>, nudge:execute:<hash>, nudge:expand:<hash>
+        parts = data.split(":")
+        if len(parts) < 3:
+            return "操作无效。"
+        action, h = parts[1], parts[2]
+        ctx = self.state._nudge_context.get(h)
+        if not ctx:
+            return "建议已过期。"
+
+        if action == "schedule":
+            # Ask for frequency — store hash for follow-up.
+            self.state._nudge_context[f"_sched_{h}"] = ctx
+            buttons = [[
+                {"text": "每天", "callback_data": f"nudge:cron:daily:{h}"},
+                {"text": "每小时", "callback_data": f"nudge:cron:hourly:{h}"},
+            ]]
+            self._send_message_with_keyboard(
+                "你想多久执行一次？", buttons,
+            )
+            return ""
+
+        if action == "cron":
+            # parts: nudge:cron:<freq>:<hash>
+            if len(parts) < 4:
+                return "操作无效。"
+            freq, cron_h = parts[2], parts[3]
+            sched_ctx = self.state._nudge_context.pop(f"_sched_{cron_h}", None)
+            if not sched_ctx:
+                sched_ctx = self.state._nudge_context.get(cron_h)
+            if not sched_ctx:
+                return "建议已过期。"
+            cron_map = {"daily": "0 9 * * *", "hourly": "0 * * * *"}
+            cron_expr = cron_map.get(freq, "0 9 * * *")
+            task_text = sched_ctx.get("suggested_task") or sched_ctx.get("source_text", "")
+            if not task_text:
+                return "没有找到要定期执行的任务。"
+            ss = self.state.scheduled_store
+            if ss:
+                try:
+                    ss.add(task_text[:200], cron_expr)
+                    return f"已创建定期任务：{task_text[:60]}（{cron_expr}）"
+                except Exception:
+                    log.debug("Failed to create scheduled task", exc_info=True)
+                    return "创建定期任务失败，请稍后重试。"
+            return "定期任务功能暂不可用。"
+
+        if action == "execute":
+            task_text = ctx.get("suggested_task", "")
+            if not task_text:
+                return "没有找到要执行的任务。"
+            from ring1.telegram_bot import Task
+            task = Task(text=task_text, chat_id=self.chat_id)
+            self.state.task_queue.put(task)
+            self.state.p0_event.set()
+            return f"好的，正在执行：{task_text[:60]}"
+
+        if action == "expand":
+            source = ctx.get("source_text", "")
+            if not source:
+                return "没有找到要展开的内容。"
+            expand_text = f"请详细展开: {source[:200]}"
+            from ring1.telegram_bot import Task
+            task = Task(text=expand_text, chat_id=self.chat_id)
+            self.state.task_queue.put(task)
+            self.state.p0_event.set()
+            return f"好的，正在展开..."
+
+        return "未知操作。"
 
     def _send_document(self, file_path: str, caption: str = "", target_chat_id: str = "") -> bool:
         """Send a file to the authorized chat via sendDocument (multipart).
@@ -1315,6 +1394,10 @@ class TelegramBot:
         ``convergence:…``, or ``feedback:positive|negative``.
         Returns a text reply.
         """
+        # --- nudge callbacks ---
+        if data.startswith("nudge:"):
+            return self._handle_nudge_callback(data)
+
         # --- feedback callbacks ---
         if data == "feedback:positive":
             return "\U0001f44d 谢谢反馈！"
@@ -1769,6 +1852,41 @@ class TelegramBot:
                     except Exception:
                         log.debug("Error sending convergence proposal", exc_info=True)
                         break
+
+                # Consume nudge suggestions from the executor.
+                while not self.state.nudge_queue.empty():
+                    try:
+                        text, buttons, nudge_meta = self.state.nudge_queue.get_nowait()
+                        # Store context for callback handling.
+                        h = nudge_meta.get("task_hash", "")
+                        if h:
+                            self.state._nudge_context[h] = nudge_meta
+                        self._send_message_with_keyboard(text, buttons)
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        log.debug("Error sending nudge", exc_info=True)
+                        break
+
+                # Proactive nudge check (periodic, during active usage).
+                _nudge_engine = getattr(self, "_nudge_engine", None)
+                if _nudge_engine:
+                    _nudge_interval = getattr(self, "_nudge_interval", 600)
+                    _last_proactive = getattr(self, "_last_nudge_proactive", 0.0)
+                    if time.time() - _last_proactive >= _nudge_interval:
+                        last_active = getattr(self.state, "last_task_completion", 0)
+                        if time.time() - last_active < 1800:
+                            self._last_nudge_proactive = time.time()
+                            try:
+                                result = _nudge_engine.proactive_nudge()
+                                if result:
+                                    text, buttons, nudge_meta = result
+                                    h = nudge_meta.get("task_hash", "")
+                                    if h:
+                                        self.state._nudge_context[h] = nudge_meta
+                                    self._send_message_with_keyboard(text, buttons)
+                            except Exception:
+                                log.debug("Proactive nudge failed", exc_info=True)
 
                 # Deliver pending evolution outputs to user.
                 try:

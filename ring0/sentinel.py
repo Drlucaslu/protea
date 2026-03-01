@@ -1079,6 +1079,32 @@ def run(project_root: pathlib.Path) -> None:
     # Expose subagent_manager on state for /background command.
     state.subagent_manager = getattr(executor, "subagent_manager", None) if executor else None
 
+    # Nudge engine — contextual suggestions after tasks + proactive engagement.
+    nudge_cfg = cfg.get("ring1", {}).get("nudge", {})
+    if nudge_cfg.get("enabled", False):
+        def _create_nudge():
+            from ring1.nudge import NudgeEngine
+            from ring1.config import load_ring1_config
+            r1_config = load_ring1_config(project_root)
+            if not r1_config.has_llm_config():
+                return None
+            client = r1_config.get_llm_client()
+            return NudgeEngine(
+                llm_client=client,
+                memory_store=memory_store,
+                scheduled_store=scheduled_store,
+                user_profiler=user_profiler,
+                preference_store=preference_store,
+                config=nudge_cfg,
+            )
+        nudge_engine = _best_effort("NudgeEngine", _create_nudge)
+        if nudge_engine and executor:
+            executor.nudge_fn = nudge_engine.post_task_nudge
+        if nudge_engine and bot:
+            bot._nudge_engine = nudge_engine
+            bot._nudge_interval = nudge_cfg.get("interval_sec", 600)
+            bot._last_nudge_proactive = 0.0
+
     # Proactive loop — morning briefings, evening summaries, periodic checks.
     proactive_loop = None
     proactive_cfg = cfg.get("ring1", {}).get("proactive", {})

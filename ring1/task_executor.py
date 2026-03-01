@@ -508,6 +508,7 @@ class TaskExecutor:
         self.reply_fn_factory = reply_fn_factory
         self.preference_extractor = None  # Initialized in create_executor()
         self.feedback_fn = None  # Called after complete task response
+        self.nudge_fn = None  # Called after feedback: nudge_engine.post_task_nudge
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
         self._running = True
         self._last_p0_time: float = time.time()
@@ -873,6 +874,22 @@ class TaskExecutor:
                     self.feedback_fn()
                 except Exception:
                     pass
+            # Nudge — contextual suggestion after task completion.
+            if self.nudge_fn:
+                try:
+                    nudge_context = {
+                        "response_summary": response[:300],
+                        "skills_used": skills_used,
+                        "tool_sequence": tool_sequence,
+                        "duration": duration,
+                    }
+                    result = self.nudge_fn(clean_text, response, nudge_context)
+                    if result:
+                        nudge_q = getattr(self.state, "nudge_queue", None)
+                        if nudge_q is not None:
+                            nudge_q.put(result)
+                except Exception:
+                    log.debug("Nudge generation failed", exc_info=True)
 
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"
