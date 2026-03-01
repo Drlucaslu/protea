@@ -7,6 +7,7 @@ to the last known-good commit, evolves from that base, and restarts.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -893,8 +894,28 @@ def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=Non
     return _best_effort("Task executor", _factory)
 
 
+def _acquire_lock(project_root: pathlib.Path):
+    """Acquire exclusive PID lock. Returns file handle, or None if locked."""
+    lock_path = project_root / "data" / "sentinel.pid"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 def run(project_root: pathlib.Path) -> None:
     """Sentinel main loop — run until interrupted."""
+    lock_fh = _acquire_lock(project_root)
+    if lock_fh is None:
+        log.error("Another sentinel is already running (lock: %s/data/sentinel.pid)", project_root)
+        return
+
     # Convert SIGTERM into KeyboardInterrupt so the finally block runs,
     # ensuring Ring 2 subprocess, skill runners, and the Telegram bot
     # are stopped cleanly.

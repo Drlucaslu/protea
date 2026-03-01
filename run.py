@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Protea entry point — launches Ring 0 Sentinel."""
 
-import fcntl
 import os
 import sys
 import pathlib
@@ -35,22 +34,5 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from ring0.sentinel import main
 
 
-def _acquire_lock(project_root):
-    """Acquire exclusive PID lock. Exit if another sentinel is running."""
-    lock_path = project_root / "data" / "sentinel.pid"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "w")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print(f"ERROR: Another sentinel is already running (lock: {lock_path})")
-        sys.exit(1)
-    fh.write(str(os.getpid()))
-    fh.flush()
-    return fh  # must keep reference to prevent GC closing the fd
-
-
 if __name__ == "__main__":
-    _project_root = pathlib.Path(__file__).resolve().parent
-    _lock_fh = _acquire_lock(_project_root)
     main()

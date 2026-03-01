@@ -15,6 +15,10 @@ import pathlib
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
 from urllib.parse import unquote
 
 log = logging.getLogger("protea.skill_portal")
@@ -388,7 +392,7 @@ class SkillPortal:
                 "reports_dir": self._project_root / "output" / "reports",
             },
         )
-        self._server = ThreadingHTTPServer((self._host, self._port), handler)
+        self._server = _ReusableHTTPServer((self._host, self._port), handler)
         log.info("Skill Portal listening on %s:%d", self._host, self.actual_port)
         self._server.serve_forever()
 

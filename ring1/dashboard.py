@@ -19,6 +19,10 @@ import pathlib
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
 from urllib.parse import parse_qs, unquote
 
 log = logging.getLogger("protea.dashboard")
@@ -1209,7 +1213,7 @@ class Dashboard:
             (DashboardHandler,),
             self._data_sources,
         )
-        self._server = ThreadingHTTPServer((self._host, self._port), handler)
+        self._server = _ReusableHTTPServer((self._host, self._port), handler)
         log.info("Dashboard listening on %s:%d", self._host, self.actual_port)
         self._server.serve_forever()
 

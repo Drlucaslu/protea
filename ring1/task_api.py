@@ -16,6 +16,10 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
 log = logging.getLogger("protea.task_api")
 
 TASK_SYSTEM_PROMPT = """\
@@ -139,7 +143,7 @@ class TaskAPI:
 
     def start(self) -> None:
         """Start the HTTP server in a daemon thread."""
-        server = ThreadingHTTPServer((self._host, self._port), TaskAPIHandler)
+        server = _ReusableHTTPServer((self._host, self._port), TaskAPIHandler)
         server.api_secret = self._secret
         server.execute_task = self.execute_task
         self._server = server

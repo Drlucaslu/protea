@@ -227,6 +227,10 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
+class _ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
 # ============= CRYSTALLIZED MODULE =============
 
 {module.code}
@@ -274,7 +278,7 @@ class SkillHandler(BaseHTTPRequestHandler):
 def main():
     """Run the skill as an HTTP service."""
     port = int(os.environ.get("SKILL_PORT", 8800))
-    server = HTTPServer(("0.0.0.0", port), SkillHandler)
+    server = _ReusableHTTPServer(("0.0.0.0", port), SkillHandler)
     print(f"Skill '{module.name}' running on http://localhost:{{port}}")
     try:
         server.serve_forever()
