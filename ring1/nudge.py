@@ -295,6 +295,7 @@ class NudgeEngine:
             "nudge_type": nudge_type,
             "source_text": source_text[:500],
             "suggested_task": suggested_task,
+            "created_at": time.time(),
         }
 
         self._record_nudge()

@@ -58,7 +58,7 @@ class SentinelState:
         "output_queue", "gene_pool", "_last_gene_summary",
         "_pending_evo_schedule",
         # Nudge engine
-        "nudge_queue", "_nudge_context",
+        "nudge_queue", "_nudge_context", "_nudge_context_path",
     )
 
     def __init__(self) -> None:
@@ -105,6 +105,40 @@ class SentinelState:
         # Nudge engine
         self.nudge_queue: queue.Queue = queue.Queue()
         self._nudge_context: dict[str, dict] = {}
+        self._nudge_context_path = None
+
+    def _save_nudge_context(self):
+        if not self._nudge_context_path:
+            return
+        try:
+            self._nudge_context_path.write_text(
+                json.dumps(self._nudge_context), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_nudge_context(self):
+        if not self._nudge_context_path or not self._nudge_context_path.exists():
+            return
+        try:
+            data = json.loads(self._nudge_context_path.read_text(encoding="utf-8"))
+            now = time.time()
+            self._nudge_context = {
+                k: v for k, v in data.items()
+                if now - v.get("created_at", 0) < 86400
+            }
+        except Exception:
+            pass
+
+    def set_nudge_context(self, key, meta):
+        meta.setdefault("created_at", time.time())
+        self._nudge_context[key] = meta
+        self._save_nudge_context()
+
+    def pop_nudge_context(self, key):
+        val = self._nudge_context.pop(key, None)
+        if val is not None:
+            self._save_nudge_context()
+        return val
 
     def snapshot(self) -> dict:
         """Return a consistent copy of all fields."""
@@ -436,7 +470,7 @@ class TelegramBot:
 
         if action == "schedule":
             # Ask for frequency — store hash for follow-up.
-            self.state._nudge_context[f"_sched_{h}"] = ctx
+            self.state.set_nudge_context(f"_sched_{h}", ctx)
             buttons = [[
                 {"text": "每天", "callback_data": f"nudge:cron:daily:{h}"},
                 {"text": "每小时", "callback_data": f"nudge:cron:hourly:{h}"},
@@ -451,7 +485,7 @@ class TelegramBot:
             if len(parts) < 4:
                 return "操作无效。"
             freq, cron_h = parts[2], parts[3]
-            sched_ctx = self.state._nudge_context.pop(f"_sched_{cron_h}", None)
+            sched_ctx = self.state.pop_nudge_context(f"_sched_{cron_h}")
             if not sched_ctx:
                 sched_ctx = self.state._nudge_context.get(cron_h)
             if not sched_ctx:
@@ -1860,7 +1894,7 @@ class TelegramBot:
                         # Store context for callback handling.
                         h = nudge_meta.get("task_hash", "")
                         if h:
-                            self.state._nudge_context[h] = nudge_meta
+                            self.state.set_nudge_context(h, nudge_meta)
                         self._send_message_with_keyboard(text, buttons)
                     except queue.Empty:
                         break
@@ -1883,7 +1917,7 @@ class TelegramBot:
                                     text, buttons, nudge_meta = result
                                     h = nudge_meta.get("task_hash", "")
                                     if h:
-                                        self.state._nudge_context[h] = nudge_meta
+                                        self.state.set_nudge_context(h, nudge_meta)
                                     self._send_message_with_keyboard(text, buttons)
                             except Exception:
                                 log.debug("Proactive nudge failed", exc_info=True)

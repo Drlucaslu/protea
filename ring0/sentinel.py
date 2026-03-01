@@ -987,6 +987,8 @@ def run(project_root: pathlib.Path) -> None:
     state._preference_store = preference_store
     state.output_queue = output_queue
     state.gene_pool = gene_pool
+    state._nudge_context_path = project_root / "data" / "nudge_context.json"
+    state._load_nudge_context()
     bot = _create_bot(project_root, state, fitness, ring2_path)
     matrix_bot = _create_matrix_bot(project_root, state)
 
