@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from ring0.fitness import FitnessTracker
-from ring0.gene_pool import GenePool, _SKIP_NAMES
+from ring0.gene_pool import GenePool
 
 
 # --- Sample Ring 2 source code for testing ---
@@ -963,59 +963,7 @@ class TestMaxSizeDefault:
     def test_max_size_default_200(self, tmp_path):
         db = tmp_path / "test.db"
         gp = GenePool(db)
-        assert gp.max_size == 200
-
-
-class TestPurgeZombies:
-    def test_purge_zombies_removes_floor_genes(self, tmp_path):
-        """Genes at score 0.10 with 0 task_hits get purged."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        gp.add(1, 0.10, SAMPLE_SOURCE + "\n# zombie1\n")
-        assert gp.count() == 1
-        purged = gp.purge_zombies()
-        assert purged == 1
-        assert gp.count() == 0
-
-    def test_purge_zombies_keeps_valued_genes(self, tmp_path):
-        """Genes at score 0.10 with task_hits > 0 survive."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        gp.add(1, 0.10, SAMPLE_SOURCE + "\n# valued1\n")
-        gene_id = gp.get_top(1)[0]["id"]
-        gp.record_task_hits([gene_id], generation=5)
-        purged = gp.purge_zombies()
-        assert purged == 0
-        assert gp.count() == 1
-
-    def test_purge_zombies_keeps_above_floor(self, tmp_path):
-        """Genes at score 0.11+ are not purged even with 0 task_hits."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        gp.add(1, 0.11, SAMPLE_SOURCE + "\n# above_floor\n")
-        purged = gp.purge_zombies()
-        assert purged == 0
-        assert gp.count() == 1
-
-    def test_purge_zombies_mixed(self, tmp_path):
-        """Only zombies are purged; healthy genes survive."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        # Zombie: floor score, no task hits
-        gp.add(1, 0.10, DISTINCT_SOURCES[0])
-        # Healthy: above floor
-        gp.add(2, 0.50, DISTINCT_SOURCES[1])
-        # Valued: floor score but has task hits
-        gp.add(3, 0.10, DISTINCT_SOURCES[2])
-        valued_id = [g["id"] for g in gp.get_top(0) if g["generation"] == 3][0]
-        gp.record_task_hits([valued_id], generation=5)
-
-        assert gp.count() == 3
-        purged = gp.purge_zombies()
-        assert purged == 1
-        assert gp.count() == 2
-        scores = sorted([g["score"] for g in gp.get_top(0)])
-        assert 0.50 in scores
+        assert gp.max_size == 100
 
 
 class TestHypothesisTracking:
@@ -1150,159 +1098,7 @@ class TestHypothesisTracking:
         assert abs(row["avg_adopted_score"] - 0.50) < 0.01  # (0.80 + 0.20) / 2
 
 
-# --- Source with boilerplate utilities for skip-list tests ---
-
-BOILERPLATE_SOURCE = '''\
-import os, pathlib, time, threading, json
-
-def safe_json_dump(obj, path, indent=2):
-    """Write JSON safely via temp file."""
-    import tempfile
-    with tempfile.NamedTemporaryFile("w", delete=False) as f:
-        json.dump(obj, f, indent=indent)
-
-def load_telegram_config():
-    """Load Telegram bot config."""
-    return {}
-
-class StreamAnalyzer:
-    """Real-time anomaly detection in data streams."""
-
-    def __init__(self, window_size=100):
-        self.window_size = window_size
-        self.buffer = []
-
-    def analyze(self, value):
-        """Detect anomalies using z-score method."""
-        self.buffer.append(value)
-
-def main():
-    hb = pathlib.Path(os.environ.get("PROTEA_HEARTBEAT", ".heartbeat"))
-    pid = os.getpid()
-    while True:
-        time.sleep(1)
-
-if __name__ == "__main__":
-    main()
-'''
 
 
-class TestSkipNamesExpansion:
-    def test_skip_names_includes_boilerplate(self):
-        """Verify new boilerplate names are in _SKIP_NAMES."""
-        for name in [
-            "safe_json_dump", "load_telegram_config", "load_telegram_context",
-            "load_evolution_stats", "load_alert_config", "save_alert_config",
-            "fetch_btc_price", "fetch_mining_hardware", "route_and_send_message",
-        ]:
-            assert name in _SKIP_NAMES, f"{name} missing from _SKIP_NAMES"
-
-    def test_summary_skips_boilerplate_functions(self):
-        """Source with safe_json_dump / load_telegram_config → not in summary."""
-        summary = GenePool.extract_summary(BOILERPLATE_SOURCE)
-        assert "safe_json_dump" not in summary
-        assert "load_telegram_config" not in summary
-        # Real capability should still be present.
-        assert "StreamAnalyzer" in summary
-        assert "analyze" in summary
-
-
-class TestPurgeZombiesAged:
-    def test_purge_zombies_aged_below_half(self, tmp_path):
-        """Gene at 0.40, 0 task_hits, 100+ gens old → purged."""
-        import sqlite3
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        # Insert directly to control generation and score precisely.
-        with gp._connect() as con:
-            con.execute(
-                "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (50, 0.40, "aged_hash_1", "class OldGene:\n    pass", "old gene"),
-            )
-        assert gp.count() == 1
-        purged = gp.purge_zombies(current_generation=200)  # 200 - 50 = 150 > 100
-        assert purged == 1
-        assert gp.count() == 0
-
-    def test_purge_zombies_aged_keeps_young(self, tmp_path):
-        """Gene at 0.40, 0 task_hits, <100 gens old → kept."""
-        import sqlite3
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        with gp._connect() as con:
-            con.execute(
-                "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (150, 0.40, "young_hash_1", "class YoungGene:\n    pass", "young gene"),
-            )
-        assert gp.count() == 1
-        purged = gp.purge_zombies(current_generation=200)  # 200 - 150 = 50 < 100
-        assert purged == 0
-        assert gp.count() == 1
-
-    def test_purge_zombies_aged_keeps_with_task_hits(self, tmp_path):
-        """Gene at 0.40, 100+ gens old but with task_hits → kept."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        with gp._connect() as con:
-            con.execute(
-                "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags, total_task_hits) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (50, 0.40, "valued_hash_1", "class ValuedGene:\n    pass", "valued gene", 1),
-            )
-        purged = gp.purge_zombies(current_generation=200)
-        assert purged == 0
-        assert gp.count() == 1
-
-    def test_purge_zombies_default_gen_skips_age_check(self, tmp_path):
-        """current_generation=0 (default) → age check never triggers."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        with gp._connect() as con:
-            con.execute(
-                "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (50, 0.40, "compat_hash_1", "class CompatGene:\n    pass", "compat gene"),
-            )
-        # Default current_generation=0: 0 - 50 = -50, NOT > 100 → skip.
-        purged = gp.purge_zombies()
-        assert purged == 0
-        assert gp.count() == 1
-
-
-class TestRetagAll:
-    def test_retag_all_cleans_boilerplate(self, tmp_path):
-        """After retag, safe_json_dump removed from summary/tags."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        # Insert a gene with a polluted summary (old skip list).
-        polluted_summary = (
-            'def safe_json_dump(obj, path, indent=2):\n'
-            '    """Write JSON safely via temp file."""\n'
-            'class StreamAnalyzer:\n'
-            '    """Real-time anomaly detection."""\n'
-            '    def analyze(self, value): ...'
-        )
-        with gp._connect() as con:
-            con.execute(
-                "INSERT INTO gene_pool (generation, score, source_hash, gene_summary, tags) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (1, 0.80, "retag_hash_1", polluted_summary, "safe json dump stream analyzer anomaly analyze"),
-            )
-        updated = gp.retag_all()
-        assert updated == 1
-        top = gp.get_top(1)
-        assert "safe_json_dump" not in top[0]["gene_summary"]
-        assert "stream" in top[0]["tags"]
-        assert "analyzer" in top[0]["tags"]
-
-    def test_retag_all_no_changes_when_clean(self, tmp_path):
-        """Genes without skipped functions are not modified."""
-        db = tmp_path / "test.db"
-        gp = GenePool(db, max_size=10)
-        gp.add(1, 0.80, SAMPLE_SOURCE)
-        updated = gp.retag_all()
-        assert updated == 0
 
 

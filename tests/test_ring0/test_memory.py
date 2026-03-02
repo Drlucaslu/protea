@@ -503,7 +503,7 @@ class TestArchiveTier:
     def test_compact_hot_to_warm_archives_originals(self, tmp_path):
         """Merged originals go to archive tier with archived_ids in summary."""
         store = MemoryStore(tmp_path / "mem.db")
-        # Add 10 old low-importance entries of same type → 8 kept, 2 merged+archived
+        # Add 10 old low-importance entries of same type → 3 kept, 7 merged+archived
         ids = []
         for i in range(10):
             rid = store.add(1, "observation", f"old obs {i}", importance=0.35)
@@ -512,19 +512,15 @@ class TestArchiveTier:
         result = store.compact(current_generation=50)
         assert result["hot_to_warm"] == 10
 
-        # The 2 merged originals should be in archive tier.
+        # The 7 merged originals should be in archive tier.
         archived = store.get_by_tier("archive")
-        assert len(archived) == 2
-        archived_ids = {e["id"] for e in archived}
-        # They should be the last 2 entries (ids[8], ids[9]).
-        assert ids[8] in archived_ids
-        assert ids[9] in archived_ids
+        assert len(archived) == 7
 
         # The compacted summary should contain archived_ids metadata.
         warm = store.get_by_tier("warm")
         summaries = [e for e in warm if "Compacted" in e["content"]]
         assert len(summaries) == 1
-        assert set(summaries[0]["metadata"]["archived_ids"]) == {ids[8], ids[9]}
+        assert len(summaries[0]["metadata"]["archived_ids"]) == 7
 
     def test_get_recent_excludes_archive(self, tmp_path):
         import sqlite3

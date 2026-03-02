@@ -109,9 +109,10 @@ def mock_api():
 
 
 class TestOpenAIClientInit:
-    def test_missing_api_key_raises(self):
-        with pytest.raises(LLMError, match="API key"):
-            OpenAIClient(api_key="", model="gpt-4o")
+    def test_empty_api_key_allowed_for_self_hosted(self):
+        """Empty API key is valid for self-hosted LLMs (e.g. Ollama)."""
+        client = OpenAIClient(api_key="", model="gpt-4o")
+        assert client.api_key == ""
 
     def test_valid_init(self):
         client = OpenAIClient(api_key="sk-test", model="gpt-4o", max_tokens=100)

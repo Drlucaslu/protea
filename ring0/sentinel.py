@@ -1029,19 +1029,6 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
 
-    # Purge zombie genes and retag with updated skip list.
-    if gene_pool:
-        try:
-            max_gen = fitness.get_max_generation()
-            purged = gene_pool.purge_zombies(current_generation=max_gen)
-            if purged:
-                log.info("Gene pool: purged %d zombie genes", purged)
-            retagged = gene_pool.retag_all()
-            if retagged:
-                log.info("Gene pool: retagged %d genes", retagged)
-        except Exception as exc:
-            log.debug("Gene pool purge/retag failed (non-fatal): %s", exc)
-
     # Backfill skill lineage (one-time heuristic).
     lineage_backfilled = 0
     if skill_store and gene_pool:
@@ -1356,37 +1343,6 @@ def run(project_root: pathlib.Path) -> None:
                 # Note: We no longer store observations in memory (see line 234 comment).
                 # They're noisy per-generation logs that crowd out useful memories.
 
-                # Write status snapshot — "NOW.md" for the system.
-                if memory_store:
-                    try:
-                        snap_parts = [
-                            f"Generation: {generation}",
-                            f"Score: {score:.3f}",
-                            f"Survived: yes",
-                        ]
-                        with state.lock:
-                            _snap_directive = state.evolution_directive
-                        if _snap_directive:
-                            snap_parts.append(f"Directive: {_snap_directive}")
-                        if task_store:
-                            try:
-                                pending = task_store.get_pending(limit=5)
-                                if pending:
-                                    snap_parts.append(f"Pending tasks: {len(pending)}")
-                                    for t in pending[:3]:
-                                        snap_parts.append(f"  - {t.get('text', '')[:80]}")
-                            except Exception:
-                                pass
-                        snapshot_content = "\n".join(snap_parts)
-                        memory_store.add(
-                            generation=generation,
-                            entry_type="status_snapshot",
-                            content=snapshot_content,
-                            importance=0.6,
-                        )
-                    except Exception:
-                        log.debug("Status snapshot failed (non-fatal)", exc_info=True)
-
                 # Store gene in pool (best-effort).
                 if gene_pool:
                     try:
@@ -1394,21 +1350,6 @@ def run(project_root: pathlib.Path) -> None:
                     except Exception as exc:
                         log.debug("Gene pool add failed (non-fatal): %s", exc)
 
-                # Capture new capabilities for user review.
-                if output_queue and gene_pool and evolved:
-                    try:
-                        new_summary = gene_pool.extract_summary(source)
-                        old_summary = getattr(state, '_last_gene_summary', '')
-                        new_caps = gene_pool.diff_capabilities(old_summary, new_summary)
-                        if new_caps and output_queue.daily_push_count() < 5:
-                            import hashlib as _hl
-                            source_hash_oq = _hl.sha256(source.encode()).hexdigest()
-                            gene_id = gene_pool.get_id_by_hash(source_hash_oq)
-                            for cap_name in new_caps[:3]:
-                                output_queue.add(gene_id, generation, cap_name, new_summary)
-                        state._last_gene_summary = new_summary
-                    except Exception:
-                        log.debug("Output capture failed (non-fatal)", exc_info=True)
 
                 # Crystallize skill (best-effort) — skip if source unchanged or low fitness.
                 _CRYSTALLIZE_MIN_SCORE = 0.70

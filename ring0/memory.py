@@ -9,7 +9,6 @@ dependencies.
 from __future__ import annotations
 
 import json
-import math
 import re
 import sqlite3
 
@@ -32,9 +31,6 @@ _MIGRATIONS = [
     ("tier", "TEXT DEFAULT 'hot'"),
     ("keywords", "TEXT DEFAULT ''"),
     ("embedding", "TEXT DEFAULT ''"),
-    ("hit_count", "INTEGER DEFAULT 0"),
-    ("last_hit_gen", "INTEGER DEFAULT 0"),
-    ("status", "TEXT DEFAULT 'active'"),
 ]
 
 # Importance base scores by entry type.
@@ -47,7 +43,6 @@ _IMPORTANCE_BASE: dict[str, float] = {
     "observation": 0.3,
     "evolution_intent": 0.3,
     "semantic_rule": 0.8,
-    "status_snapshot": 0.6,
 }
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -225,10 +220,10 @@ def _is_system_noise(entry_type: str, content: str) -> bool:
     if entry_type in ("task", "directive"):
         return False
 
-    # Reflections are machine-generated but contain valuable self-learned
-    # patterns.  Keep them — they're filtered by importance during compaction.
+    # Reflections are machine-generated and consumed in-context by the evolver.
+    # They don't need to persist in long-term memory.
     if entry_type == "reflection":
-        return False
+        return True
 
     # Additional heuristics for crash_log (special handling before general pattern matching)
     if entry_type == "crash_log":
@@ -296,31 +291,6 @@ def _extract_keywords(content: str) -> str:
             if len(keywords) >= 50:
                 break
     return " ".join(keywords)
-
-
-def _compute_temperature(
-    importance: float,
-    generation: int,
-    current_generation: int,
-    hit_count: int = 0,
-    last_hit_gen: int = 0,
-) -> float:
-    """Compute memory temperature (0.0-1.0) for tier decisions.
-
-    T = 0.4 * importance + 0.3 * age_factor + 0.3 * ref_factor
-
-    age_factor decays exponentially: exp(-0.015 * age_in_gens) (~46 gen half-life)
-    ref_factor: min(hit_count / 5, 1.0) weighted by recency of last hit
-    """
-    age = max(current_generation - generation, 0)
-    age_factor = math.exp(-0.015 * age)
-
-    base_ref = min(hit_count / 5, 1.0)
-    hit_age = max(current_generation - last_hit_gen, 0) if last_hit_gen > 0 else age
-    hit_recency = math.exp(-0.02 * hit_age)
-    ref_factor = base_ref * (0.5 + 0.5 * hit_recency)
-
-    return round(0.4 * importance + 0.3 * age_factor + 0.3 * ref_factor, 4)
 
 
 class MemoryStore(SQLiteStore):
@@ -521,12 +491,8 @@ class MemoryStore(SQLiteStore):
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
-    def get_relevant(self, keywords: list[str], limit: int = 5, current_generation: int = 0) -> list[dict]:
-        """Keyword-based relevance search using SQL LIKE (excludes archive).
-
-        Stale entries are downranked (score * 0.5).
-        If current_generation > 0, hit counts are recorded for accessed entries.
-        """
+    def get_relevant(self, keywords: list[str], limit: int = 5) -> list[dict]:
+        """Keyword-based relevance search using SQL LIKE (excludes archive)."""
         if not keywords:
             return []
         # Build OR clause for each keyword.
@@ -536,34 +502,23 @@ class MemoryStore(SQLiteStore):
             clauses.append("keywords LIKE ?")
             params.append(f"%{kw.lower()}%")
         where = " OR ".join(clauses)
+        params.append(str(limit))
         with self._connect() as con:
             rows = con.execute(
                 f"SELECT * FROM memory WHERE tier != 'archive' AND ({where}) "
-                f"ORDER BY importance DESC, id DESC",
+                f"ORDER BY importance DESC, id DESC LIMIT ?",
                 params,
             ).fetchall()
-            results = []
-            for r in rows:
-                d = self._row_to_dict(r)
-                if d.get("status") == "stale":
-                    d["importance"] = (d.get("importance", 0.5) or 0.5) * 0.5
-                results.append(d)
-            results.sort(key=lambda x: (-x.get("importance", 0), -x.get("id", 0)))
-            results = results[:limit]
-            if current_generation > 0:
-                self._record_hits([d["id"] for d in results], current_generation)
-            return results
+            return [self._row_to_dict(r) for r in rows]
 
     def hybrid_search(
         self,
         keywords: list[str],
         limit: int = 5,
-        current_generation: int = 0,
     ) -> list[dict]:
         """Keyword-based search across all entries.
 
         Score = fraction of query keywords found in entry keywords.
-        Stale entries are downranked (score * 0.5).
         """
         if not keywords:
             return []
@@ -586,16 +541,11 @@ class MemoryStore(SQLiteStore):
                 kw_score = matches / len(kw_set)
 
             if kw_score > 0:
-                if d.get("status") == "stale":
-                    kw_score *= 0.5
                 d["search_score"] = round(kw_score, 4)
                 scored.append((kw_score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        results = [d for _, d in scored[:limit]]
-        if current_generation > 0:
-            self._record_hits([d["id"] for d in results], current_generation)
-        return results
+        return [d for _, d in scored[:limit]]
 
     def recall(
         self,
@@ -735,15 +685,15 @@ class MemoryStore(SQLiteStore):
             return len(ids)
 
     def compact(self, current_generation: int, curator=None) -> dict:
-        """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup, stale detection.
+        """Run tiered compaction: hot→warm, warm→cold (LLM or rules), cold cleanup.
 
         Args:
             current_generation: The current generation number.
             curator: Optional MemoryCurator for LLM-assisted warm→cold transition.
 
-        Returns dict with counts: hot_to_warm, warm_to_cold, deleted, llm_curated, stale.
+        Returns dict with counts: hot_to_warm, warm_to_cold, deleted, llm_curated.
         """
-        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0, "stale": 0}
+        result = {"hot_to_warm": 0, "warm_to_cold": 0, "deleted": 0, "llm_curated": 0, "deduped": 0}
 
         # --- Phase 0: Deduplication ---
         result["deduped"] = self.deduplicate()
@@ -767,68 +717,36 @@ class MemoryStore(SQLiteStore):
         elif warm_candidates:
             result["warm_to_cold"] = self._rule_based_warm_to_cold(warm_candidates)
 
-        # --- Phase 3: Cold cleanup (temperature-driven, selective forgetting) ---
+        # --- Phase 3: Cold cleanup (rule-driven, selective forgetting) ---
         result["deleted"] = self._cleanup_cold(current_generation)
-
-        # --- Phase 4: Stale detection ---
-        if current_generation > 0:
-            result["stale"] = self._mark_stale(current_generation)
 
         return result
 
     def _compact_hot_to_warm(self, current_generation: int) -> int:
-        """Demote hot entries to warm tier based on temperature model."""
+        """Demote old, low-importance hot entries to warm tier."""
+        threshold_gen = current_generation - 5
         with self._connect() as con:
+            # Get hot entries older than 5 generations with importance < 0.6
             rows = con.execute(
                 "SELECT * FROM memory WHERE tier = 'hot' "
+                "AND generation <= ? AND importance < 0.6 "
                 "ORDER BY entry_type, importance DESC",
+                (threshold_gen,),
             ).fetchall()
 
             if not rows:
                 return 0
 
-            # Compute temperature and select entries to demote (T < 0.4).
-            # Special handling: status_snapshots — keep only latest 3 in hot.
-            snapshot_rows = [r for r in rows if r["entry_type"] == "status_snapshot"]
-            other_rows = [r for r in rows if r["entry_type"] != "status_snapshot"]
-
-            to_demote: list[sqlite3.Row] = []
-
-            # Status snapshots: keep latest 3, demote rest directly to cold.
-            if len(snapshot_rows) > 3:
-                # Sorted by id DESC (most recent first).
-                snapshot_rows.sort(key=lambda r: r["id"], reverse=True)
-                old_snapshots = snapshot_rows[3:]
-                for r in old_snapshots:
-                    con.execute(
-                        "UPDATE memory SET tier = 'cold' WHERE id = ?",
-                        (r["id"],),
-                    )
-                demoted_snapshots = len(old_snapshots)
-            else:
-                demoted_snapshots = 0
-
-            # Other entries: demote if temperature < 0.4.
-            for row in other_rows:
-                temp = _compute_temperature(
-                    row["importance"], row["generation"], current_generation,
-                    row["hit_count"] or 0, row["last_hit_gen"] or 0,
-                )
-                if temp < 0.4:
-                    to_demote.append(row)
-
-            if not to_demote:
-                return demoted_snapshots
-
-            # Group by entry_type, keep top 8 per group, merge rest.
+            # Group by entry_type, keep top 3 per group, merge rest.
             groups: dict[str, list[sqlite3.Row]] = {}
-            for r in to_demote:
+            for r in rows:
                 groups.setdefault(r["entry_type"], []).append(r)
 
-            demoted = demoted_snapshots
+            demoted = 0
             for entry_type, entries in groups.items():
-                keep = entries[:8]
-                merge = entries[8:]
+                # Keep top 3 by importance (just demote them).
+                keep = entries[:3]
+                merge = entries[3:]
 
                 for row in keep:
                     con.execute(
@@ -863,24 +781,17 @@ class MemoryStore(SQLiteStore):
 
             return demoted
 
-    def _get_warm_candidates(self, current_generation: int, limit: int = 40) -> list[dict]:
-        """Get warm-tier entries eligible for cold transition (temperature < 0.3)."""
+    def _get_warm_candidates(self, current_generation: int, limit: int = 20) -> list[dict]:
+        """Get warm-tier entries eligible for cold transition."""
+        threshold_gen = current_generation - 30
         with self._connect() as con:
             rows = con.execute(
-                "SELECT * FROM memory WHERE tier = 'warm'",
+                "SELECT id, entry_type, content, importance FROM memory "
+                "WHERE tier = 'warm' AND generation <= ? "
+                "ORDER BY importance ASC LIMIT ?",
+                (threshold_gen, limit),
             ).fetchall()
-            candidates = []
-            for row in rows:
-                temp = _compute_temperature(
-                    row["importance"], row["generation"], current_generation,
-                    row["hit_count"] or 0, row["last_hit_gen"] or 0,
-                )
-                if temp < 0.3:
-                    d = dict(row)
-                    d["temperature"] = temp
-                    candidates.append(d)
-            candidates.sort(key=lambda x: x["temperature"])
-            return candidates[:limit]
+            return [dict(r) for r in rows]
 
     def _apply_curation(self, decisions: list[dict], current_generation: int = 0) -> None:
         """Apply LLM curation decisions to memory entries."""
@@ -923,19 +834,6 @@ class MemoryStore(SQLiteStore):
                 entry_id = d.get("id")
                 if action == "discard":
                     con.execute("DELETE FROM memory WHERE id = ?", (entry_id,))
-                elif action == "conflict":
-                    conflict_with = d.get("conflict_with")
-                    meta_row = con.execute(
-                        "SELECT metadata FROM memory WHERE id = ?", (entry_id,),
-                    ).fetchone()
-                    meta = json.loads(meta_row["metadata"] or "{}") if meta_row else {}
-                    meta["conflict"] = True
-                    if conflict_with:
-                        meta["conflict_with"] = conflict_with
-                    con.execute(
-                        "UPDATE memory SET status = 'conflict', metadata = ?, tier = 'cold' WHERE id = ?",
-                        (json.dumps(meta), entry_id),
-                    )
                 elif action == "summarize":
                     summary = d.get("summary", "")
                     if summary:
@@ -1071,7 +969,6 @@ class MemoryStore(SQLiteStore):
         self,
         reference_text: str,
         limit: int = 3,
-        current_generation: int = 0,
     ) -> list[dict]:
         """Fuzzy reference recall: find memories matching vague references
         like "上次那个XX" or "the thing about YY".
@@ -1082,7 +979,6 @@ class MemoryStore(SQLiteStore):
         Args:
             reference_text: The user's vague reference text.
             limit: Max results to return.
-            current_generation: If > 0, record hit counts.
 
         Returns:
             List of memory dicts with 'recall_score' field, most relevant first.
@@ -1135,67 +1031,16 @@ class MemoryStore(SQLiteStore):
                 scored.append((score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        results = [d for _, d in scored[:limit]]
-        if current_generation > 0:
-            self._record_hits([d["id"] for d in results], current_generation)
-        return results
+        return [d for _, d in scored[:limit]]
 
     def _cleanup_cold(self, current_generation: int) -> int:
-        """Archive cold entries with temperature < 0.15."""
-        with self._connect() as con:
-            rows = con.execute(
-                "SELECT * FROM memory WHERE tier = 'cold'",
-            ).fetchall()
-            archived = 0
-            for row in rows:
-                temp = _compute_temperature(
-                    row["importance"], row["generation"], current_generation,
-                    row["hit_count"] or 0, row["last_hit_gen"] or 0,
-                )
-                if temp < 0.15:
-                    con.execute(
-                        "UPDATE memory SET tier = 'archive', importance = importance * 0.3 "
-                        "WHERE id = ?",
-                        (row["id"],),
-                    )
-                    archived += 1
-            return archived
-
-    def _record_hits(self, ids: list[int], current_generation: int) -> None:
-        """Increment hit_count and update last_hit_gen for accessed entries."""
-        if not ids:
-            return
-        with self._connect() as con:
-            placeholders = ",".join("?" * len(ids))
-            con.execute(
-                f"UPDATE memory SET hit_count = hit_count + 1, last_hit_gen = ? "
-                f"WHERE id IN ({placeholders})",
-                [current_generation] + ids,
-            )
-
-    def _mark_stale(self, current_generation: int, stale_threshold: int = 100) -> int:
-        """Mark warm/cold entries as stale if not accessed in stale_threshold generations."""
-        cutoff = current_generation - stale_threshold
+        """Archive old, low-importance cold entries (demote to archive tier)."""
+        threshold_gen = current_generation - 200
         with self._connect() as con:
             cur = con.execute(
-                "UPDATE memory SET status = 'stale' "
-                "WHERE tier IN ('warm', 'cold') AND status = 'active' "
-                "AND ((last_hit_gen = 0 AND generation <= ?) "
-                "OR   (last_hit_gen > 0 AND last_hit_gen <= ?))",
-                (cutoff, cutoff),
+                "UPDATE memory SET tier = 'archive', importance = importance * 0.3 "
+                "WHERE tier = 'cold' AND generation <= ? AND importance < 0.3",
+                (threshold_gen,),
             )
             return cur.rowcount
-
-    def get_temperature(self, entry_id: int, current_generation: int) -> float:
-        """Compute current temperature for a specific entry."""
-        with self._connect() as con:
-            row = con.execute(
-                "SELECT * FROM memory WHERE id = ?", (entry_id,),
-            ).fetchone()
-            if row is None:
-                return 0.0
-            return _compute_temperature(
-                row["importance"], row["generation"], current_generation,
-                row["hit_count"] or 0, row["last_hit_gen"] or 0,
-            )
 
