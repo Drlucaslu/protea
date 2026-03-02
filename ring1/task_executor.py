@@ -354,7 +354,9 @@ def _build_task_context(
     gene_patterns: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
+    from datetime import datetime
     parts = ["## Protea State"]
+    parts.append(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %A')}")
     parts.append(f"Generation: {state_snapshot.get('generation', '?')}")
     parts.append(f"Alive: {state_snapshot.get('alive', '?')}")
     parts.append(f"Paused: {state_snapshot.get('paused', '?')}")
@@ -1056,7 +1058,9 @@ class TaskExecutor:
             return
 
         # Build P1 decision prompt
-        parts = ["## Recent Task History"]
+        from datetime import datetime as _dt
+        parts = [f"## Current Time: {_dt.now().strftime('%Y-%m-%d %H:%M:%S %A')}", ""]
+        parts.append("## Recent Task History")
         for task in task_history:
             content = task.get("content", "")
             meta = task.get("metadata", {})
