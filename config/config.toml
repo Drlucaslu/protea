@@ -98,11 +98,12 @@ dimensions = 256
 # max_tokens = 8192
 
 # --- Ollama (local) ---
-# [ring1.llm]
-# provider = "ollama"
-# model = "llama3"
-# api_url = "http://localhost:11434/v1/chat/completions"
-# max_tokens = 8192
+[ring1.llm]
+provider = "openai"
+api_key_env = ""
+model = "qwen3:30b-a3b-instruct-2507-q4_K_M"
+max_tokens = 4096
+api_url = "https://8f00b8b7.onetest02.olares.com/v1/chat/completions"
 
 [ring1.skill_sandbox]
 enabled = true

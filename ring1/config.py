@@ -41,6 +41,8 @@ class Ring1Config(NamedTuple):
         provider = self.llm_provider or "anthropic"
         if provider == "anthropic":
             return bool(self.claude_api_key)
+        if self.llm_api_url:
+            return True  # self-hosted (e.g. Ollama) — no key needed
         return bool(self.llm_api_key_env and os.environ.get(self.llm_api_key_env))
 
     def get_llm_client(self):
