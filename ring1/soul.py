@@ -97,6 +97,19 @@ def parse_sections() -> dict[str, str]:
     return sections
 
 
+def get_rules() -> list[str]:
+    """Extract machine-readable rules from Preferences + Permanent Rules sections."""
+    sections = parse_sections()
+    rules = []
+    for heading in ("Preferences", "Permanent Rules"):
+        content = sections.get(heading, "")
+        for line in content.splitlines():
+            line = line.strip().lstrip("- ").strip()
+            if line and not line.startswith("<!--"):
+                rules.append(line)
+    return rules
+
+
 def is_section_empty(section_name: str) -> bool:
     """Check if a section has no meaningful content (only comments/whitespace)."""
     sections = parse_sections()

@@ -443,7 +443,8 @@ def _build_task_context(
 
     if semantic_rules:
         parts.append("")
-        parts.append("## Correction Rules (MUST follow)")
+        parts.append("## Learned Patterns")
+        parts.append("These are observed patterns. If any conflicts with the Soul Profile above, the Soul Profile takes precedence.")
         for rule in semantic_rules[:10]:
             content = rule.get("content", "")[:150]
             parts.append(f"- {content}")

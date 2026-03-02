@@ -164,12 +164,24 @@ class PreferenceStore:
                 # Confidence: more moments = higher confidence, capped at 0.95.
                 confidence = min(0.3 + moment_count * 0.1, 0.95)
 
-                # Upsert preference.
+                # Upsert preference — but never overwrite soul-sourced entries.
                 existing = con.execute(
-                    "SELECT id, confidence, moment_count FROM user_preferences "
+                    "SELECT id, confidence, moment_count, source "
+                    "FROM user_preferences "
                     "WHERE preference_key = ?",
                     (pref_key,),
                 ).fetchone()
+
+                if existing and existing["source"] == "soul":
+                    # Soul entries are constitutional — skip aggregation.
+                    ids = [m["id"] for m in moments]
+                    placeholders = ",".join("?" * len(ids))
+                    con.execute(
+                        f"UPDATE preference_moments SET aggregated = 1 "
+                        f"WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                    continue
 
                 if existing:
                     new_confidence = min(
@@ -285,7 +297,8 @@ class PreferenceStore:
         """
         with self._connect() as con:
             con.execute(
-                "UPDATE user_preferences SET confidence = confidence * ?",
+                "UPDATE user_preferences SET confidence = confidence * ? "
+                "WHERE source != 'soul'",
                 (self.confidence_decay_rate,),
             )
             cur = con.execute(
@@ -477,6 +490,44 @@ class PreferenceStore:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def sync_soul_rules(self, rules: list[str]) -> int:
+        """Sync soul rules into user_preferences (source='soul', confidence=1.0).
+
+        Upserts each rule and removes stale soul entries no longer in the list.
+        Returns the number of rules synced.
+        """
+        current_keys = set()
+        with self._connect() as con:
+            for rule in rules:
+                key = f"soul:{rule[:50]}"
+                current_keys.add(key)
+                existing = con.execute(
+                    "SELECT id FROM user_preferences WHERE preference_key = ?",
+                    (key,),
+                ).fetchone()
+                if existing:
+                    con.execute(
+                        "UPDATE user_preferences SET value = ?, confidence = 1.0, "
+                        "source = 'soul', updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (rule, existing["id"]),
+                    )
+                else:
+                    con.execute(
+                        "INSERT INTO user_preferences "
+                        "(preference_key, category, value, confidence, source) "
+                        "VALUES (?, 'soul', ?, 1.0, 'soul')",
+                        (key, rule),
+                    )
+            # Remove stale soul entries not in current rules.
+            soul_rows = con.execute(
+                "SELECT id, preference_key FROM user_preferences WHERE source = 'soul'",
+            ).fetchall()
+            for row in soul_rows:
+                if row["preference_key"] not in current_keys:
+                    con.execute("DELETE FROM user_preferences WHERE id = ?", (row["id"],))
+        return len(rules)
 
     def get_preference_summary_text(self) -> str:
         """Generate a text summary of structured preferences for prompt injection."""

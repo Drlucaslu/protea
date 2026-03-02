@@ -453,7 +453,7 @@ def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_sto
     return "\n".join(parts) if parts else ""
 
 
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0, accepted_capabilities=None, rejected_directions=None):
+def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0, accepted_capabilities=None, rejected_directions=None, soul_context=""):
     """Best-effort evolution.  Returns (success, gene_ids, adopted_ids) tuple."""
     try:
         from ring1.config import load_ring1_config
@@ -600,6 +600,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             evolution_direction=evolution_direction,
             accepted_capabilities=accepted_capabilities,
             rejected_directions=rejected_directions,
+            soul_context=soul_context,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)
@@ -972,11 +973,23 @@ def run(project_root: pathlib.Path) -> None:
             log.debug("VenvManager not available: %s", exc)
 
     # Load soul profile (centralized identity/preferences).
+    _soul_text = ""
     try:
-        from ring1.soul import load as _soul_load
+        from ring1.soul import load as _soul_load, get as _soul_get
         _soul_load(project_root)
+        _soul_text = _soul_get()
     except Exception as exc:
         log.debug("Soul profile not loaded: %s", exc)
+
+    # Sync soul rules to preference store.
+    if preference_store and _soul_text:
+        try:
+            from ring1.soul import get_rules
+            synced = preference_store.sync_soul_rules(get_rules())
+            if synced:
+                log.info("Soul rules synced to preference store (%d rules)", synced)
+        except Exception as exc:
+            log.debug("Soul sync failed: %s", exc)
 
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
@@ -1502,6 +1515,7 @@ def run(project_root: pathlib.Path) -> None:
                         auto_directive_attempt=auto_directive_attempt,
                         accepted_capabilities=accepted_caps or None,
                         rejected_directions=rejected_dirs or None,
+                        soul_context=_soul_text,
                     )
                     if gene_pool and last_injected_gene_ids:
                         try:
@@ -1588,11 +1602,24 @@ def run(project_root: pathlib.Path) -> None:
                                     f"{top_drift['new_confidence']:.2f})"
                                 )
                                 log.info("Preference drift detected: %s", drift_msg)
-                                with state.lock:
-                                    if not state.evolution_directive:
-                                        state.evolution_directive = (
-                                            f"Adapt to user's increasing interest: {drift_msg}"
-                                        )
+                                # Check if drift conflicts with soul rules.
+                                _drift_blocked = False
+                                try:
+                                    from ring1.soul import get_rules as _soul_rules
+                                    soul_rules_text = " ".join(_soul_rules())
+                                    drift_key = top_drift["preference_key"]
+                                    key_words = drift_key.split(":")[1].split()[:3] if ":" in drift_key else []
+                                    if any(kw in soul_rules_text for kw in key_words if len(kw) >= 2):
+                                        log.info("Drift directive skipped — conflicts with soul rule: %s", drift_key)
+                                        _drift_blocked = True
+                                except Exception:
+                                    pass
+                                if not _drift_blocked:
+                                    with state.lock:
+                                        if not state.evolution_directive:
+                                            state.evolution_directive = (
+                                                f"Adapt to user's increasing interest: {drift_msg}"
+                                            )
                         except Exception:
                             log.debug("Drift detection failed (non-fatal)", exc_info=True)
 
@@ -1814,6 +1841,7 @@ def run(project_root: pathlib.Path) -> None:
                     evolution_direction=evo_direction,
                     accepted_capabilities=death_accepted or None,
                     rejected_directions=death_rejected or None,
+                    soul_context=_soul_text,
                 )
                 if gene_pool and last_injected_gene_ids:
                     try:

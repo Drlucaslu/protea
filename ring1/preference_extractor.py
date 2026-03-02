@@ -21,7 +21,7 @@ from ring1.llm_base import LLMClient, LLMError
 
 log = logging.getLogger("protea.preference_extractor")
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_BASE = """\
 You are a preference extractor. Given a user's task request and the response,
 identify implicit preferences and behavioral signals.
 
@@ -44,6 +44,22 @@ tool_preference: prefers Python for data processing
 
 If no meaningful preference can be extracted, output: NONE
 """
+
+
+def _build_system_prompt() -> str:
+    """Build system prompt with soul rule constraints injected."""
+    try:
+        from ring1.soul import get_rules
+        rules = get_rules()
+    except Exception:
+        rules = []
+    base = _SYSTEM_PROMPT_BASE
+    if rules:
+        constraint = "\n\nIMPORTANT: The following are FIXED user rules. Do NOT extract signals that contradict them:\n"
+        for r in rules:
+            constraint += f"- {r}\n"
+        base += constraint
+    return base
 
 # Minimum text length to attempt extraction.
 _MIN_TEXT_LENGTH = 15
@@ -99,7 +115,7 @@ class PreferenceExtractor:
             user_msg += f"\nResponse summary: {response_text[:200]}"
 
         try:
-            result = self._client.send_message(_SYSTEM_PROMPT, user_msg)
+            result = self._client.send_message(_build_system_prompt(), user_msg)
         except LLMError as exc:
             log.debug("Preference extraction LLM call failed: %s", exc)
             return 0

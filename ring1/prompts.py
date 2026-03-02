@@ -169,6 +169,7 @@ def build_evolution_prompt(
     accepted_capabilities: list[dict] | None = None,
     rejected_directions: list[dict] | None = None,
     compact_mode: bool = False,
+    soul_context: str = "",
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call.
 
@@ -200,6 +201,11 @@ def build_evolution_prompt(
         return system, "\n\n".join(user_parts)
 
     parts: list[str] = []
+
+    if soul_context:
+        parts.append("## Soul Profile (HIGHEST PRIORITY — must respect)")
+        parts.append(soul_context)
+        parts.append("")
 
     parts.append(f"## Generation {generation}")
     parts.append(f"Previous generation {'SURVIVED' if survived else 'DIED'}.")

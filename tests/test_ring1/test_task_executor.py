@@ -1444,7 +1444,7 @@ class TestSemanticRulesContext:
             {"content": "新闻要用中文源", "generation": 2},
         ]
         ctx = _build_task_context(snap, "", semantic_rules=rules)
-        assert "## Correction Rules (MUST follow)" in ctx
+        assert "## Learned Patterns" in ctx
         assert "你应该用中文回复" in ctx
         assert "新闻要用中文源" in ctx
 
@@ -1453,14 +1453,14 @@ class TestSemanticRulesContext:
         snap = {"generation": 1, "alive": True, "paused": False,
                 "last_score": 0.9, "last_survived": True}
         ctx = _build_task_context(snap, "", semantic_rules=[])
-        assert "Correction Rules" not in ctx
+        assert "Learned Patterns" not in ctx
 
     def test_semantic_rules_none_no_section(self):
         """semantic_rules=None -> no section in context."""
         snap = {"generation": 1, "alive": True, "paused": False,
                 "last_score": 0.9, "last_survived": True}
         ctx = _build_task_context(snap, "", semantic_rules=None)
-        assert "Correction Rules" not in ctx
+        assert "Learned Patterns" not in ctx
 
     def test_semantic_rules_injected_in_p0(self, tmp_path):
         """P0 task context should contain semantic_rules from memory."""
@@ -1491,7 +1491,7 @@ class TestSemanticRulesContext:
         executor._execute_task(task)
 
         assert len(captured) == 1
-        assert "Correction Rules" in captured[0]
+        assert "Learned Patterns" in captured[0]
         assert "你应该用中文回复" in captured[0]
 
 
