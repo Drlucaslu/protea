@@ -61,6 +61,8 @@ class SentinelState:
         "nudge_queue", "_nudge_context", "_nudge_context_path",
         # Soul onboarding
         "_pending_soul_question",
+        # Habit detection
+        "_pending_habits", "_habit_dismissed", "_habit_context",
     )
 
     def __init__(self) -> None:
@@ -110,6 +112,10 @@ class SentinelState:
         self._nudge_context_path = None
         # Soul onboarding
         self._pending_soul_question: dict | None = None
+        # Habit detection
+        self._pending_habits: dict[str, dict] = {}
+        self._habit_dismissed: set[str] = set()
+        self._habit_context: dict[str, dict] = {}
 
     def _save_nudge_context(self):
         if not self._nudge_context_path:
@@ -1529,6 +1535,41 @@ class TelegramBot:
                     except Exception:
                         pass
             return "\U0001f44e 已删除，不会再往这个方向进化。"
+
+        # --- habit callbacks ---
+        if data.startswith("habit:schedule:"):
+            # Format: habit:schedule:<template_key>:<cron_expr>[|<auto_stop_hours>]
+            rest = data[len("habit:schedule:"):]
+            # Split template key (template:xxx) from cron+options.
+            # Template key always starts with "template:", so find the second "template:" boundary
+            # or split on the cron part. Format: template:<name>:<cron>[|<hours>]
+            # e.g. "template:flight_price_tracker:*/10 * * * *|2"
+            parts = rest.split(":")
+            # parts[0] = "template", parts[1] = name, parts[2:] = cron+options
+            template_key = f"{parts[0]}:{parts[1]}"
+            cron_and_opts = ":".join(parts[2:])
+            auto_stop = 0
+            if "|" in cron_and_opts:
+                cron_expr, stop_str = cron_and_opts.rsplit("|", 1)
+                try:
+                    auto_stop = int(stop_str)
+                except ValueError:
+                    pass
+            else:
+                cron_expr = cron_and_opts
+            self.state._pending_habits[template_key] = {
+                "cron": cron_expr,
+                "auto_stop_hours": auto_stop,
+                "timestamp": time.time(),
+            }
+            ctx = self.state._habit_context.get(template_key, {})
+            prompt = ctx.get("clarification_prompt", "请具体描述一下你想要自动执行的内容：")
+            return prompt
+
+        if data.startswith("habit:dismiss:"):
+            template_key = data[len("habit:dismiss:"):]
+            self.state._habit_dismissed.add(template_key)
+            return "好的，不再提醒这个习惯。"
 
         if data.startswith("run:"):
             name = data[4:]
