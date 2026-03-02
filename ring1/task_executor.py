@@ -116,6 +116,58 @@ def _tokenize_for_matching(text: str) -> set[str]:
     return tokens
 
 
+# ---------------------------------------------------------------------------
+# Fabrication detection — catch LLM "performing" actions in text without tools
+# ---------------------------------------------------------------------------
+
+_FABRICATION_PATTERNS: list[tuple[_re.Pattern[str], str]] = [
+    # Claims of calling tools without actually calling them
+    (_re.compile(r"已调用\s*(send_file|web_fetch|web_search|exec|run_skill|message)\s*\("), "tool_call_claim"),
+    # Fake phased workflow reports (Phase 1 Complete, Phase 2, etc.)
+    (_re.compile(r"(Phase|阶段)\s*\d+\s*(Complete|完成|Done)", _re.IGNORECASE), "fake_phase"),
+    # Fake API response JSON embedded in text
+    (_re.compile(r'"(sources|binance|coingecko|coinmarketcap|price|average)":\s*[\d{]'), "fake_api_data"),
+    # Claims of file delivery without tool
+    (_re.compile(r"(已发送|已推送|文件已|报告已发送)(到|至|给)"), "fake_delivery"),
+    # Fake timestamps with wrong year or implausible precision
+    (_re.compile(r"(Current UTC|当前时间|UTC时间):\s*20\d{2}-\d{2}-\d{2}"), "fake_timestamp"),
+]
+
+# Tools that produce real data
+_DATA_TOOLS = {"web_fetch", "web_search", "exec", "run_skill", "read_file"}
+
+
+def _detect_fabrication(response: str, tool_sequence: list[str]) -> list[str]:
+    """Detect if the LLM fabricated actions it didn't actually perform.
+
+    Returns a list of fabrication signal descriptions (empty = clean).
+    """
+    signals: list[str] = []
+    tool_set = set(tool_sequence)
+
+    for pattern, signal_type in _FABRICATION_PATTERNS:
+        if pattern.search(response):
+            if signal_type == "tool_call_claim":
+                m = pattern.search(response)
+                claimed_tool = m.group(1) if m else ""
+                if claimed_tool not in tool_set:
+                    signals.append(f"{signal_type}:{claimed_tool}")
+            elif signal_type == "fake_api_data":
+                if not tool_set & _DATA_TOOLS:
+                    signals.append(signal_type)
+            elif signal_type == "fake_phase":
+                if "message" not in tool_set:
+                    signals.append(signal_type)
+            elif signal_type == "fake_delivery":
+                if "send_file" not in tool_set:
+                    signals.append(signal_type)
+            elif signal_type == "fake_timestamp":
+                if not tool_set & _DATA_TOOLS:
+                    signals.append(signal_type)
+
+    return signals
+
+
 def _match_skills(task_text: str, skills: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split skills into (recommended, other) based on keyword overlap with task.
 
@@ -278,6 +330,17 @@ Use file/shell tools when the user asks to read, modify, or explore files and co
 Use the message tool to keep the user informed during long operations.
 Use spawn for tasks that may take a long time (complex analysis, multi-file operations).
 Do NOT use tools for questions you can answer from your training data alone.
+
+ANTI-FABRICATION RULES (严格执行):
+- NEVER describe tool calls you didn't make. If you say "I fetched X", you MUST
+  have actually called web_fetch. If you say "I sent the file", you MUST have
+  actually called send_file.
+- NEVER generate fake API responses, fake JSON data, or fake file paths in your
+  text. All data must come from actual tool calls.
+- NEVER simulate multi-phase workflows in plain text. Use the message tool for
+  real progress updates and actual tools for real work.
+- If you cannot perform an action (API unavailable, tool missing), SAY SO honestly
+  instead of pretending you did it.
 
 SKILL PREFERENCE: When "Recommended Skills" are listed in the context, ALWAYS prefer
 using run_skill to execute them instead of reimplementing the same functionality yourself.
@@ -766,6 +829,47 @@ class TaskExecutor:
                 log.error("Task LLM error: %s", exc)
                 response = f"Sorry, I couldn't process that request: {exc}"
 
+            # --- Fabrication detection ---
+            fab_signals = _detect_fabrication(response, tool_sequence)
+            if fab_signals and not getattr(task, '_fab_retried', False):
+                log.warning("Fabrication detected (signals: %s), retrying with correction", fab_signals)
+                retry_prompt = (
+                    "CRITICAL: Your previous response contained fabricated actions — you described "
+                    "calling tools or producing data without actually using any tools. "
+                    "This is NOT acceptable.\n\n"
+                    "You MUST use actual tools (web_search, web_fetch, exec, run_skill, etc.) "
+                    "to perform real actions. Do NOT describe actions in text — execute them.\n\n"
+                    "If you genuinely cannot perform the task (no API available, tool error), "
+                    "say so honestly.\n\n"
+                    f"Original request: {task.text}"
+                )
+                tool_sequence.clear()
+                skills_used.clear()
+                try:
+                    if self.registry:
+                        response = self.client.send_message_with_tools(
+                            _task_system_prompt(), retry_prompt,
+                            tools=self.registry.get_schemas(),
+                            tool_executor=tracking_execute,
+                            max_rounds=self.max_tool_rounds,
+                        )
+                    else:
+                        response = self.client.send_message(
+                            _task_system_prompt(), retry_prompt,
+                        )
+                except LLMError as exc:
+                    log.error("Retry LLM error: %s", exc)
+
+                # Re-check after retry
+                fab_signals = _detect_fabrication(response, tool_sequence)
+
+            if fab_signals:
+                log.warning("Fabrication persists after retry: %s", fab_signals)
+                response = (
+                    "\u26a0\ufe0f 真实性警告：以下回复可能包含未经工具验证的信息。"
+                    "建议对其中的数据、文件路径、API 结果进行独立核实。\n\n"
+                ) + response
+
             # Truncate if needed
             if len(response) > _MAX_REPLY_LEN:
                 response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
@@ -1225,6 +1329,12 @@ class TaskExecutor:
             except LLMError as exc:
                 log.error("P1 task LLM error: %s", exc)
                 response = f"Error: {exc}"
+
+            # Fabrication detection for P1 tasks — no retry, just discard
+            fab_signals = _detect_fabrication(response, tool_sequence)
+            if fab_signals:
+                log.warning("P1 task fabricated actions (signals: %s), discarding", fab_signals)
+                return  # Don't send fabricated autonomous task results
 
             if len(response) > _MAX_REPLY_LEN:
                 response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
