@@ -16,7 +16,7 @@ from ring1.prompts import build_memory_curation_prompt
 
 log = logging.getLogger("protea.memory_curator")
 
-_CONSOLIDATION_SYSTEM_PROMPT = """\
+_CONSOLIDATION_SYSTEM_PROMPT_BASE = """\
 You are the nightly memory consolidation engine for Protea, a personal AI assistant.
 Analyze the user's recent tasks and discover hidden patterns.
 
@@ -41,6 +41,11 @@ Rules:
 - confidence >= 0.6 to be worth reporting
 - If no meaningful patterns found, return []
 """
+
+
+def _consolidation_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_CONSOLIDATION_SYSTEM_PROMPT_BASE)
 
 
 class MemoryCurator:
@@ -174,7 +179,7 @@ class MemoryCurator:
 
         try:
             response = self._client.send_message(
-                _CONSOLIDATION_SYSTEM_PROMPT, user_message,
+                _consolidation_prompt(), user_message,
             )
         except LLMError as exc:
             log.debug("Nightly consolidation LLM call failed: %s", exc)

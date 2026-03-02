@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ring1.task_executor import (
-    TASK_SYSTEM_PROMPT,
-    P1_SYSTEM_PROMPT,
+    _TASK_SYSTEM_PROMPT_BASE as TASK_SYSTEM_PROMPT,
+    _P1_SYSTEM_PROMPT_BASE as P1_SYSTEM_PROMPT,
     TaskExecutor,
     _build_task_context,
     _match_skills,

@@ -29,7 +29,7 @@ _PROTEA_FEATURES = [
     "多轮对话 — 直接回复 Protea 消息可继续对话",
 ]
 
-_POST_TASK_SYSTEM = """\
+_POST_TASK_SYSTEM_BASE = """\
 You are Protea's nudge engine.  After a user task completes, decide whether
 to offer a contextual suggestion.
 
@@ -57,7 +57,7 @@ BUTTON_NO: <dismiss button label>
 TASK: <optional task text for execute/schedule actions>
 """
 
-_PROACTIVE_SYSTEM = """\
+_PROACTIVE_SYSTEM_BASE = """\
 You are Protea's proactive engagement engine.  During active usage periods,
 suggest something useful to the user.
 
@@ -78,6 +78,16 @@ BUTTON_YES: <accept button label>
 BUTTON_NO: <dismiss button label>
 TASK: <task to execute if user accepts>
 """
+
+
+def _post_task_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_POST_TASK_SYSTEM_BASE)
+
+
+def _proactive_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_PROACTIVE_SYSTEM_BASE)
 
 
 def _task_hash(text: str) -> str:
@@ -131,7 +141,7 @@ class NudgeEngine:
         user_msg = self._build_post_task_message(task_text, response, context)
         try:
             llm_response = self._client.send_message(
-                _POST_TASK_SYSTEM, user_msg,
+                _post_task_prompt(), user_msg,
             )
         except Exception:
             log.debug("Nudge LLM call failed", exc_info=True)
@@ -150,7 +160,7 @@ class NudgeEngine:
         user_msg = self._build_proactive_message()
         try:
             llm_response = self._client.send_message(
-                _PROACTIVE_SYSTEM, user_msg,
+                _proactive_prompt(), user_msg,
             )
         except Exception:
             log.debug("Proactive nudge LLM call failed", exc_info=True)

@@ -59,6 +59,8 @@ class SentinelState:
         "_pending_evo_schedule",
         # Nudge engine
         "nudge_queue", "_nudge_context", "_nudge_context_path",
+        # Soul onboarding
+        "_pending_soul_question",
     )
 
     def __init__(self) -> None:
@@ -106,6 +108,8 @@ class SentinelState:
         self.nudge_queue: queue.Queue = queue.Queue()
         self._nudge_context: dict[str, dict] = {}
         self._nudge_context_path = None
+        # Soul onboarding
+        self._pending_soul_question: dict | None = None
 
     def _save_nudge_context(self):
         if not self._nudge_context_path:
@@ -1853,6 +1857,25 @@ class TelegramBot:
                                     **_reply_kw,
                                 )
                             self.state._pending_evo_schedule = None
+                            handled = True
+                            continue
+
+                        # Check for pending soul onboarding reply
+                        pending_soul = getattr(self.state, '_pending_soul_question', None)
+                        if (pending_soul and text.strip()
+                                and not text.strip().startswith("/")):
+                            answer = text.strip()
+                            if answer.lower() in ("跳过", "skip"):
+                                self._send_reply("好的，跳过。", **_reply_kw)
+                            else:
+                                try:
+                                    from ring1 import soul
+                                    soul.write_field(pending_soul["field"], answer)
+                                    self._send_reply("✅ 已记录，谢谢！", **_reply_kw)
+                                except Exception:
+                                    log.debug("Soul write_field failed", exc_info=True)
+                                    self._send_reply("记录失败，请稍后重试。", **_reply_kw)
+                            self.state._pending_soul_question = None
                             handled = True
                             continue
 

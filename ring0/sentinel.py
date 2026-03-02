@@ -971,6 +971,13 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("VenvManager not available: %s", exc)
 
+    # Load soul profile (centralized identity/preferences).
+    try:
+        from ring1.soul import load as _soul_load
+        _soul_load(project_root)
+    except Exception as exc:
+        log.debug("Soul profile not loaded: %s", exc)
+
     hb = HeartbeatMonitor(heartbeat_path, timeout_sec=timeout)
     notifier = _create_notifier(project_root)
 
@@ -1133,6 +1140,8 @@ def run(project_root: pathlib.Path) -> None:
                 user_profiler=user_profiler,
                 notifier=notifier,
                 config=proactive_cfg,
+                project_root=project_root,
+                state=state,
             )
         proactive_loop = _best_effort("ProactiveLoop", _create_proactive)
         if proactive_loop:
@@ -1190,6 +1199,13 @@ def run(project_root: pathlib.Path) -> None:
     # Notify Telegram that sentinel is online
     if notifier:
         notifier.notify_sentinel_online(generation)
+
+    # Trigger initial soul onboarding check (after bot is ready).
+    if proactive_loop:
+        try:
+            proactive_loop._check_onboarding()
+        except Exception:
+            log.debug("Initial onboarding check failed", exc_info=True)
 
     last_injected_gene_ids: list[int] = []
     last_attributed_task_id: int = 0

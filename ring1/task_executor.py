@@ -195,7 +195,7 @@ def _extract_recall_keywords(text: str) -> list[str]:
                 break
     return keywords
 
-TASK_SYSTEM_PROMPT = """\
+_TASK_SYSTEM_PROMPT_BASE = """\
 You are Protea, a self-evolving artificial life agent running on a host machine.
 You are helpful and concise.  Answer the user's question or perform the requested
 analysis.  You have context about your current state (generation, survival, code).
@@ -308,7 +308,7 @@ REMOTE ACCESS — CRITICAL:
 - Workflow: write_file → (generate content) → send_file.
 """
 
-P1_SYSTEM_PROMPT = """\
+_P1_SYSTEM_PROMPT_BASE = """\
 You are Protea, a self-evolving artificial life agent.  Your owner has been
 interacting with you through tasks.  Based on the task history and any standing
 directives, decide whether there is useful proactive work you can do right now.
@@ -329,6 +329,16 @@ YES or NO
 (If YES) A concise description of the proactive work to do.
 (If NO) Brief reason why not.
 """
+
+
+def _task_system_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_TASK_SYSTEM_PROMPT_BASE)
+
+
+def _p1_system_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_P1_SYSTEM_PROMPT_BASE)
 
 
 def _build_task_context(
@@ -740,14 +750,14 @@ class TaskExecutor:
                         return self.registry.execute(tool_name, tool_input)
 
                     response = self.client.send_message_with_tools(
-                        TASK_SYSTEM_PROMPT, user_message,
+                        _task_system_prompt(), user_message,
                         tools=self.registry.get_schemas(),
                         tool_executor=tracking_execute,
                         max_rounds=self.max_tool_rounds,
                     )
                 else:
                     response = self.client.send_message(
-                        TASK_SYSTEM_PROMPT, user_message,
+                        _task_system_prompt(), user_message,
                     )
             except LLMError as exc:
                 log.error("Task LLM error: %s", exc)
@@ -1081,7 +1091,7 @@ class TaskExecutor:
         user_message = "\n".join(parts)
 
         try:
-            decision = self.client.send_message(P1_SYSTEM_PROMPT, user_message)
+            decision = self.client.send_message(_p1_system_prompt(), user_message)
         except LLMError as exc:
             log.debug("P1 decision LLM error: %s", exc)
             return
@@ -1198,14 +1208,14 @@ class TaskExecutor:
                         return self.registry.execute(tool_name, tool_input)
 
                     response = self.client.send_message_with_tools(
-                        TASK_SYSTEM_PROMPT, user_message,
+                        _task_system_prompt(), user_message,
                         tools=self.registry.get_schemas(),
                         tool_executor=tracking_execute,
                         max_rounds=self.p1_max_tool_rounds,
                     )
                 else:
                     response = self.client.send_message(
-                        TASK_SYSTEM_PROMPT, user_message,
+                        _task_system_prompt(), user_message,
                     )
             except LLMError as exc:
                 log.error("P1 task LLM error: %s", exc)

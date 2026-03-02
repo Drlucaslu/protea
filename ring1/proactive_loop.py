@@ -17,7 +17,7 @@ from ring1.llm_base import LLMClient, LLMError
 
 log = logging.getLogger("protea.proactive_loop")
 
-_MORNING_SYSTEM_PROMPT = """\
+_MORNING_SYSTEM_PROMPT_BASE = """\
 You are Protea, a personal AI assistant generating a morning briefing.
 Based on the user's interest profile, recent task history, and preferences,
 create a concise, personalized morning briefing.
@@ -40,7 +40,7 @@ If there's not enough data for a section, skip it gracefully.
 Keep the tone warm and helpful. Mix Chinese and English naturally.
 """
 
-_EVENING_SYSTEM_PROMPT = """\
+_EVENING_SYSTEM_PROMPT_BASE = """\
 You are Protea, a personal AI assistant generating an evening summary.
 Summarize today's interactions, insights discovered, and preview tomorrow.
 
@@ -62,7 +62,7 @@ Format (use emojis, keep it under 1000 chars):
 Keep it brief and actionable.
 """
 
-_PERIODIC_SYSTEM_PROMPT = """\
+_PERIODIC_SYSTEM_PROMPT_BASE = """\
 You are Protea, deciding whether to proactively notify the user.
 Based on the current context (time, recent activity, preferences),
 decide if there's something worth proactively sharing right now.
@@ -80,6 +80,21 @@ CONTENT: (if notify) the notification text (max 500 chars, use emojis)
 """
 
 
+def _morning_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_MORNING_SYSTEM_PROMPT_BASE)
+
+
+def _evening_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_EVENING_SYSTEM_PROMPT_BASE)
+
+
+def _periodic_prompt() -> str:
+    from ring1.soul import inject
+    return inject(_PERIODIC_SYSTEM_PROMPT_BASE)
+
+
 class ProactiveLoop:
     """Proactive thinking loop — generates periodic user-facing content.
 
@@ -95,12 +110,16 @@ class ProactiveLoop:
         user_profiler=None,
         notifier=None,
         config: dict | None = None,
+        project_root=None,
+        state=None,
     ) -> None:
         self._client = llm_client
         self._memory_store = memory_store
         self._preference_store = preference_store
         self._user_profiler = user_profiler
         self._notifier = notifier
+        self._project_root = project_root
+        self._state = state
 
         cfg = config or {}
         self.morning_hour = cfg.get("morning_hour", 9)
@@ -172,12 +191,46 @@ class ProactiveLoop:
 
         return "\n".join(parts)
 
+    def _check_onboarding(self) -> str | None:
+        """Ask the next onboarding question if profile is incomplete.
+
+        Returns the question text if sent, None otherwise.
+        """
+        if not self._state or not self._notifier:
+            return None
+        # Don't interrupt if there's already a pending question.
+        if getattr(self._state, '_pending_soul_question', None):
+            return None
+        try:
+            from ring1 import soul
+            if not soul.is_section_empty("Owner"):
+                return None  # Owner section already has content
+            if not soul.should_ask_today():
+                return None
+            nq = soul.get_next_question()
+            if not nq:
+                return None
+            field, question = nq
+            self._send(question)
+            soul.record_asked()
+            self._state._pending_soul_question = {"field": field}
+            log.info("Soul onboarding: asked '%s'", field)
+            return question
+        except Exception:
+            log.debug("Onboarding check failed", exc_info=True)
+            return None
+
     def check_and_send(self) -> str | None:
         """Main entry point — check time and decide what to send.
 
         Called by the Sentinel main loop. Returns the content that was sent
         (or None if nothing was sent).
         """
+        # Soul onboarding (max 1 question/day, before other proactive content).
+        onboarding = self._check_onboarding()
+        if onboarding:
+            return onboarding
+
         if not self._can_act():
             return None
 
@@ -228,7 +281,7 @@ class ProactiveLoop:
 
         try:
             response = self._client.send_message(
-                _MORNING_SYSTEM_PROMPT, user_msg,
+                _morning_prompt(), user_msg,
             )
             return response.strip() if response.strip() else None
         except LLMError as exc:
@@ -246,7 +299,7 @@ class ProactiveLoop:
 
         try:
             response = self._client.send_message(
-                _EVENING_SYSTEM_PROMPT, user_msg,
+                _evening_prompt(), user_msg,
             )
             return response.strip() if response.strip() else None
         except LLMError as exc:
@@ -263,7 +316,7 @@ class ProactiveLoop:
 
         try:
             response = self._client.send_message(
-                _PERIODIC_SYSTEM_PROMPT, user_msg,
+                _periodic_prompt(), user_msg,
             )
         except LLMError as exc:
             log.debug("Periodic check LLM call failed: %s", exc)
