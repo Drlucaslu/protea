@@ -391,24 +391,22 @@ class TestCompact:
 
     def test_cold_cleanup_archives(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
-        # Manually insert a cold entry with low importance
+        # Insert many cold entries to exceed smart_forget limit (200).
         import sqlite3
         con = sqlite3.connect(str(tmp_path / "mem.db"))
-        con.execute(
-            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
-            "VALUES (1, 'observation', 'ancient', '{}', 0.1, 'cold', 'ancient')",
-        )
+        for i in range(205):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'observation', ?, '{}', 0.1, 'cold', ?)",
+                (i, f"cold entry {i}", f"cold entry {i}"),
+            )
         con.commit()
         con.close()
 
         result = store.compact(current_generation=400)
-        assert result["deleted"] == 1
-        # Entry is archived, not deleted.
+        assert result["deleted"] == 5  # 205 - 200 = 5 archived
         archived = store.get_by_tier("archive")
-        assert len(archived) == 1
-        assert archived[0]["content"] == "ancient"
-        # Importance decayed by 0.3x.
-        assert abs(archived[0]["importance"] - 0.03) < 1e-6
+        assert len(archived) == 5
 
     def test_compact_returns_correct_keys(self, tmp_path):
         store = MemoryStore(tmp_path / "mem.db")
@@ -874,4 +872,194 @@ class TestSemanticRule:
         # Unrelated entry unchanged.
         hot = store.get_by_tier("hot")
         assert any(e["id"] == id3 for e in hot)
+
+
+class TestStrategies:
+    """P0: Strategy entry type and get_strategies()."""
+
+    def test_strategy_importance(self):
+        assert _compute_importance("strategy", "Use web_search before web_fetch") == 0.85
+
+    def test_get_strategies_returns_correct(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "strategy", "Always check skill availability first")
+        store.add(2, "strategy", "Use web_search for research tasks")
+        store.add(3, "observation", "Not a strategy")
+
+        strategies = store.get_strategies()
+        assert len(strategies) == 2
+        assert all(s["entry_type"] == "strategy" for s in strategies)
+
+    def test_get_strategies_excludes_archive(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        store.add(1, "strategy", "Active strategy")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+            "VALUES (1, 'strategy', 'Archived strategy', '{}', 0.85, 'archive', '')",
+        )
+        con.commit()
+        con.close()
+
+        strategies = store.get_strategies()
+        assert len(strategies) == 1
+        assert strategies[0]["content"] == "Active strategy"
+
+    def test_get_strategies_respects_limit(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        for i in range(10):
+            store.add(i, "strategy", f"Strategy {i}")
+        strategies = store.get_strategies(limit=3)
+        assert len(strategies) == 3
+
+    def test_evolution_signal_importance(self):
+        assert _compute_importance("evolution_signal", "Task execution issues") == 0.6
+
+
+class TestMemoryLinks:
+    """P2: Auto-linking, get_linked, get_link_count."""
+
+    def test_auto_link_creates_links(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(1, "task", "python code analysis debugging")
+        id2 = store.add(2, "task", "python code review and testing")
+        # Both share "python" and "code" keywords — should be linked.
+        links = store.get_linked(id2)
+        assert len(links) >= 1
+        assert any(l["id"] == id1 for l in links)
+
+    def test_get_linked_bidirectional(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(1, "task", "python code analysis debugging")
+        id2 = store.add(2, "task", "python code review and testing")
+        # Both directions should work.
+        from_1 = store.get_linked(id1)
+        from_2 = store.get_linked(id2)
+        assert any(l["id"] == id2 for l in from_1)
+        assert any(l["id"] == id1 for l in from_2)
+
+    def test_get_link_count(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(1, "task", "python code analysis debugging")
+        id2 = store.add(2, "task", "python code review and testing")
+        assert store.get_link_count(id1) >= 1
+        assert store.get_link_count(id2) >= 1
+
+    def test_no_links_for_unrelated(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(1, "task", "python code analysis debugging")
+        id2 = store.add(2, "task", "stock market financial trading")
+        # These should NOT be linked (no keyword overlap).
+        assert store.get_link_count(id1) == 0
+        assert store.get_link_count(id2) == 0
+
+    def test_get_linked_empty(self, tmp_path):
+        store = MemoryStore(tmp_path / "mem.db")
+        id1 = store.add(1, "task", "standalone entry with unique words")
+        assert store.get_linked(id1) == []
+
+
+class TestTimeDecay:
+    """P2: Time decay in hybrid_search and recall."""
+
+    def test_recent_entries_score_higher(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        # Insert an old entry manually (30 days ago).
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, timestamp) "
+            "VALUES (1, 'task', 'python old analysis', '{}', 0.7, 'hot', 'python old analysis', "
+            "datetime('now', '-30 days'))",
+        )
+        con.commit()
+        con.close()
+        # Add a fresh entry.
+        store.add(2, "task", "python new analysis")
+
+        results = store.hybrid_search(["python", "analysis"])
+        assert len(results) == 2
+        # The recent entry should score higher due to time decay.
+        assert results[0]["content"] == "python new analysis"
+
+    def test_very_old_entry_decayed(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords, timestamp) "
+            "VALUES (1, 'task', 'ancient python project', '{}', 0.7, 'hot', 'ancient python project', "
+            "datetime('now', '-100 days'))",
+        )
+        con.commit()
+        con.close()
+
+        results = store.hybrid_search(["python", "project"])
+        assert len(results) == 1
+        # Decay at 100 days: max(0.1, 1 - 100/90) = 0.1 → low score.
+        assert results[0]["search_score"] < 0.15
+
+
+class TestSmartForget:
+    """P2: Smart forgetting based on importance, links, and recency."""
+
+    def test_smart_forget_archives_excess(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        # Insert cold entries.
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        for i in range(10):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'observation', ?, '{}', 0.2, 'cold', ?)",
+                (i, f"cold entry {i}", f"cold entry {i}"),
+            )
+        con.commit()
+        con.close()
+
+        archived = store.smart_forget(limit=5)
+        assert archived == 5
+        cold = store.get_by_tier("cold")
+        assert len(cold) == 5
+
+    def test_smart_forget_keeps_high_importance(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        # High importance entry.
+        con.execute(
+            "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+            "VALUES (1, 'directive', 'important cold', '{}', 0.9, 'cold', 'important cold')",
+        )
+        # Low importance entries.
+        for i in range(5):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'observation', ?, '{}', 0.1, 'cold', ?)",
+                (i, f"low value {i}", f"low value {i}"),
+            )
+        con.commit()
+        con.close()
+
+        store.smart_forget(limit=3)
+        cold = store.get_by_tier("cold")
+        # The high-importance entry should survive.
+        assert any(e["content"] == "important cold" for e in cold)
+
+    def test_smart_forget_no_action_under_limit(self, tmp_path):
+        import sqlite3
+        store = MemoryStore(tmp_path / "mem.db")
+        con = sqlite3.connect(str(tmp_path / "mem.db"))
+        for i in range(3):
+            con.execute(
+                "INSERT INTO memory (generation, entry_type, content, metadata, importance, tier, keywords) "
+                "VALUES (?, 'observation', ?, '{}', 0.3, 'cold', '')",
+                (i, f"cold {i}"),
+            )
+        con.commit()
+        con.close()
+
+        archived = store.smart_forget(limit=10)
+        assert archived == 0
 

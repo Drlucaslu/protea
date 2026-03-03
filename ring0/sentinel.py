@@ -576,6 +576,18 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             except Exception:
                 pass
 
+        # P3: Collect recent evolution signals for directed evolution.
+        evo_signals_flat: list[dict] = []
+        if memory_store:
+            try:
+                sig_entries = memory_store.get_by_type("evolution_signal", limit=10)
+                for entry in sig_entries:
+                    meta = entry.get("metadata", {})
+                    for sig in meta.get("signals", []):
+                        evo_signals_flat.append(sig)
+            except Exception:
+                pass
+
         evolver = Evolver(r1_config, fitness, memory_store=memory_store)
         result = evolver.evolve(
             ring2_path=ring2_path,
@@ -601,6 +613,7 @@ def _try_evolve(project_root, fitness, ring2_path, generation, params, survived,
             accepted_capabilities=accepted_capabilities,
             rejected_directions=rejected_directions,
             soul_context=soul_context,
+            evolution_signals=evo_signals_flat or None,
         )
         if result.success:
             log.info("Evolution succeeded: %s", result.reason)

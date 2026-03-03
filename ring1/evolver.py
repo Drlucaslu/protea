@@ -95,6 +95,7 @@ class Evolver:
         accepted_capabilities: list[dict] | None = None,
         rejected_directions: list[dict] | None = None,
         soul_context: str = "",
+        evolution_signals: list[dict] | None = None,
     ) -> EvolutionResult:
         """Run one evolution cycle.
 
@@ -149,6 +150,7 @@ class Evolver:
             accepted_capabilities=accepted_capabilities,
             rejected_directions=rejected_directions,
             soul_context=soul_context,
+            evolution_signals=evolution_signals,
         )
 
         # 4. Call LLM API (with truncation detection).

@@ -383,6 +383,7 @@ Rules:
 - Keep the task description concise and actionable.
 - NEVER restart, stop, or kill Protea processes. Process lifecycle is managed by the Sentinel automatically.
 - NEVER modify .env, config.toml, run.py, or stop_run.sh.
+- Your suggestions MUST align with the owner's Soul Profile.
 
 Respond in EXACTLY this format:
 ## Decision
@@ -415,6 +416,7 @@ def _build_task_context(
     other_skills: list[dict] | None = None,
     semantic_rules: list[dict] | None = None,
     gene_patterns: list[dict] | None = None,
+    strategies: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     from datetime import datetime
@@ -446,6 +448,15 @@ def _build_task_context(
             if len(summary) > 200:
                 summary = summary[:197] + "..."
             parts.append(f"- [score={score:.2f}, tasks={task_hits}] {summary}")
+
+    if strategies:
+        parts.append("")
+        parts.append("## Proven Strategies")
+        for strat in strategies:
+            content = strat.get("content", "")
+            if len(content) > 200:
+                content = content[:197] + "..."
+            parts.append(f"- {content}")
 
     if memories:
         parts.append("")
@@ -586,6 +597,7 @@ class TaskExecutor:
         self.feedback_fn = None  # Called after complete task response
         self.nudge_fn = None  # Called after feedback: nudge_engine.post_task_nudge
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
+        self._task_counter: int = 0  # P0: triggers strategy distillation every 10 tasks
         self._running = True
         self._last_p0_time: float = time.time()
         self._last_p1_check: float = 0.0
@@ -700,6 +712,7 @@ class TaskExecutor:
         response = ""
         skills_used: list[str] = []
         tool_sequence: list[str] = []
+        fab_signals: list[str] = []
         _gene_ids_used: list[int] = []
         try:
             # Build context
@@ -790,6 +803,13 @@ class TaskExecutor:
                 except Exception:
                     log.debug("Gene retrieval for task failed", exc_info=True)
 
+            strategies: list[dict] = []
+            if self.memory_store:
+                try:
+                    strategies = self.memory_store.get_strategies(limit=5)
+                except Exception:
+                    pass
+
             history = self._get_recent_history()
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
@@ -798,6 +818,7 @@ class TaskExecutor:
                 other_skills=other_skills,
                 semantic_rules=semantic_rules,
                 gene_patterns=gene_patterns,
+                strategies=strategies,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -813,7 +834,15 @@ class TaskExecutor:
                         tool_sequence.append(tool_name)
                         if tool_name == "run_skill":
                             skills_used.append(tool_input.get("skill_name", "unknown"))
-                        return self.registry.execute(tool_name, tool_input)
+                        result = self.registry.execute(tool_name, tool_input)
+                        # P1 anti-drift: inject goal reminder on long tool chains.
+                        if (len(tool_sequence) > 10
+                                and len(tool_sequence) % 5 == 0):
+                            result = (
+                                "[REMINDER: Stay focused on the original user request. "
+                                "Do not drift into unrelated work.]\n" + result
+                            )
+                        return result
 
                     response = self.client.send_message_with_tools(
                         _task_system_prompt(), user_message,
@@ -830,7 +859,7 @@ class TaskExecutor:
                 response = f"Sorry, I couldn't process that request: {exc}"
 
             # --- Fabrication detection ---
-            fab_signals = _detect_fabrication(response, tool_sequence)
+            fab_signals[:] = _detect_fabrication(response, tool_sequence)
             if fab_signals and not getattr(task, '_fab_retried', False):
                 log.warning("Fabrication detected (signals: %s), retrying with correction", fab_signals)
                 retry_prompt = (
@@ -861,7 +890,7 @@ class TaskExecutor:
                     log.error("Retry LLM error: %s", exc)
 
                 # Re-check after retry
-                fab_signals = _detect_fabrication(response, tool_sequence)
+                fab_signals[:] = _detect_fabrication(response, tool_sequence)
 
             if fab_signals:
                 log.warning("Fabrication persists after retry: %s", fab_signals)
@@ -1007,6 +1036,29 @@ class TaskExecutor:
                             nudge_q.put(result)
                 except Exception:
                     log.debug("Nudge generation failed", exc_info=True)
+            # P0: Trigger strategy distillation every 10 tasks.
+            self._task_counter += 1
+            if self._task_counter % 10 == 0:
+                try:
+                    self._distill_strategies()
+                except Exception:
+                    log.debug("Distillation trigger failed", exc_info=True)
+            # P3: Extract and store evolution signals.
+            if self.memory_store:
+                try:
+                    evo_signals = self._extract_evolution_signals(
+                        response, tool_sequence, duration, fab_signals,
+                    )
+                    if evo_signals:
+                        snap_gen = self.state.snapshot().get("generation", 0)
+                        self.memory_store.add(
+                            generation=snap_gen,
+                            entry_type="evolution_signal",
+                            content=f"Task execution issues: {len(evo_signals)} signals",
+                            metadata={"signals": evo_signals},
+                        )
+                except Exception:
+                    log.debug("Evolution signal extraction failed", exc_info=True)
 
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"
@@ -1133,6 +1185,149 @@ class TaskExecutor:
             log.debug("Cross-domain inspiration check failed", exc_info=True)
             return None
 
+    # --- P0: Experience Distillation ---
+
+    _DISTILL_PROMPT = (
+        "You are a strategy distiller. Given recent task execution data, "
+        "extract 1-3 reusable strategies as short, actionable rules. "
+        "Each strategy should be a single sentence describing a proven pattern.\n"
+        "Format: one strategy per line, starting with '- '.\n"
+        "If no clear patterns emerge, output: NONE"
+    )
+
+    def _distill_strategies(self) -> None:
+        """Distill strategies from recent task execution patterns."""
+        if not self.memory_store or not self.client:
+            return
+        try:
+            recent_tasks = self.memory_store.get_by_type("task", limit=15)
+            # Filter tasks that have tool_sequence in metadata.
+            tasks_with_tools = [
+                t for t in recent_tasks
+                if t.get("metadata", {}).get("tool_sequence")
+            ]
+            if len(tasks_with_tools) < 3:
+                return
+
+            # Build pattern text.
+            parts: list[str] = []
+            for t in tasks_with_tools[:15]:
+                meta = t.get("metadata", {})
+                parts.append(
+                    f"- Task: {t['content'][:100]}\n"
+                    f"  Tools: {', '.join(meta.get('tool_sequence', []))}\n"
+                    f"  Skills: {', '.join(meta.get('skills_used', []))}\n"
+                    f"  Duration: {meta.get('duration_sec', '?')}s"
+                )
+            user_msg = "## Recent Task Executions\n" + "\n".join(parts)
+
+            result = self.client.send_message(self._DISTILL_PROMPT, user_msg)
+            if not result or "NONE" in result.upper():
+                return
+
+            # Parse strategies (lines starting with '- ').
+            snap = self.state.snapshot()
+            gen = snap.get("generation", 0)
+            for line in result.strip().splitlines():
+                line = line.strip()
+                if line.startswith("- "):
+                    strategy_text = line[2:].strip()
+                    if 10 < len(strategy_text) < 300:
+                        self.memory_store.add(
+                            generation=gen,
+                            entry_type="strategy",
+                            content=strategy_text,
+                        )
+            log.info("Strategy distillation completed")
+        except Exception:
+            log.debug("Strategy distillation failed", exc_info=True)
+
+    # --- P3: Evolution Signal Extraction ---
+
+    @staticmethod
+    def _extract_evolution_signals(
+        response: str,
+        tool_sequence: list[str],
+        duration_sec: float,
+        fab_signals: list[str],
+    ) -> list[dict]:
+        """Extract evolution-relevant signals from task execution.
+
+        Detects: fabrication, slow_task, empty_response, repeated_tool_failure,
+        tool_error, timeout keywords.
+        """
+        signals: list[dict] = []
+
+        # Fabrication detected.
+        if fab_signals:
+            signals.append({"type": "fabrication", "detail": ", ".join(fab_signals)})
+
+        # Slow task (>60s).
+        if duration_sec > 60:
+            signals.append({"type": "slow_task", "detail": f"{duration_sec:.0f}s"})
+
+        # Empty response (<20 chars).
+        if len(response.strip()) < 20:
+            signals.append({"type": "empty_response", "detail": f"{len(response.strip())} chars"})
+
+        # Repeated tool failure: same tool called 3+ times in a row.
+        if len(tool_sequence) >= 3:
+            for i in range(len(tool_sequence) - 2):
+                if tool_sequence[i] == tool_sequence[i + 1] == tool_sequence[i + 2]:
+                    signals.append({
+                        "type": "repeated_tool_failure",
+                        "detail": f"{tool_sequence[i]} called 3+ times consecutively",
+                    })
+                    break
+
+        # Tool error / timeout keywords in response.
+        response_lower = response.lower()
+        if "tool_error" in response_lower or "error executing tool" in response_lower:
+            signals.append({"type": "tool_error", "detail": "error in tool execution"})
+        if "timeout" in response_lower and "timed out" in response_lower:
+            signals.append({"type": "timeout", "detail": "timeout detected in response"})
+
+        return signals
+
+    # --- P1: Anti-Drift Goal Alignment ---
+
+    def _is_goal_aligned(self, task_desc: str) -> bool:
+        """Check if a P1 task description aligns with the owner's Soul Profile.
+
+        Tokenizes soul rules and task description, checks keyword overlap.
+        Returns False if overlap ratio < 0.15 (misaligned).
+        """
+        try:
+            from ring1.soul import get_rules
+            rules = get_rules()
+        except Exception:
+            return True  # If no soul, allow all
+
+        if not rules:
+            return True
+
+        # Tokenize rules.
+        rule_text = " ".join(rules) if isinstance(rules, list) else str(rules)
+        rule_tokens = set(_RECALL_KEYWORD_RE.findall(rule_text.lower()))
+        rule_tokens = {t for t in rule_tokens if len(t) >= 3}
+
+        if not rule_tokens:
+            return True
+
+        # Tokenize task description.
+        task_tokens = set(_RECALL_KEYWORD_RE.findall(task_desc.lower()))
+        task_tokens = {t for t in task_tokens if len(t) >= 3}
+
+        if not task_tokens:
+            return True
+
+        overlap = len(task_tokens & rule_tokens)
+        ratio = overlap / len(task_tokens)
+        if ratio < 0.15:
+            log.info("P1 task rejected (goal drift): ratio=%.2f, task=%s", ratio, task_desc[:80])
+            return False
+        return True
+
     def _check_p1_opportunity(self) -> None:
         """Check if we should trigger a P1 autonomous task."""
         if not self.p1_enabled:
@@ -1218,6 +1413,10 @@ class TaskExecutor:
         if not task_desc:
             return
 
+        # P1 anti-drift: check goal alignment before executing.
+        if not self._is_goal_aligned(task_desc):
+            return
+
         log.info("P1 autonomous task triggered: %s (chat_id=%s)", task_desc[:80], self._last_chat_id or "default")
         self._execute_p1_task(task_desc, chat_id=self._last_chat_id)
 
@@ -1300,11 +1499,19 @@ class TaskExecutor:
                 except Exception:
                     pass
 
+            strategies_p1: list[dict] = []
+            if self.memory_store:
+                try:
+                    strategies_p1 = self.memory_store.get_strategies(limit=5)
+                except Exception:
+                    pass
+
             context = _build_task_context(
                 snap, ring2_source, memories=memories, recalled=recalled,
                 recommended_skills=recommended_skills_p1,
                 other_skills=other_skills_p1,
                 semantic_rules=semantic_rules_p1,
+                strategies=strategies_p1,
             )
             user_message = f"{context}\n\n## Autonomous Task\n{task_desc}"
 

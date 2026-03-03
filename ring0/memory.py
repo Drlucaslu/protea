@@ -36,7 +36,9 @@ _MIGRATIONS = [
 # Importance base scores by entry type.
 _IMPORTANCE_BASE: dict[str, float] = {
     "directive": 0.9,
+    "strategy": 0.85,     # Distilled from successful task patterns
     "task": 0.7,          # User input — primary evolution signal
+    "evolution_signal": 0.6,  # Task execution issues for Ring 2 evolution
     "p1_task": 0.5,
     "crash_log": 0.4,     # Machine-generated — only useful for immediate next evolution
     "reflection": 0.4,    # Machine-generated — repetitive, compacts aggressively
@@ -300,11 +302,18 @@ class MemoryStore(SQLiteStore):
     _CREATE_TABLE = _CREATE_TABLE
 
     def _migrate(self, con: sqlite3.Connection) -> None:
-        """Add new columns if they don't exist (idempotent)."""
+        """Add new columns and tables if they don't exist (idempotent)."""
         existing = {row[1] for row in con.execute("PRAGMA table_info(memory)").fetchall()}
         for col_name, col_def in _MIGRATIONS:
             if col_name not in existing:
                 con.execute(f"ALTER TABLE memory ADD COLUMN {col_name} {col_def}")
+        # P2: memory_links table for associative memory.
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS memory_links ("
+            "source_id INTEGER, target_id INTEGER, link_type TEXT DEFAULT 'related', "
+            "created_at TEXT DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (source_id, target_id, link_type))"
+        )
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -438,7 +447,10 @@ class MemoryStore(SQLiteStore):
                 "VALUES (?, ?, ?, ?, ?, 'hot', ?)",
                 (generation, entry_type, content, meta_json, importance, keywords),
             )
-            return cur.lastrowid  # type: ignore[return-value]
+            rowid = cur.lastrowid
+            # P2: auto-link to related recent memories.
+            self._auto_link(con, rowid, keywords)
+            return rowid  # type: ignore[return-value]
 
     def get_recent(self, limit: int = 10) -> list[dict]:
         """Return the most recent non-archived entries ordered by *id* descending."""
@@ -518,15 +530,19 @@ class MemoryStore(SQLiteStore):
     ) -> list[dict]:
         """Keyword-based search across all entries.
 
-        Score = fraction of query keywords found in entry keywords.
+        Score = kw_score * time_decay * importance.
+        Time decay: max(0.1, 1.0 - age_days / 90).
         """
         if not keywords:
             return []
+
+        import datetime
 
         with self._connect() as con:
             rows = con.execute("SELECT * FROM memory ORDER BY id DESC").fetchall()
 
         kw_set = {kw.lower() for kw in keywords}
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         scored: list[tuple[float, dict]] = []
         for row in rows:
@@ -541,8 +557,19 @@ class MemoryStore(SQLiteStore):
                 kw_score = matches / len(kw_set)
 
             if kw_score > 0:
-                d["search_score"] = round(kw_score, 4)
-                scored.append((kw_score, d))
+                # Time decay.
+                try:
+                    ts = datetime.datetime.fromisoformat(row["timestamp"])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=datetime.timezone.utc)
+                    age_days = (now - ts).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    age_days = 90
+                decay = max(0.1, 1.0 - (age_days / 90))
+                importance = row["importance"] or 0.5
+                final_score = kw_score * decay * importance
+                d["search_score"] = round(final_score, 4)
+                scored.append((final_score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
@@ -554,11 +581,13 @@ class MemoryStore(SQLiteStore):
     ) -> list[dict]:
         """Search only the archive tier for related old memories.
 
-        Uses keyword search restricted to archive.
+        Uses keyword search restricted to archive with time decay.
         Returns entries with ``recalled = True`` marker, or empty list.
         """
         if not keywords:
             return []
+
+        import datetime
 
         with self._connect() as con:
             rows = con.execute(
@@ -569,6 +598,7 @@ class MemoryStore(SQLiteStore):
             return []
 
         kw_set = {kw.lower() for kw in keywords}
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         scored: list[tuple[float, dict]] = []
         for row in rows:
@@ -583,9 +613,20 @@ class MemoryStore(SQLiteStore):
                 kw_score = matches / len(kw_set)
 
             if kw_score > 0:
-                d["search_score"] = round(kw_score, 4)
+                # Time decay for recall (gentler — 90 days).
+                try:
+                    ts = datetime.datetime.fromisoformat(row["timestamp"])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=datetime.timezone.utc)
+                    age_days = (now - ts).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    age_days = 90
+                decay = max(0.1, 1.0 - (age_days / 90))
+                importance = row["importance"] or 0.5
+                final_score = kw_score * decay * importance
+                d["search_score"] = round(final_score, 4)
                 d["recalled"] = True
-                scored.append((kw_score, d))
+                scored.append((final_score, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
@@ -717,8 +758,8 @@ class MemoryStore(SQLiteStore):
         elif warm_candidates:
             result["warm_to_cold"] = self._rule_based_warm_to_cold(warm_candidates)
 
-        # --- Phase 3: Cold cleanup (rule-driven, selective forgetting) ---
-        result["deleted"] = self._cleanup_cold(current_generation)
+        # --- Phase 3: Cold cleanup (smart forgetting with link/recency scoring) ---
+        result["deleted"] = self.smart_forget()
 
         return result
 
@@ -857,6 +898,17 @@ class MemoryStore(SQLiteStore):
         with self._connect() as con:
             rows = con.execute(
                 "SELECT * FROM memory WHERE entry_type = 'semantic_rule' "
+                "AND tier != 'archive' "
+                "ORDER BY importance DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def get_strategies(self, limit: int = 5) -> list[dict]:
+        """Return distilled strategy entries, highest importance first."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM memory WHERE entry_type = 'strategy' "
                 "AND tier != 'archive' "
                 "ORDER BY importance DESC, id DESC LIMIT ?",
                 (limit,),
@@ -1032,6 +1084,115 @@ class MemoryStore(SQLiteStore):
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
+
+    def _auto_link(
+        self,
+        con: sqlite3.Connection,
+        rowid: int,
+        keywords: str,
+        limit: int = 20,
+        threshold: float = 0.25,
+    ) -> None:
+        """Create 'related' links between the new entry and recent similar entries."""
+        if not keywords:
+            return
+        new_kw_set = set(keywords.split())
+        if not new_kw_set:
+            return
+        rows = con.execute(
+            "SELECT id, keywords FROM memory "
+            "WHERE tier != 'archive' AND id != ? "
+            "ORDER BY id DESC LIMIT ?",
+            (rowid, limit),
+        ).fetchall()
+        for row in rows:
+            entry_kw = set((row[1] or "").split())
+            if not entry_kw:
+                continue
+            overlap = len(new_kw_set & entry_kw) / max(len(new_kw_set | entry_kw), 1)
+            if overlap >= threshold:
+                con.execute(
+                    "INSERT OR IGNORE INTO memory_links (source_id, target_id, link_type) "
+                    "VALUES (?, ?, 'related')",
+                    (rowid, row[0]),
+                )
+
+    def get_linked(self, memory_id: int, limit: int = 10) -> list[dict]:
+        """Return memories linked to *memory_id* (bidirectional)."""
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT m.* FROM memory m "
+                "INNER JOIN ("
+                "  SELECT target_id AS linked_id FROM memory_links WHERE source_id = ? "
+                "  UNION "
+                "  SELECT source_id AS linked_id FROM memory_links WHERE target_id = ?"
+                ") links ON m.id = links.linked_id "
+                "ORDER BY m.id DESC LIMIT ?",
+                (memory_id, memory_id, limit),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def get_link_count(self, memory_id: int) -> int:
+        """Count links for *memory_id* (bidirectional)."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM ("
+                "  SELECT target_id FROM memory_links WHERE source_id = ? "
+                "  UNION "
+                "  SELECT source_id FROM memory_links WHERE target_id = ?"
+                ")",
+                (memory_id, memory_id),
+            ).fetchone()
+            return row["cnt"] if row else 0
+
+    def smart_forget(self, limit: int = 200) -> int:
+        """Archive low-value cold entries based on importance, links, and recency.
+
+        Scores each cold entry: score = importance * link_bonus * recency.
+        Entries beyond *limit* with lowest scores are archived.
+        Returns the number of entries archived.
+        """
+        import datetime
+
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, importance, timestamp FROM memory WHERE tier = 'cold'",
+            ).fetchall()
+
+            if len(rows) <= limit:
+                return 0
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            scored: list[tuple[float, int]] = []
+            for row in rows:
+                imp = row["importance"] or 0.1
+                # Link bonus: 1.0 + 0.2 * min(links, 5)
+                link_count = self.get_link_count(row["id"])
+                link_bonus = 1.0 + 0.2 * min(link_count, 5)
+                # Recency: max(0.1, 1.0 - age_days/180)
+                try:
+                    ts = datetime.datetime.fromisoformat(row["timestamp"])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=datetime.timezone.utc)
+                    age_days = (now - ts).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    age_days = 180
+                recency = max(0.1, 1.0 - age_days / 180)
+                score = imp * link_bonus * recency
+                scored.append((score, row["id"]))
+
+            scored.sort(key=lambda x: x[0])
+            to_archive = scored[:len(scored) - limit]
+            if not to_archive:
+                return 0
+
+            ids = [row_id for _, row_id in to_archive]
+            placeholders = ",".join("?" * len(ids))
+            con.execute(
+                f"UPDATE memory SET tier = 'archive' WHERE id IN ({placeholders})",
+                ids,
+            )
+            return len(ids)
 
     def _cleanup_cold(self, current_generation: int) -> int:
         """Archive old, low-importance cold entries (demote to archive tier)."""

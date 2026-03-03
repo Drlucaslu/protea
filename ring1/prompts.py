@@ -170,6 +170,7 @@ def build_evolution_prompt(
     rejected_directions: list[dict] | None = None,
     compact_mode: bool = False,
     soul_context: str = "",
+    evolution_signals: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Build (system_prompt, user_message) for the evolution LLM call.
 
@@ -444,6 +445,17 @@ def build_evolution_prompt(
             gen = log_entry.get("generation", "?")
             content = log_entry.get("content", "")
             parts.append(f"- Gen {gen}: {content[:500]}")
+        parts.append("")
+
+    # P3: Task execution issues from evolution signals.
+    if evolution_signals:
+        parts.append("## Recent Task Execution Issues")
+        parts.append("These issues were detected during recent task execution. "
+                      "Consider evolving Ring 2 to address these patterns:")
+        for sig in evolution_signals[:10]:
+            sig_type = sig.get("type", "unknown")
+            sig_detail = sig.get("detail", "")
+            parts.append(f"- {sig_type}: {sig_detail}")
         parts.append("")
 
     # Evolution intent (structured) or legacy instructions (fallback)
