@@ -895,9 +895,11 @@ class TaskExecutor:
             if fab_signals:
                 log.warning("Fabrication persists after retry: %s", fab_signals)
                 response = (
-                    "\u26a0\ufe0f 真实性警告：以下回复可能包含未经工具验证的信息。"
-                    "建议对其中的数据、文件路径、API 结果进行独立核实。\n\n"
-                ) + response
+                    "抱歉，这个任务没有完成。我尝试了但没有实际调用任何工具来获取数据，"
+                    "生成的内容不可靠，已丢弃。\n\n"
+                    "可能的原因：API 超时、网络不稳定、或任务超出当前能力范围。"
+                    "请稍后重试，或将任务拆分为更小的步骤。"
+                )
 
             # Truncate if needed
             if len(response) > _MAX_REPLY_LEN:
