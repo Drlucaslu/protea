@@ -906,7 +906,10 @@ class TaskExecutor:
                 response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
 
             # Record conversation history for context continuity.
-            self._record_history(task.text, response)
+            # Skip fabricated responses — they add noise and can prime
+            # the model to continue generating similar fabricated text.
+            if not fab_signals:
+                self._record_history(task.text, response)
 
             # Check for correction pattern and persist as semantic_rule.
             self._check_and_store_correction(task.text)

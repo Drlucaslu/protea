@@ -146,6 +146,16 @@ class ClaudeClient(LLMClient):
             content_blocks = body.get("content", [])
             stop_reason = body.get("stop_reason", "end_turn")
 
+            # Log API response shape for tool-use diagnosis.
+            block_types = [b.get("type", "?") for b in content_blocks]
+            log.debug(
+                "Tool loop round %d: stop_reason=%s, blocks=%s, model=%s, "
+                "input_tok=%d, output_tok=%d",
+                round_idx, stop_reason, block_types,
+                body.get("model", "?"),
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+            )
+
             # Collect text parts and tool_use blocks.
             text_parts: list[str] = []
             tool_uses: list[dict] = []
@@ -158,6 +168,8 @@ class ClaudeClient(LLMClient):
             # If no tool calls or stop_reason is not "tool_use", return text.
             if not tool_uses or stop_reason != "tool_use":
                 if text_parts:
+                    log.debug("Tool loop: returning text (no tool_use), text[:200]=%s",
+                              "\n".join(text_parts)[:200])
                     return "\n".join(text_parts)
                 raise LLMError("No text content in API response")
 
