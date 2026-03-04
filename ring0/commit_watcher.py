@@ -195,7 +195,11 @@ class CommitWatcher:
     # -- auto-push logic --
 
     def _try_push_local(self) -> None:
-        """Push local commits to origin if local is ahead of remote."""
+        """Push local commits to origin if local is ahead of remote.
+
+        If local is also behind remote (diverged), attempt ``git pull --rebase``
+        first so the push can succeed as a fast-forward.
+        """
         try:
             result = self._git("rev-list", "--count", "origin/main..HEAD", timeout=5)
             if result.returncode != 0:
@@ -203,6 +207,24 @@ class CommitWatcher:
             ahead = int(result.stdout.strip())
             if ahead == 0:
                 return
+
+            # Check if we're also behind remote (diverged history).
+            behind_result = self._git(
+                "rev-list", "--count", "HEAD..origin/main", timeout=5,
+            )
+            behind = 0
+            if behind_result.returncode == 0:
+                behind = int(behind_result.stdout.strip())
+
+            if behind > 0:
+                log.info(
+                    "Local is %d ahead, %d behind — rebasing before push",
+                    ahead, behind,
+                )
+                rebase = self._git("pull", "--rebase", "origin", "main", timeout=60)
+                if rebase.returncode != 0:
+                    log.warning("Rebase failed: %s", rebase.stderr.strip())
+                    return
 
             log.info("Local is %d commit(s) ahead, pushing to origin", ahead)
             push_result = self._git("push", "origin", "main", timeout=60)
