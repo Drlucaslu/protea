@@ -1,8 +1,8 @@
 """Sentinel — Ring 0 main loop (pure stdlib).
 
 Launches and supervises Ring 2.  On success (survived max_runtime_sec),
-triggers Ring 1 evolution to mutate the code.  On failure, rolls back
-to the last known-good commit, evolves from that base, and restarts.
+records fitness and advances generation.  On failure, rolls back to the
+last known-good commit and restarts.
 """
 
 from __future__ import annotations
@@ -39,32 +39,31 @@ class Ring0Config(NamedTuple):
     db_path: str
     heartbeat_interval_sec: int
     heartbeat_timeout_sec: int
-    seed: int
-    cooldown_sec: int
-    plateau_window: int
-    plateau_epsilon: float
-    skill_max_count: int
     max_cpu_percent: float
     max_memory_percent: float
     max_disk_percent: float
+    # Reflection config
+    reflection_idle_threshold_sec: int
+    reflection_auto_confidence: float
+    reflection_cooldown_sec: int
+    reflection_min_tasks: int
 
     @classmethod
     def from_dict(cls, r0: dict) -> "Ring0Config":
         """Parse from the raw [ring0] config dict."""
-        evo = r0.get("evolution", {})
+        refl = r0.get("reflection", {})
         return cls(
             ring2_path=r0["git"]["ring2_path"],
             db_path=r0["fitness"]["db_path"],
             heartbeat_interval_sec=r0["heartbeat_interval_sec"],
             heartbeat_timeout_sec=r0["heartbeat_timeout_sec"],
-            seed=evo["seed"],
-            cooldown_sec=evo.get("cooldown_sec", 900),
-            plateau_window=evo.get("plateau_window", 5),
-            plateau_epsilon=evo.get("plateau_epsilon", 0.03),
-            skill_max_count=evo.get("skill_max_count", 100),
             max_cpu_percent=r0["max_cpu_percent"],
             max_memory_percent=r0["max_memory_percent"],
             max_disk_percent=r0["max_disk_percent"],
+            reflection_idle_threshold_sec=refl.get("idle_threshold_sec", 7200),
+            reflection_auto_confidence=refl.get("auto_confidence", 0.8),
+            reflection_cooldown_sec=refl.get("cooldown_sec", 1800),
+            reflection_min_tasks=refl.get("min_tasks_before_reflect", 3),
         )
 
 
@@ -110,8 +109,6 @@ def _kill_process_tree(pid: int) -> None:
         parent = os.waitpid(pid, os.WNOHANG)  # noqa: F841 — just reap if zombie
     except ChildProcessError:
         pass
-    # Walk /proc-style via sysctl on macOS or /proc on Linux.
-    # Fallback: use ``pkill -P`` which is available on both.
     try:
         subprocess.run(
             ["pkill", "-TERM", "-P", str(pid)],
@@ -131,7 +128,6 @@ def _stop_ring2(proc: subprocess.Popen | None) -> None:
     if proc is None:
         return
     if proc.poll() is None:
-        # First, kill children so they don't become orphans.
         _kill_process_tree(proc.pid)
         proc.terminate()
         try:
@@ -170,7 +166,6 @@ def _classify_failure(proc, output: str) -> str:
         sig = _signal.Signals(-rc).name if -rc in _signal.Signals._value2member_map_ else str(-rc)
         return f"killed by signal {sig}"
     if rc != 0:
-        # Extract the last Traceback from output.
         lines = output.splitlines()
         for i in range(len(lines) - 1, -1, -1):
             if lines[i].startswith("Traceback"):
@@ -194,7 +189,7 @@ def _compute_skill_hit_ratio(memory_store, limit: int = 50) -> dict:
     Returns {"total": int, "skill": int, "ratio": float, "top_skills": dict[str,int]}.
     """
     entries = []
-    for t in ("task", "p1_task"):
+    for t in ("task",):
         try:
             entries.extend(memory_store.get_by_type(t, limit))
         except Exception:
@@ -215,534 +210,6 @@ def _compute_skill_hit_ratio(memory_store, limit: int = 50) -> dict:
     top = dict(sorted(skill_freq.items(), key=lambda x: -x[1])[:5])
     ratio = skill_count / total if total else 0.0
     return {"total": total, "skill": skill_count, "ratio": ratio, "top_skills": top}
-
-
-def _effective_cooldown(base_cooldown: int, skill_ratio: float) -> int:
-    """Scale cooldown by skill hit ratio: 1.0x at 0%, up to 3.0x at 100%.
-
-    Linear: multiplier = 1.0 + 2.0 * ratio.
-    """
-    multiplier = 1.0 + 2.0 * min(skill_ratio, 1.0)
-    return int(base_cooldown * multiplier)
-
-
-def _should_evolve(state, cooldown_sec: int, fitness=None, plateau_window: int = 5, plateau_epsilon: float = 0.03, has_directive: bool = False, last_task_time: float = 0) -> tuple[bool, bool]:
-    """Check whether evolution should proceed.
-
-    Returns (should_evolve, is_plateaued):
-    - should_evolve: True if evolution should run.
-    - is_plateaued: True if scores are stagnant (signals to LLM to try
-      something fundamentally different).
-
-    Adaptive evolution: when scores are plateaued AND no user directive
-    is pending, skip the LLM call to save tokens.  A directive always
-    forces evolution.
-
-    Task idle decay: when no tasks have been completed recently, extend
-    the effective cooldown to save tokens during inactive periods.
-    """
-    if state.p0_active.is_set():
-        return False, False
-    if state.p1_active.is_set():
-        return False, False
-    if time.time() - state.last_evolution_time < cooldown_sec:
-        return False, False
-
-    # Task idle decay: extend cooldown when no tasks are coming in.
-    if last_task_time > 0:
-        idle_hours = (time.time() - last_task_time) / 3600
-        if idle_hours >= 2:
-            idle_multiplier = min(1.0 + idle_hours / 2, 4.0)
-            idle_cooldown = int(cooldown_sec * idle_multiplier)
-            if time.time() - state.last_evolution_time < idle_cooldown:
-                log.info("Task idle %.1fh — extended cooldown %ds", idle_hours, idle_cooldown)
-                return False, False
-
-    # Detect plateau.
-    plateaued = False
-    if fitness:
-        try:
-            plateaued = fitness.is_plateaued(window=plateau_window, epsilon=plateau_epsilon)
-        except Exception:
-            pass
-
-    # Detect decline (novelty decay spiral).
-    declining = False
-    if fitness:
-        try:
-            declining = fitness.is_declining(window=5, min_decline=0.02)
-        except Exception:
-            pass
-
-    # Treat decline like plateau — signals need for exploration.
-    if declining and not has_directive:
-        log.info("Scores declining — treating as plateau to trigger explore")
-        return False, True  # is_plateaued=True → triggers auto-directive/explore
-
-    # Adaptive: skip evolution when plateaued unless a directive is pending.
-    if plateaued and not has_directive:
-        log.info("Scores plateaued — skipping evolution to save tokens (set a directive to force)")
-        return False, True
-
-    return True, plateaued
-
-
-def _try_install_capability(proposal, skill_store, venv_manager, allowed_packages):
-    """Validate and install a capability skill proposed by evolution.
-
-    Returns True if installed successfully.
-    """
-    from ring1.skill_validator import validate_skill_local, validate_dependencies
-
-    name = proposal.get("name", "")
-    source_code = proposal.get("source_code", "")
-    dependencies = proposal.get("dependencies", [])
-
-    if not name or not source_code:
-        log.warning("Capability proposal missing name or source_code")
-        return False
-
-    # 1. Validate source code (local/lenient — evolved skills are trusted).
-    code_result = validate_skill_local(source_code)
-    if not code_result.safe:
-        log.warning("Capability '%s' rejected: unsafe code — %s", name, code_result.errors)
-        return False
-
-    # 2. Validate dependencies.
-    dep_result = validate_dependencies(dependencies, allowed_packages)
-    if not dep_result.safe:
-        log.warning("Capability '%s' rejected: bad deps — %s", name, dep_result.errors)
-        return False
-
-    # 3. Install to skill store.
-    try:
-        skill_store.add(
-            name=name,
-            description=proposal.get("description", ""),
-            prompt_template=proposal.get("description", ""),
-            tags=proposal.get("tags", []),
-            source_code=source_code,
-            source="evolved",
-            dependencies=dependencies,
-        )
-    except Exception as exc:
-        log.warning("Capability '%s' install failed: %s", name, exc)
-        return False
-
-    # 4. Pre-create venv (best-effort).
-    if venv_manager and dependencies:
-        try:
-            venv_manager.ensure_env(name, dependencies)
-            log.info("Capability '%s' installed with deps: %s", name, dependencies)
-        except Exception as exc:
-            log.warning("Capability '%s' venv setup failed (will retry on first run): %s", name, exc)
-
-    return True
-
-
-def _try_auto_directive(memory_store, user_profiler, project_root):
-    """Best-effort: generate a directive from recent tasks + user profile.
-
-    Returns a directive string or None on failure / insufficient data.
-    """
-    try:
-        from ring1.config import load_ring1_config
-        from ring1.directive_generator import DirectiveGenerator
-
-        r1_config = load_ring1_config(project_root)
-        if not r1_config.has_llm_config():
-            return None
-
-        task_history = []
-        if memory_store:
-            try:
-                task_history = memory_store.get_by_type("task", limit=30)
-            except Exception:
-                pass
-
-        profile_summary = ""
-        if user_profiler:
-            try:
-                profile_summary = user_profiler.get_profile_summary()
-            except Exception:
-                pass
-
-        # Fetch recent directives for deduplication.
-        recent_directives = []
-        if memory_store:
-            try:
-                directive_entries = memory_store.get_by_type("directive", limit=5)
-                recent_directives = [
-                    e.get("content", "") for e in directive_entries
-                    if e.get("content")
-                ]
-            except Exception:
-                pass
-
-        client = r1_config.get_llm_client()
-        generator = DirectiveGenerator(client)
-        return generator.generate(task_history, profile_summary, recent_directives=recent_directives)
-    except Exception as exc:
-        log.debug("Auto-directive generation failed: %s", exc)
-        return None
-
-
-def _build_evolution_direction(gene_pool, user_profiler, skill_store, memory_store):
-    """Build dynamic evolution direction from genes + user interests."""
-    parts = []
-
-    # 1. From user_profile: top categories + topics.
-    if user_profiler:
-        try:
-            cats = user_profiler.get_category_distribution()
-            if cats:
-                top_cats = list(cats.items())[:5]
-                parts.append("### User Interest Areas (by frequency)")
-                for cat, weight in top_cats:
-                    parts.append(f"- {cat} (weight: {weight:.0f})")
-            topics = user_profiler.get_top_topic_names(limit=10)
-            if topics:
-                parts.append("")
-                parts.append("### Specific Topics of Interest")
-                parts.append(", ".join(topics))
-        except Exception:
-            pass
-
-    # 2. From gene_pool: top scoring genes' summaries (DNA).
-    if gene_pool:
-        try:
-            top_genes = gene_pool.get_top(5)
-            if top_genes:
-                parts.append("")
-                parts.append("### Successful Gene Patterns (DNA)")
-                parts.append("These patterns scored well in past generations. Build on them:")
-                for g in top_genes:
-                    summary = g.get("gene_summary", "")
-                    score = g.get("score", 0)
-                    task_hits = g.get("task_hit_count", 0) or 0
-                    if summary:
-                        parts.append(f"- [score={score:.2f}, task_hits={task_hits}] {summary[:120]}")
-        except Exception:
-            pass
-
-    # 3. From recent tasks: uncovered task types (evolution opportunities).
-    if memory_store and skill_store:
-        try:
-            tasks = memory_store.get_by_type("task", limit=20)
-            uncovered = []
-            for t in tasks:
-                meta = t.get("metadata", {})
-                if isinstance(meta, str):
-                    meta = json.loads(meta) if meta else {}
-                if not meta.get("skills_used") and not meta.get("skills_matched"):
-                    content = t.get("content", "")[:80]
-                    if content:
-                        uncovered.append(content)
-            if uncovered:
-                parts.append("")
-                parts.append("### Uncovered Task Types (evolution opportunities)")
-                parts.append(
-                    "These recent user tasks had NO skill coverage — "
-                    "evolve toward capabilities that serve these needs:"
-                )
-                for task_desc in uncovered[:5]:
-                    parts.append(f"- {task_desc}")
-        except Exception:
-            pass
-
-    return "\n".join(parts) if parts else ""
-
-
-def _try_evolve(project_root, fitness, ring2_path, generation, params, survived, notifier, directive="", memory_store=None, skill_store=None, crash_logs=None, is_plateaued=False, gene_pool=None, user_profile_summary="", structured_preferences="", venv_manager=None, allowed_packages=None, skill_hit_summary=None, evolution_direction="", is_auto_directive=False, auto_directive_attempt=0, accepted_capabilities=None, rejected_directions=None, soul_context=""):
-    """Best-effort evolution.  Returns (success, gene_ids, adopted_ids) tuple."""
-    try:
-        from ring1.config import load_ring1_config
-        from ring1.evolver import Evolver
-
-        r1_config = load_ring1_config(project_root)
-        if not r1_config.has_llm_config():
-            log.warning("LLM API key not configured — skipping evolution")
-            return False, [], []
-
-        # Pass directives and reflections to evolution context.
-        # Reflections contain self-learned patterns; limiting too aggressively
-        # causes the system to repeat mistakes.
-        memories = []
-        if memory_store:
-            try:
-                for t in ("directive", "reflection"):
-                    memories.extend(memory_store.get_by_type(t, limit=3))
-                memories.sort(key=lambda m: m.get("id", 0), reverse=True)
-                memories = memories[:5]
-            except Exception:
-                memories = []
-
-        # User task history — primary evolution signal, higher limit.
-        task_history = []
-        if memory_store:
-            try:
-                task_history = memory_store.get_by_type("task", limit=8)
-            except Exception:
-                pass
-
-        skills = []
-        if skill_store:
-            try:
-                skills = skill_store.get_active(15)
-            except Exception:
-                pass
-
-        # Get persistent error signatures from recent fitness history.
-        persistent_errors = []
-        try:
-            persistent_errors = fitness.get_recent_error_signatures(limit=5)
-        except Exception:
-            pass
-
-        # Get context-relevant genes for inheritance.
-        genes = []
-        _injected_gene_ids: list[int] = []
-        if gene_pool:
-            try:
-                from ring0.gene_pool import GenePool as _GP
-                context_parts = []
-                # Current Ring 2 source — extract class/function names.
-                try:
-                    current_source = (ring2_path / "main.py").read_text()
-                    context_parts.append(_GP.extract_summary(current_source))
-                except OSError:
-                    pass
-                if directive:
-                    context_parts.append(directive)
-                for task in task_history:
-                    context_parts.append(task.get("content", ""))
-                for err in persistent_errors:
-                    context_parts.append(err)
-                context = " ".join(context_parts)
-                genes = gene_pool.get_relevant(context, 3)
-                if genes:
-                    _injected_gene_ids = [g["id"] for g in genes if "id" in g]
-                    if _injected_gene_ids:
-                        gene_pool.record_hits(_injected_gene_ids, generation)
-                        gene_pool.record_hypothesis(generation, _injected_gene_ids)
-            except Exception:
-                pass
-
-        # Classify evolution intent.
-        from ring0.evolution_intent import classify_intent
-
-        evolution_intent = classify_intent(
-            survived=survived,
-            is_plateaued=is_plateaued,
-            persistent_errors=persistent_errors,
-            crash_logs=crash_logs or [],
-            directive=directive,
-            is_auto_directive=is_auto_directive,
-            auto_directive_attempt=auto_directive_attempt,
-        )
-        log.info(
-            "Evolution intent: %s (signals: %s)",
-            evolution_intent["intent"],
-            evolution_intent["signals"],
-        )
-
-        # Persist intent to memory so the Dashboard intent timeline works.
-        if memory_store:
-            try:
-                intent_content = f"{evolution_intent['intent']}: {', '.join(evolution_intent.get('signals', []))}"
-                memory_store.add(
-                    generation, "evolution_intent", intent_content,
-                    metadata=evolution_intent,
-                )
-            except Exception:
-                pass
-
-        # Collect permanent capabilities for the evolution prompt.
-        permanent_caps = []
-        if skill_store:
-            try:
-                permanent_caps = skill_store.get_permanent()
-            except Exception:
-                pass
-
-        # Build allowed packages list.
-        allowed_pkg_set = allowed_packages
-
-        # Fetch semantic rules for evolution context.
-        semantic_rules = []
-        if memory_store:
-            try:
-                semantic_rules = memory_store.get_semantic_rules(limit=10)
-            except Exception:
-                pass
-
-        # P3: Collect recent evolution signals for directed evolution.
-        evo_signals_flat: list[dict] = []
-        if memory_store:
-            try:
-                sig_entries = memory_store.get_by_type("evolution_signal", limit=10)
-                for entry in sig_entries:
-                    meta = entry.get("metadata", {})
-                    for sig in meta.get("signals", []):
-                        evo_signals_flat.append(sig)
-            except Exception:
-                pass
-
-        evolver = Evolver(r1_config, fitness, memory_store=memory_store)
-        result = evolver.evolve(
-            ring2_path=ring2_path,
-            generation=generation,
-            params=params_to_dict(params),
-            survived=survived,
-            directive=directive,
-            memories=memories,
-            task_history=task_history,
-            skills=skills,
-            crash_logs=crash_logs,
-            persistent_errors=persistent_errors,
-            is_plateaued=is_plateaued,
-            gene_pool=genes,
-            evolution_intent=evolution_intent,
-            user_profile_summary=user_profile_summary,
-            structured_preferences=structured_preferences,
-            permanent_capabilities=permanent_caps or None,
-            allowed_packages=list(allowed_pkg_set) if allowed_pkg_set else None,
-            skill_hit_summary=skill_hit_summary,
-            semantic_rules=semantic_rules or None,
-            evolution_direction=evolution_direction,
-            accepted_capabilities=accepted_capabilities,
-            rejected_directions=rejected_directions,
-            soul_context=soul_context,
-            evolution_signals=evo_signals_flat or None,
-        )
-        if result.success:
-            log.info("Evolution succeeded: %s", result.reason)
-            # Record LLM token usage.
-            if result.metadata and result.metadata.get("llm_usage"):
-                usage = result.metadata["llm_usage"]
-                try:
-                    fitness.record_llm_usage(
-                        generation, "evolution",
-                        usage["input_tokens"], usage["output_tokens"],
-                    )
-                except Exception:
-                    pass
-                log.info(
-                    "Evolution tokens: in=%d out=%d",
-                    usage["input_tokens"], usage["output_tokens"],
-                )
-            if result.metadata:
-                blast = result.metadata.get("blast_radius", {})
-                log.info(
-                    "Evolution metadata: intent=%s scope=%s lines_changed=%d",
-                    result.metadata.get("intent"),
-                    blast.get("scope"),
-                    blast.get("lines_changed", 0),
-                )
-                # Update the intent memory entry with blast_radius.
-                if memory_store and blast:
-                    try:
-                        intents = memory_store.get_by_type("evolution_intent", limit=1)
-                        if intents and intents[0].get("generation") == generation:
-                            meta = intents[0].get("metadata", {})
-                            meta["blast_radius"] = blast
-                            with memory_store._connect() as con:
-                                con.execute(
-                                    "UPDATE memory SET metadata = ? WHERE id = ?",
-                                    (json.dumps(meta), intents[0]["id"]),
-                                )
-                    except Exception:
-                        pass
-
-                # Handle capability proposal from evolution.
-                proposal = result.metadata.get("capability_proposal")
-                if proposal and skill_store:
-                    installed = _try_install_capability(
-                        proposal, skill_store, venv_manager, allowed_pkg_set,
-                    )
-                    if installed and gene_pool:
-                        try:
-                            gene_pool.add(
-                                generation=generation,
-                                score=0.85,
-                                source_code=proposal["source_code"],
-                            )
-                        except Exception:
-                            pass
-
-            # Verify gene adoption: only genes actually used in new code get hits.
-            _adopted_gene_ids: list[int] = []
-            if gene_pool and genes and result.new_source:
-                try:
-                    gene_ids = [g["id"] for g in genes if "id" in g]
-                    if gene_ids:
-                        _adopted_gene_ids = gene_pool.verify_adoption(
-                            result.new_source, gene_ids, generation,
-                        )
-                except Exception:
-                    pass
-
-            return True, _injected_gene_ids, _adopted_gene_ids
-        else:
-            log.warning("Evolution failed: %s", result.reason)
-            if notifier:
-                notifier.notify_error(generation, result.reason)
-            return False, [], []
-    except Exception as exc:
-        log.error("Evolution error (non-fatal): %s", exc)
-        if notifier:
-            notifier.notify_error(generation, str(exc))
-        return False, [], []
-
-
-def _try_crystallize(project_root, skill_store, source_code, output, generation, skill_cap=100, fitness=None, gene_ids=None):
-    """Best-effort crystallization.  Returns action string or None."""
-    try:
-        from ring1.config import load_ring1_config
-        from ring1.crystallizer import Crystallizer
-
-        r1_config = load_ring1_config(project_root)
-        if not r1_config.has_llm_config():
-            log.warning("LLM API key not configured — skipping crystallization")
-            return None
-
-        crystallizer = Crystallizer(r1_config, skill_store)
-        result = crystallizer.crystallize(
-            source_code=source_code,
-            output=output,
-            generation=generation,
-            skill_cap=skill_cap,
-        )
-        log.info("Crystallization result: action=%s skill=%s reason=%s",
-                 result.action, result.skill_name, result.reason)
-        # Record LLM token usage.
-        if result.llm_usage and result.llm_usage.get("input_tokens"):
-            if fitness:
-                try:
-                    fitness.record_llm_usage(
-                        generation, "crystallization",
-                        result.llm_usage["input_tokens"],
-                        result.llm_usage["output_tokens"],
-                    )
-                except Exception:
-                    pass
-            log.info(
-                "Crystallization tokens: in=%d out=%d",
-                result.llm_usage["input_tokens"],
-                result.llm_usage["output_tokens"],
-            )
-
-        # Record gene → skill lineage for task-hit attribution.
-        if result.action in ("create", "update") and result.skill_name and gene_ids:
-            try:
-                skill_store.record_lineage(result.skill_name, gene_ids, generation)
-            except Exception:
-                pass
-
-        return result.action
-    except Exception as exc:
-        log.error("Crystallization error (non-fatal): %s", exc)
-        return None
 
 
 def _create_notifier(project_root):
@@ -893,13 +360,13 @@ def _create_dashboard(project_root, cfg, **data_sources):
     return _best_effort("Dashboard", _factory)
 
 
-def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, gene_pool=None, reply_fn_factory=None):
+def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=None, skill_store=None, skill_runner=None, task_store=None, user_profiler=None, embedding_provider=None, scheduled_store=None, send_file_fn=None, preference_store=None, reply_fn_factory=None):
     """Best-effort task executor creation."""
     def _factory():
         from ring1.config import load_ring1_config
         from ring1.task_executor import create_executor, start_executor_thread
         r1_config = load_ring1_config(project_root)
-        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool, reply_fn_factory=reply_fn_factory)
+        executor = create_executor(r1_config, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, reply_fn_factory=reply_fn_factory)
         if executor:
             thread = start_executor_thread(executor)
             state.executor_thread = thread
@@ -930,9 +397,7 @@ def run(project_root: pathlib.Path) -> None:
         log.error("Another sentinel is already running (lock: %s/data/sentinel.pid)", project_root)
         return
 
-    # Convert SIGTERM into KeyboardInterrupt so the finally block runs,
-    # ensuring Ring 2 subprocess, skill runners, and the Telegram bot
-    # are stopped cleanly.
+    # Convert SIGTERM into KeyboardInterrupt so the finally block runs.
     def _sigterm_handler(signum, frame):
         raise KeyboardInterrupt
 
@@ -948,10 +413,6 @@ def run(project_root: pathlib.Path) -> None:
 
     interval = r0.heartbeat_interval_sec
     timeout = r0.heartbeat_timeout_sec
-    seed = r0.seed
-    cooldown_sec = r0.cooldown_sec
-    plateau_window = r0.plateau_window
-    plateau_epsilon = r0.plateau_epsilon
 
     git = GitManager(ring2_path)
     git.init_repo()
@@ -959,7 +420,6 @@ def run(project_root: pathlib.Path) -> None:
     memory_store = _best_effort("MemoryStore", lambda: MemoryStore(db_path))
     skill_store = _best_effort("SkillStore", lambda: __import__("ring0.skill_store", fromlist=["SkillStore"]).SkillStore(db_path))
     embedding_provider = _create_embedding_provider(cfg)
-    gene_pool = _best_effort("GenePool", lambda: __import__("ring0.gene_pool", fromlist=["GenePool"]).GenePool(db_path, embedding_provider=embedding_provider))
     task_store = _best_effort("TaskStore", lambda: __import__("ring0.task_store", fromlist=["TaskStore"]).TaskStore(db_path))
     scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
@@ -967,20 +427,15 @@ def run(project_root: pathlib.Path) -> None:
     output_queue = _best_effort("OutputQueue", lambda: __import__("ring0.output_queue", fromlist=["OutputQueue"]).OutputQueue(db_path))
     memory_curator = _create_memory_curator(project_root)
 
-    # Capability skill sandbox — venv manager + allowed packages.
+    # Capability skill sandbox — venv manager.
     venv_manager = None
-    allowed_packages = None
     sandbox_cfg = cfg.get("ring1", {}).get("skill_sandbox", {})
     if sandbox_cfg.get("enabled", True):
         try:
             from ring1.skill_sandbox import VenvManager
-            from ring1.skill_validator import _DEFAULT_ALLOWED_PACKAGES
             base_dir = project_root / sandbox_cfg.get("base_dir", "data/skill_envs")
             max_envs = sandbox_cfg.get("max_envs", 10)
             venv_manager = VenvManager(base_dir, max_envs)
-            allowed_packages = _DEFAULT_ALLOWED_PACKAGES | frozenset(
-                sandbox_cfg.get("extra_allowed_packages", [])
-            )
             log.info("VenvManager created (base_dir=%s, max_envs=%d)", base_dir, max_envs)
         except Exception as exc:
             log.debug("VenvManager not available: %s", exc)
@@ -1010,7 +465,7 @@ def run(project_root: pathlib.Path) -> None:
     # Shared state for Telegram bot interaction.
     from ring1.telegram_bot import SentinelState
     state = SentinelState()
-    state.notifier = notifier  # bot uses this for auto-detect propagation
+    state.notifier = notifier
     skill_runner = _best_effort("SkillRunner", lambda: __import__("ring1.skill_runner", fromlist=["SkillRunner"]).SkillRunner(venv_manager=venv_manager))
     state.memory_store = memory_store
     state.skill_store = skill_store
@@ -1019,7 +474,6 @@ def run(project_root: pathlib.Path) -> None:
     state.scheduled_store = scheduled_store
     state._preference_store = preference_store
     state.output_queue = output_queue
-    state.gene_pool = gene_pool
     state._nudge_context_path = project_root / "data" / "nudge_context.json"
     state._load_nudge_context()
     bot = _create_bot(project_root, state, fitness, ring2_path)
@@ -1044,34 +498,6 @@ def run(project_root: pathlib.Path) -> None:
     )
     sync_interval = cfg.get("ring1", {}).get("task_sync", cfg.get("ring1", {}).get("skill_sync", {})).get("interval_sec", 7200)
 
-    # Backfill gene pool from existing skills (one-time).
-    if gene_pool and skill_store:
-        try:
-            backfilled = gene_pool.backfill(skill_store)
-            if backfilled:
-                log.info("Gene pool backfilled %d genes from skills", backfilled)
-        except Exception as exc:
-            log.debug("Gene pool backfill failed (non-fatal): %s", exc)
-
-    # Backfill gene pool from git history.
-    if gene_pool and fitness and gene_pool.count() < gene_pool.max_size:
-        try:
-            backfilled = gene_pool.backfill_from_git(ring2_path, fitness)
-            if backfilled:
-                log.info("Gene pool backfilled %d genes from git history", backfilled)
-        except Exception as exc:
-            log.debug("Gene pool git backfill failed (non-fatal): %s", exc)
-
-    # Backfill skill lineage (one-time heuristic).
-    lineage_backfilled = 0
-    if skill_store and gene_pool:
-        try:
-            lineage_backfilled = skill_store.backfill_lineage(gene_pool)
-            if lineage_backfilled:
-                log.info("Skill lineage backfilled for %d skills", lineage_backfilled)
-        except Exception as exc:
-            log.debug("Skill lineage backfill failed (non-fatal): %s", exc)
-
     # Reclassify 'general' topics and preferences to specific categories.
     if user_profiler:
         try:
@@ -1090,32 +516,11 @@ def run(project_root: pathlib.Path) -> None:
         except Exception as exc:
             log.debug("Preference reclassify failed (non-fatal): %s", exc)
 
-    # Post-backfill attribution: credit historical tasks.
-    if lineage_backfilled and memory_store:
-        try:
-            recent_tasks = memory_store.get_by_type("task", limit=50)
-            attributed_gene_ids: set[int] = set()
-            for task in recent_tasks:
-                meta = task.get("metadata", {})
-                if isinstance(meta, str):
-                    meta = json.loads(meta) if meta else {}
-                for skill_name in meta.get("skills_used", []):
-                    for entry in skill_store.get_lineage(skill_name):
-                        attributed_gene_ids.add(entry["gene_id"])
-                for skill_name in meta.get("skills_matched", []):
-                    for entry in skill_store.get_lineage(skill_name):
-                        attributed_gene_ids.add(entry["gene_id"])
-            if attributed_gene_ids:
-                gene_pool.record_task_hits(list(attributed_gene_ids), 0)
-                log.info("Post-backfill attribution: %d genes credited", len(attributed_gene_ids))
-        except Exception as exc:
-            log.debug("Post-backfill attribution failed (non-fatal): %s", exc)
-
     # Task executor for P0 user tasks.
     reply_fn = bot._send_reply if bot else lambda text: None
     send_file_fn = bot._send_document if bot else None
     reply_fn_factory = bot.make_reply_fn if bot else None
-    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, gene_pool=gene_pool, reply_fn_factory=reply_fn_factory)
+    executor = _create_executor(project_root, state, ring2_path, reply_fn, memory_store=memory_store, skill_store=skill_store, skill_runner=skill_runner, task_store=task_store, user_profiler=user_profiler, embedding_provider=embedding_provider, scheduled_store=scheduled_store, send_file_fn=send_file_fn, preference_store=preference_store, reply_fn_factory=reply_fn_factory)
     # Feedback prompt after task completion (not on intermediate messages).
     if executor and bot:
         executor.feedback_fn = bot.send_feedback_prompt
@@ -1188,7 +593,6 @@ def run(project_root: pathlib.Path) -> None:
         skill_store=skill_store,
         fitness_tracker=fitness,
         user_profiler=user_profiler,
-        gene_pool=gene_pool,
         task_store=task_store,
         scheduled_store=scheduled_store,
         state=state,
@@ -1207,11 +611,9 @@ def run(project_root: pathlib.Path) -> None:
         generation = 0
 
     last_good_hash: str | None = None
-    last_crystallized_hash: str | None = None
     # Jitter: initial delay of 0–50% of interval so nodes don't all sync at once.
     last_skill_sync_time: float = time.time() - sync_interval + random.uniform(0, sync_interval * 0.5)
     last_consolidation_date: str = ""  # YYYY-MM-DD — nightly consolidation
-    skill_cap = r0.skill_max_count
     proc: subprocess.Popen | None = None
 
     # Initial snapshot of seed code.
@@ -1220,8 +622,8 @@ def run(project_root: pathlib.Path) -> None:
     except subprocess.CalledProcessError:
         pass
 
-    log.info("Sentinel online — heartbeat every %ds, timeout %ds, cooldown %ds", interval, timeout, cooldown_sec)
-    
+    log.info("Sentinel online — heartbeat every %ds, timeout %ds", interval, timeout)
+
     # Notify Telegram that sentinel is online
     if notifier:
         notifier.notify_sentinel_online(generation)
@@ -1233,17 +635,33 @@ def run(project_root: pathlib.Path) -> None:
         except Exception:
             log.debug("Initial onboarding check failed", exc_info=True)
 
-    last_injected_gene_ids: list[int] = []
-    last_attributed_task_id: int = 0
-    directive_remaining_cycles: int = 0
-    consecutive_evo_failures: int = 0   # Track consecutive evolution failures for backoff
-    consecutive_plateau_skips: int = 0  # Track how many times plateau suppressed evolution
-    auto_directive_attempt: int = 0    # Track auto-directive attempts for intent rotation
-    _is_auto_directive: bool = False   # Whether current directive is auto-generated
-    _MAX_PLATEAU_AUTO_DIRECTIVES = 3   # Stop auto-directives after this many consecutive plateaus
+    # Reflection system — replaces evolution.
+    reflector = None
+    last_reflection_time: float = 0.0
+    try:
+        from ring1.reflector import Reflector
+        from ring1.config import load_ring1_config
+        r1_config = load_ring1_config(project_root)
+        if r1_config.has_llm_config():
+            reflector = Reflector(
+                config=r0,
+                fitness_tracker=fitness,
+                memory_store=memory_store,
+                skill_store=skill_store,
+                notifier=notifier,
+                auto_confidence=r0.reflection_auto_confidence,
+            )
+            log.info("Reflector initialized (auto_confidence=%.2f, cooldown=%ds)",
+                     r0.reflection_auto_confidence, r0.reflection_cooldown_sec)
+    except Exception as exc:
+        log.debug("Reflector not available: %s", exc)
+
+    # Pass reflector to executor for task context augmentation.
+    if reflector and executor:
+        executor.reflector = reflector
 
     try:
-        params = generate_params(generation, seed)
+        params = generate_params(generation, 42)
         proc = _start_ring2(ring2_path, heartbeat_path)
         start_time = time.time()
         hb.wait_for_heartbeat(startup_timeout=timeout)
@@ -1383,193 +801,6 @@ def run(project_root: pathlib.Path) -> None:
                     last_good_hash = git.snapshot(f"gen-{generation} survived")
                 except subprocess.CalledProcessError:
                     pass
-                source = (ring2_path / "main.py").read_text()
-                # Note: We no longer store observations in memory (see line 234 comment).
-                # They're noisy per-generation logs that crowd out useful memories.
-
-                # Store gene in pool (best-effort).
-                if gene_pool:
-                    try:
-                        gene_pool.add(generation, score, source)
-                    except Exception as exc:
-                        log.debug("Gene pool add failed (non-fatal): %s", exc)
-
-
-                # Crystallize skill (best-effort) — skip if source unchanged or low fitness.
-                _CRYSTALLIZE_MIN_SCORE = 0.70
-                if skill_store:
-                    import hashlib
-                    source_hash = hashlib.sha256(source.encode()).hexdigest()
-                    if score >= _CRYSTALLIZE_MIN_SCORE and source_hash != last_crystallized_hash:
-                        # Build gene_ids: current gene + any injected parent genes.
-                        crystallize_gene_ids = list(last_injected_gene_ids)
-                        if gene_pool:
-                            current_gene_id = gene_pool.get_id_by_hash(source_hash)
-                            if current_gene_id is not None and current_gene_id not in crystallize_gene_ids:
-                                crystallize_gene_ids.append(current_gene_id)
-                        log.info("Crystallizing gen-%d (hash=%s…)", generation, source_hash[:12])
-                        _try_crystallize(
-                            project_root, skill_store, source, output,
-                            generation, skill_cap=skill_cap,
-                            fitness=fitness,
-                            gene_ids=crystallize_gene_ids,
-                        )
-                        last_crystallized_hash = source_hash
-                    elif score < _CRYSTALLIZE_MIN_SCORE:
-                        log.debug("Skipping crystallization — score %.4f < %.2f threshold", score, _CRYSTALLIZE_MIN_SCORE)
-                    else:
-                        log.debug("Skipping crystallization — source unchanged (hash=%s…)", source_hash[:12])
-
-                # Evolve (best-effort) — skip if busy, cooling down, or plateaued.
-                # Dynamic cooldown based on skill hit ratio.
-                skill_hit = {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
-                if memory_store:
-                    try:
-                        skill_hit = _compute_skill_hit_ratio(memory_store)
-                    except Exception:
-                        pass
-                eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
-                # Apply exponential backoff on consecutive evolution failures.
-                if consecutive_evo_failures > 0:
-                    backoff = min(2 ** consecutive_evo_failures, 4)  # cap 4x
-                    eff_cooldown = int(eff_cooldown * backoff)
-                    log.info("Evolution backoff: %dx (failures=%d, cooldown=%ds)",
-                             backoff, consecutive_evo_failures, eff_cooldown)
-
-                with state.lock:
-                    pending_directive = state.evolution_directive
-                should_evo, plateaued = _should_evolve(
-                    state, eff_cooldown, fitness=fitness,
-                    plateau_window=plateau_window,
-                    plateau_epsilon=plateau_epsilon,
-                    has_directive=bool(pending_directive),
-                    last_task_time=state.last_task_completion,
-                )
-                if not should_evo:
-                    if plateaued and not pending_directive:
-                        consecutive_plateau_skips += 1
-                        if consecutive_plateau_skips <= _MAX_PLATEAU_AUTO_DIRECTIVES:
-                            auto_dir = _try_auto_directive(memory_store, user_profiler, project_root)
-                            if auto_dir:
-                                # Fuzzy dedup: discard if semantically similar to recent directives.
-                                is_dup = False
-                                if memory_store:
-                                    try:
-                                        is_dup = memory_store.is_duplicate_content(
-                                            "directive", auto_dir,
-                                            lookback=10, similarity_threshold=0.75,
-                                        )
-                                    except Exception:
-                                        pass
-                                if is_dup:
-                                    log.info("Auto-directive discarded (duplicate): %s", auto_dir[:80])
-                                    auto_dir = None
-                            if auto_dir:
-                                with state.lock:
-                                    state.evolution_directive = auto_dir
-                                should_evo = True
-                                pending_directive = auto_dir
-                                _is_auto_directive = True
-                                auto_directive_attempt += 1
-                                log.info("Auto-directive (%d/%d, attempt=%d): %s", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES, auto_directive_attempt, auto_dir[:80])
-                            else:
-                                log.info("Plateau, no auto-directive — skipping (%d/%d)", consecutive_plateau_skips, _MAX_PLATEAU_AUTO_DIRECTIVES)
-                        else:
-                            log.info("Plateau persisted %d times — hibernating (waiting for user directive or new task)", consecutive_plateau_skips)
-                    elif not plateaued:
-                        consecutive_plateau_skips = 0  # Reset: no longer plateaued
-                        log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
-                                 eff_cooldown, skill_hit["ratio"] * 100)
-                if not should_evo:
-                    evolved = False
-                else:
-                    consecutive_plateau_skips = 0  # Reset: evolution is proceeding
-                    with state.lock:
-                        directive = state.evolution_directive
-                        if directive:
-                            # If this is a user-set directive (not auto), reset auto counters.
-                            if not _is_auto_directive:
-                                auto_directive_attempt = 0
-                            if directive_remaining_cycles <= 0:
-                                directive_remaining_cycles = 3  # new directive lives for 3 cycles
-                            directive_remaining_cycles -= 1
-                            if directive_remaining_cycles <= 0:
-                                state.evolution_directive = ""
-                                _is_auto_directive = False
-                    if directive and memory_store:
-                        memory_store.add(generation, "directive", directive)
-                    crash_logs = []
-                    if memory_store:
-                        try:
-                            crash_logs = memory_store.get_by_type("crash_log", limit=3)
-                        except Exception:
-                            pass
-                    # Get user profile summary for evolution.
-                    profile_summary = ""
-                    if user_profiler:
-                        try:
-                            profile_summary = user_profiler.get_profile_summary()
-                        except Exception:
-                            pass
-                    # Get structured preferences for evolution.
-                    pref_summary = ""
-                    if preference_store:
-                        try:
-                            pref_summary = preference_store.get_preference_summary_text()
-                        except Exception:
-                            pass
-                    # Build dynamic evolution direction.
-                    evo_direction = _build_evolution_direction(
-                        gene_pool, user_profiler, skill_store, memory_store,
-                    )
-                    # Query user feedback constraints for evolution.
-                    accepted_caps = []
-                    rejected_dirs = []
-                    if output_queue:
-                        try:
-                            accepted_caps = output_queue.get_accepted()
-                            rejected_dirs = output_queue.get_rejected()
-                        except Exception:
-                            pass
-                    evolved, last_injected_gene_ids, adopted_gene_ids = _try_evolve(
-                        project_root, fitness, ring2_path,
-                        generation, params, True, notifier,
-                        directive=directive,
-                        memory_store=memory_store,
-                        skill_store=skill_store,
-                        crash_logs=crash_logs,
-                        is_plateaued=plateaued,
-                        gene_pool=gene_pool,
-                        user_profile_summary=profile_summary,
-                        structured_preferences=pref_summary,
-                        venv_manager=venv_manager,
-                        allowed_packages=allowed_packages,
-                        skill_hit_summary=skill_hit,
-                        evolution_direction=evo_direction,
-                        is_auto_directive=_is_auto_directive,
-                        auto_directive_attempt=auto_directive_attempt,
-                        accepted_capabilities=accepted_caps or None,
-                        rejected_directions=rejected_dirs or None,
-                        soul_context=_soul_text,
-                    )
-                    if gene_pool and last_injected_gene_ids:
-                        try:
-                            gene_pool.close_hypothesis(
-                                generation, survived=True, score=score,
-                                adopted_ids=adopted_gene_ids,
-                            )
-                        except Exception:
-                            pass
-                if evolved:
-                    consecutive_evo_failures = 0
-                    state.last_evolution_time = time.time()
-                    try:
-                        git.snapshot(f"gen-{generation} evolved")
-                    except subprocess.CalledProcessError:
-                        pass
-                else:
-                    consecutive_evo_failures += 1
-                    state.last_evolution_time = time.time()  # Enforce backed-off cooldown
 
                 # Notify.
                 if notifier:
@@ -1577,32 +808,19 @@ def run(project_root: pathlib.Path) -> None:
                         generation, score, True, last_good_hash or "unknown",
                     )
 
+                # Reflection trigger: after task completion (event-driven).
+                if reflector and state.last_task_completion > last_reflection_time:
+                    if time.time() - last_reflection_time > r0.reflection_cooldown_sec:
+                        try:
+                            proposals = reflector.reflect_after_task()
+                            if proposals:
+                                reflector.process_proposals(proposals)
+                            last_reflection_time = time.time()
+                        except Exception:
+                            log.debug("Post-task reflection failed", exc_info=True)
+
                 # Next generation.
                 generation += 1
-
-                # Task hit attribution: skill usage → lineage → gene scoring.
-                # Runs every generation so hits are never missed.
-                if gene_pool and skill_store and memory_store:
-                    try:
-                        recent_tasks = memory_store.get_by_type("task", limit=30)
-                        new_tasks = [t for t in recent_tasks if t.get("id", 0) > last_attributed_task_id]
-                        attributed_gene_ids: set[int] = set()
-                        for task in new_tasks:
-                            meta = task.get("metadata", {})
-                            if isinstance(meta, str):
-                                meta = json.loads(meta) if meta else {}
-                            for skill_name in meta.get("skills_used", []):
-                                for entry in skill_store.get_lineage(skill_name):
-                                    attributed_gene_ids.add(entry["gene_id"])
-                            for skill_name in meta.get("skills_matched", []):
-                                for entry in skill_store.get_lineage(skill_name):
-                                    attributed_gene_ids.add(entry["gene_id"])
-                        if attributed_gene_ids:
-                            gene_pool.record_task_hits(list(attributed_gene_ids), generation)
-                        if new_tasks:
-                            last_attributed_task_id = max(t.get("id", 0) for t in new_tasks)
-                    except Exception:
-                        log.debug("Task hit attribution failed (non-fatal)", exc_info=True)
 
                 # Periodic maintenance: compact memory + decay profile (every 10 generations).
                 if generation % 10 == 0:
@@ -1629,62 +847,6 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Preference decay: removed %d low-confidence entries", decayed)
                         except Exception:
                             log.debug("Preference maintenance failed (non-fatal)", exc_info=True)
-                        # Detect preference drift and inject evolution directive if significant.
-                        try:
-                            drifts = preference_store.detect_drift()
-                            rising = [d for d in drifts if d["drift_direction"] == "rising"]
-                            if rising:
-                                top_drift = rising[0]
-                                drift_msg = (
-                                    f"User interest rising in '{top_drift['preference_key']}' "
-                                    f"(confidence {top_drift['old_confidence']:.2f} → "
-                                    f"{top_drift['new_confidence']:.2f})"
-                                )
-                                log.info("Preference drift detected: %s", drift_msg)
-                                # Check if drift conflicts with soul rules.
-                                _drift_blocked = False
-                                try:
-                                    from ring1.soul import get_rules as _soul_rules
-                                    soul_rules_text = " ".join(_soul_rules())
-                                    drift_key = top_drift["preference_key"]
-                                    key_words = drift_key.split(":")[1].split()[:3] if ":" in drift_key else []
-                                    if any(kw in soul_rules_text for kw in key_words if len(kw) >= 2):
-                                        log.info("Drift directive skipped — conflicts with soul rule: %s", drift_key)
-                                        _drift_blocked = True
-                                except Exception:
-                                    pass
-                                if not _drift_blocked:
-                                    with state.lock:
-                                        if not state.evolution_directive:
-                                            state.evolution_directive = (
-                                                f"Adapt to user's increasing interest: {drift_msg}"
-                                            )
-                        except Exception:
-                            log.debug("Drift detection failed (non-fatal)", exc_info=True)
-
-                    if gene_pool:
-                        try:
-                            recent_tasks = []
-                            if memory_store:
-                                recent_tasks = [
-                                    t for t in memory_store.get_by_type("task", limit=20)
-                                    if t.get("generation", 0) > generation - 10
-                                ]
-                                if recent_tasks:
-                                    task_ctx = " ".join(t.get("content", "") for t in recent_tasks)
-                                    matched = gene_pool.get_relevant(task_ctx, 5)
-                                    if matched:
-                                        ids = [g["id"] for g in matched if "id" in g]
-                                        if ids:
-                                            gene_pool.record_hits(ids, generation)
-                            task_boosted = gene_pool.apply_task_boost()
-                            boosted = gene_pool.apply_boost()
-                            decayed = gene_pool.apply_decay(generation)
-                            if task_boosted or boosted or decayed:
-                                log.info("Gene scoring: task_boost=%d code_boost=%d decayed=%d",
-                                         task_boosted, boosted, decayed)
-                        except Exception:
-                            log.debug("Gene scoring failed (non-fatal)", exc_info=True)
 
                     if output_queue:
                         try:
@@ -1720,7 +882,7 @@ def run(project_root: pathlib.Path) -> None:
                     # Add 0–50% jitter so nodes don't re-sync in lockstep.
                     last_skill_sync_time = time.time() + random.uniform(0, sync_interval * 0.5)
 
-                params = generate_params(generation, seed)
+                params = generate_params(generation, 42)
                 log.info("Starting generation %d (params: %s)", generation, params)
                 proc = _start_ring2(ring2_path, heartbeat_path)
                 start_time = time.time()
@@ -1729,6 +891,18 @@ def run(project_root: pathlib.Path) -> None:
 
             # --- heartbeat check ---
             if hb.is_alive():
+                # Idle reflection check.
+                if reflector:
+                    idle_since_task = time.time() - state.last_task_completion
+                    if (idle_since_task > r0.reflection_idle_threshold_sec
+                            and time.time() - last_reflection_time > r0.reflection_idle_threshold_sec):
+                        try:
+                            proposals = reflector.reflect_on_idle()
+                            if proposals:
+                                reflector.process_proposals(proposals)
+                            last_reflection_time = time.time()
+                        except Exception:
+                            log.debug("Idle reflection failed", exc_info=True)
                 continue
 
             # Ring 2 is dead — failure path.
@@ -1764,148 +938,31 @@ def run(project_root: pathlib.Path) -> None:
                 log.info("Rolling back to %s", last_good_hash[:12])
                 git.rollback(last_good_hash)
 
-            # Record crash log and observation in memory (with deduplication).
+            # Record crash log in memory (with deduplication).
             if memory_store:
-                # Filter output to remove system noise before storing
                 filtered_output = filter_ring2_output(output, max_lines=50) if output else "(no output)"
                 crash_content = (
                     f"Gen {generation} died after {elapsed:.0f}s.\n"
                     f"Reason: {failure_reason}\n\n"
                     f"--- Last output ---\n{filtered_output}"
                 )
-                
-                # Check for duplicate crashes using fuzzy matching on failure reason
+
                 should_store = True
                 try:
-                    # Use fuzzy deduplication for crash logs (90% threshold for stricter matching)
                     is_duplicate = memory_store.is_duplicate_content(
                         "crash_log",
                         crash_content,
                         lookback=5,
                         similarity_threshold=0.90
                     )
-                    
                     if is_duplicate:
                         should_store = False
-                        log.debug(f"Skipping duplicate crash reason: {failure_reason}")
+                        log.debug("Skipping duplicate crash reason: %s", failure_reason)
                 except Exception:
-                    pass  # If query fails, store anyway
-                
+                    pass
+
                 if should_store:
                     memory_store.add(generation, "crash_log", crash_content)
-
-            # Evolve from the good base (best-effort) — skip if busy or cooling down.
-            # Failures always trigger evolution (no plateau skip) to fix the issue.
-            # Dynamic cooldown based on skill hit ratio.
-            skill_hit = {"total": 0, "skill": 0, "ratio": 0.0, "top_skills": {}}
-            if memory_store:
-                try:
-                    skill_hit = _compute_skill_hit_ratio(memory_store)
-                except Exception:
-                    pass
-            eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
-            # Apply exponential backoff on consecutive evolution failures.
-            if consecutive_evo_failures > 0:
-                backoff = min(2 ** consecutive_evo_failures, 4)  # cap 4x
-                eff_cooldown = int(eff_cooldown * backoff)
-                log.info("Evolution backoff (death): %dx (failures=%d, cooldown=%ds)",
-                         backoff, consecutive_evo_failures, eff_cooldown)
-
-            with state.lock:
-                pending_directive = state.evolution_directive
-            should_evo, plateaued = _should_evolve(
-                state, eff_cooldown, fitness=fitness,
-                plateau_window=plateau_window,
-                plateau_epsilon=plateau_epsilon,
-                has_directive=True,  # failures always force evolution
-                last_task_time=state.last_task_completion,
-            )
-            if not should_evo:
-                log.info("Skipping evolution (busy or cooldown %.0fs, skill ratio %.0f%%)",
-                         eff_cooldown, skill_hit["ratio"] * 100)
-                evolved = False
-            else:
-                consecutive_plateau_skips = 0  # Reset: failure triggers fresh evolution
-                with state.lock:
-                    directive = state.evolution_directive
-                    if directive:
-                        if directive_remaining_cycles <= 0:
-                            directive_remaining_cycles = 3
-                        directive_remaining_cycles -= 1
-                        if directive_remaining_cycles <= 0:
-                            state.evolution_directive = ""
-                if directive and memory_store:
-                    memory_store.add(generation, "directive", directive)
-                crash_logs = []
-                if memory_store:
-                    try:
-                        crash_logs = memory_store.get_by_type("crash_log", limit=3)
-                    except Exception:
-                        pass
-                # Get user profile summary for evolution.
-                profile_summary = ""
-                if user_profiler:
-                    try:
-                        profile_summary = user_profiler.get_profile_summary()
-                    except Exception:
-                        pass
-                # Get structured preferences for evolution.
-                pref_summary = ""
-                if preference_store:
-                    try:
-                        pref_summary = preference_store.get_preference_summary_text()
-                    except Exception:
-                        pass
-                # Build dynamic evolution direction.
-                evo_direction = _build_evolution_direction(
-                    gene_pool, user_profiler, skill_store, memory_store,
-                )
-                # Query user feedback constraints for death-path evolution.
-                death_accepted = []
-                death_rejected = []
-                if output_queue:
-                    try:
-                        death_accepted = output_queue.get_accepted()
-                        death_rejected = output_queue.get_rejected()
-                    except Exception:
-                        pass
-                evolved, last_injected_gene_ids, _ = _try_evolve(
-                    project_root, fitness, ring2_path,
-                    generation, params, False, notifier,
-                    directive=directive,
-                    memory_store=memory_store,
-                    skill_store=skill_store,
-                    crash_logs=crash_logs,
-                    is_plateaued=False,  # failure path — focus on fixing, not novelty
-                    gene_pool=gene_pool,
-                    user_profile_summary=profile_summary,
-                    structured_preferences=pref_summary,
-                    venv_manager=venv_manager,
-                    allowed_packages=allowed_packages,
-                    skill_hit_summary=skill_hit,
-                    evolution_direction=evo_direction,
-                    accepted_capabilities=death_accepted or None,
-                    rejected_directions=death_rejected or None,
-                    soul_context=_soul_text,
-                )
-                if gene_pool and last_injected_gene_ids:
-                    try:
-                        gene_pool.close_hypothesis(
-                            generation, survived=False, score=score,
-                            adopted_ids=[],
-                        )
-                    except Exception:
-                        pass
-            if evolved:
-                consecutive_evo_failures = 0
-                state.last_evolution_time = time.time()
-                try:
-                    git.snapshot(f"gen-{generation} evolved-from-rollback")
-                except subprocess.CalledProcessError:
-                    pass
-            else:
-                consecutive_evo_failures += 1
-                state.last_evolution_time = time.time()  # Enforce backed-off cooldown
 
             # Notify.
             if notifier:
@@ -1915,7 +972,7 @@ def run(project_root: pathlib.Path) -> None:
 
             # Next generation.
             generation += 1
-            params = generate_params(generation, seed)
+            params = generate_params(generation, 42)
             log.info("Restarting Ring 2 — generation %d (params: %s)", generation, params)
             proc = _start_ring2(ring2_path, heartbeat_path)
             start_time = time.time()
@@ -1951,8 +1008,6 @@ def run(project_root: pathlib.Path) -> None:
         log.info("Sentinel offline")
 
     # Restart the entire process if triggered by CommitWatcher.
-    # Python 3 sets O_CLOEXEC on open() fds by default, so os.execv()
-    # automatically closes them — no manual fd cleanup needed.
     if state.restart_event.is_set():
         log.info("Restarting via os.execv()")
         os.execv(sys.executable, [sys.executable] + sys.argv)

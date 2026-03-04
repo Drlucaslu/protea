@@ -301,38 +301,9 @@ REMOTE ACCESS — CRITICAL:
 - Workflow: write_file → (generate content) → send_file.
 """
 
-_P1_SYSTEM_PROMPT_BASE = """\
-You are Protea, a self-evolving artificial life agent.  Your owner has been
-interacting with you through tasks.  Based on the task history and any standing
-directives, decide whether there is useful proactive work you can do right now.
-
-Rules:
-- Only suggest work that is clearly valuable based on observed patterns.
-- Do NOT suggest work if the history is empty or too sparse to infer needs.
-- Do NOT repeat tasks that have already been completed recently.
-- Keep the task description concise and actionable.
-- NEVER restart, stop, or kill Protea processes. Process lifecycle is managed by the Sentinel automatically.
-- NEVER modify .env, config.toml, run.py, or stop_run.sh.
-- Your suggestions MUST align with the owner's Soul Profile.
-
-Respond in EXACTLY this format:
-## Decision
-YES or NO
-
-## Task
-(If YES) A concise description of the proactive work to do.
-(If NO) Brief reason why not.
-"""
-
-
 def _task_system_prompt() -> str:
     from ring1.soul import inject
     return inject(_TASK_SYSTEM_PROMPT_BASE)
-
-
-def _p1_system_prompt() -> str:
-    from ring1.soul import inject
-    return inject(_P1_SYSTEM_PROMPT_BASE)
 
 
 def _build_task_context(
@@ -345,8 +316,8 @@ def _build_task_context(
     recommended_skills: list[dict] | None = None,
     other_skills: list[dict] | None = None,
     semantic_rules: list[dict] | None = None,
-    gene_patterns: list[dict] | None = None,
     strategies: list[dict] | None = None,
+    reflections: list[dict] | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     from datetime import datetime
@@ -367,17 +338,6 @@ def _build_task_context(
         parts.append("```python")
         parts.append(truncated)
         parts.append("```")
-
-    if gene_patterns:
-        parts.append("")
-        parts.append("## Proven Code Patterns")
-        for gene in gene_patterns:
-            score = gene.get("score", 0)
-            task_hits = gene.get("total_task_hits", 0) or 0
-            summary = gene.get("gene_summary", "")
-            if len(summary) > 200:
-                summary = summary[:197] + "..."
-            parts.append(f"- [score={score:.2f}, tasks={task_hits}] {summary}")
 
     if strategies:
         parts.append("")
@@ -460,6 +420,13 @@ def _build_task_context(
             content = rule.get("content", "")[:100]
             parts.append(f"- {content}")
 
+    if reflections:
+        parts.append("")
+        parts.append("## Past Reflections (lessons from similar tasks)")
+        for ref in reflections[:3]:
+            content = ref.get("content", "")[:200]
+            parts.append(f"- {content}")
+
     return "\n".join(parts)
 
 
@@ -476,17 +443,12 @@ class TaskExecutor:
         memory_store=None,
         skill_store=None,
         task_store=None,
-        p1_enabled: bool = False,
-        p1_idle_threshold_sec: int = 600,
-        p1_check_interval_sec: int = 60,
         max_tool_rounds: int = 25,
-        p1_max_tool_rounds: int = 15,
         user_profiler=None,
         embedding_provider=None,
         prefer_local_skills: bool = True,
         scheduled_store=None,
         preference_store=None,
-        gene_pool=None,
         reply_fn_factory=None,
     ) -> None:
         """
@@ -499,9 +461,6 @@ class TaskExecutor:
             memory_store: Optional MemoryStore for experiential memories.
             skill_store: Optional SkillStore for reusable skills.
             task_store: Optional TaskStore for task persistence.
-            p1_enabled: Whether P1 autonomous tasks are enabled.
-            p1_idle_threshold_sec: Seconds of idle before triggering P1.
-            p1_check_interval_sec: Minimum seconds between P1 checks.
             max_tool_rounds: Maximum LLM tool-call round-trips.
             user_profiler: Optional UserProfiler for interest tracking.
             embedding_provider: Optional EmbeddingProvider for semantic vectors.
@@ -516,33 +475,27 @@ class TaskExecutor:
         self.memory_store = memory_store
         self.skill_store = skill_store
         self.task_store = task_store
-        self.p1_enabled = p1_enabled
-        self.p1_idle_threshold_sec = p1_idle_threshold_sec
-        self.p1_check_interval_sec = p1_check_interval_sec
         self.max_tool_rounds = max_tool_rounds
-        self.p1_max_tool_rounds = p1_max_tool_rounds
         self.user_profiler = user_profiler
         self.embedding_provider = embedding_provider
         self.prefer_local_skills = prefer_local_skills
         self.scheduled_store = scheduled_store
         self.preference_store = preference_store
-        self.gene_pool = gene_pool
         self.reply_fn_factory = reply_fn_factory
         self.preference_extractor = None  # Initialized in create_executor()
         self.feedback_fn = None  # Called after complete task response
         self.nudge_fn = None  # Called after feedback: nudge_engine.post_task_nudge
+        self.reflector = None  # Set by sentinel after creation
         self._cross_domain_counter: int = 0  # Rate-limit: 1 per 5 tasks
         self._task_counter: int = 0  # P0: triggers strategy distillation every 10 tasks
         self._running = True
-        self._last_p0_time: float = time.time()
-        self._last_p1_check: float = 0.0
         # Convergence detector — initialized later in create_executor().
         self.convergence_detector = None
         # Conversation history: list of (timestamp, user_text, response_text)
         self._chat_history: list[tuple[float, str, str]] = []
         self._chat_history_max = 5
         self._chat_history_ttl = 600  # 10 minutes
-        self._last_chat_id: str = ""  # Track most recent chat_id for P1 context
+        self._last_chat_id: str = ""  # Track most recent chat_id
 
     def _get_recent_history(self) -> list[tuple[str, str]]:
         """Return recent conversation pairs, pruning expired entries."""
@@ -568,7 +521,6 @@ class TaskExecutor:
             try:
                 task = self.state.task_queue.get(timeout=2)
             except queue.Empty:
-                self._check_p1_opportunity()
                 continue
             try:
                 self._execute_task(task)
@@ -581,7 +533,6 @@ class TaskExecutor:
                         self.task_store.set_status(task.task_id, "failed", "unhandled error")
                     except Exception:
                         pass
-            self._last_p0_time = time.time()
         log.info("Task executor stopped")
 
     _RECOVER_MAX_AGE_SEC = 300  # skip tasks older than 5 minutes on restart
@@ -708,7 +659,6 @@ class TaskExecutor:
         skills_used: list[str] = []
         tool_sequence: list[str] = []
         fab_signals: list[str] = []
-        _gene_ids_used: list[int] = []
         try:
             # Build context
             snap = self.state.snapshot()
@@ -778,26 +728,6 @@ class TaskExecutor:
                 except Exception:
                     pass
 
-            gene_patterns: list[dict] = []
-            if self.gene_pool:
-                try:
-                    gene_emb = None
-                    if self.embedding_provider:
-                        try:
-                            vecs = self.embedding_provider.embed([match_text])
-                            gene_emb = vecs[0] if vecs else None
-                        except Exception:
-                            pass
-                    gene_patterns = self.gene_pool.get_relevant(
-                        match_text, 3, query_embedding=gene_emb, min_semantic=1.0,
-                    )
-                    _gene_ids_used = [g["id"] for g in gene_patterns if "id" in g]
-                    if gene_patterns:
-                        log.info("Gene injection: %s",
-                                 [(g["id"], g.get("_relevance", 0)) for g in gene_patterns])
-                except Exception:
-                    log.debug("Gene retrieval for task failed", exc_info=True)
-
             strategies: list[dict] = []
             if self.memory_store:
                 try:
@@ -806,14 +736,23 @@ class TaskExecutor:
                     pass
 
             history = self._get_recent_history()
+
+            # Reflexion: retrieve relevant historical reflections
+            reflections: list[dict] = []
+            if self.reflector:
+                try:
+                    reflections = self.reflector.get_relevant_reflections(task.text)
+                except Exception:
+                    pass
+
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
                 chat_history=history, recalled=recalled,
                 recommended_skills=recommended_skills,
                 other_skills=other_skills,
                 semantic_rules=semantic_rules,
-                gene_patterns=gene_patterns,
                 strategies=strategies,
+                reflections=reflections,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -953,7 +892,15 @@ class TaskExecutor:
                     )
                 except Exception:
                     log.debug("Failed to mark task completed", exc_info=True)
+            usage = (self.client.last_usage if self.client else None) or {}
+            if not isinstance(usage, dict):
+                usage = {}
             log.info("P0 task done (%.1fs): %s", duration, response[:80])
+            log.info("TASK_METRICS task_id=%s duration=%.1f input_tokens=%d output_tokens=%d "
+                     "tools=%d skills=%s",
+                     getattr(task, "task_id", "?"), duration,
+                     usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                     len(tool_sequence), ",".join(skills_used) or "none")
             # Strip conversation context prefix so only the user's actual
             # text is persisted in memory and used for profile analysis.
             clean_text = _strip_context_prefix(task.text)
@@ -971,13 +918,17 @@ class TaskExecutor:
                             embedding = vecs[0] if vecs else None
                         except Exception:
                             log.debug("Embedding generation failed", exc_info=True)
+                    usage = (self.client.last_usage if self.client else None) or {}
+                    if not isinstance(usage, dict):
+                        usage = {}
                     task_meta = {
                         "response_summary": response[:200],
                         "duration_sec": round(duration, 2),
                         "skills_used": skills_used,
                         "skills_matched": skills_matched,
                         "tool_sequence": tool_sequence,
-                        "gene_ids_used": _gene_ids_used,
+                        "input_tokens": usage.get("input_tokens", 0),
+                        "output_tokens": usage.get("output_tokens", 0),
                     }
                     if embedding is not None:
                         self.memory_store.add_with_embedding(
@@ -1043,23 +994,6 @@ class TaskExecutor:
                     self._distill_strategies()
                 except Exception:
                     log.debug("Distillation trigger failed", exc_info=True)
-            # P3: Extract and store evolution signals.
-            if self.memory_store:
-                try:
-                    evo_signals = self._extract_evolution_signals(
-                        response, tool_sequence, duration, fab_signals,
-                    )
-                    if evo_signals:
-                        snap_gen = self.state.snapshot().get("generation", 0)
-                        self.memory_store.add(
-                            generation=snap_gen,
-                            entry_type="evolution_signal",
-                            content=f"Task execution issues: {len(evo_signals)} signals",
-                            metadata={"signals": evo_signals},
-                        )
-                except Exception:
-                    log.debug("Evolution signal extraction failed", exc_info=True)
-
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"
         "1. Identify ONLY the user's core intent (what they want to do). "
@@ -1244,349 +1178,6 @@ class TaskExecutor:
 
     # --- P3: Evolution Signal Extraction ---
 
-    @staticmethod
-    def _extract_evolution_signals(
-        response: str,
-        tool_sequence: list[str],
-        duration_sec: float,
-        fab_signals: list[str],
-    ) -> list[dict]:
-        """Extract evolution-relevant signals from task execution.
-
-        Detects: fabrication, slow_task, empty_response, repeated_tool_failure,
-        tool_error, timeout keywords.
-        """
-        signals: list[dict] = []
-
-        # Fabrication detected.
-        if fab_signals:
-            signals.append({"type": "fabrication", "detail": ", ".join(fab_signals)})
-
-        # Slow task (>60s).
-        if duration_sec > 60:
-            signals.append({"type": "slow_task", "detail": f"{duration_sec:.0f}s"})
-
-        # Empty response (<20 chars).
-        if len(response.strip()) < 20:
-            signals.append({"type": "empty_response", "detail": f"{len(response.strip())} chars"})
-
-        # Repeated tool failure: same tool called 3+ times in a row.
-        if len(tool_sequence) >= 3:
-            for i in range(len(tool_sequence) - 2):
-                if tool_sequence[i] == tool_sequence[i + 1] == tool_sequence[i + 2]:
-                    signals.append({
-                        "type": "repeated_tool_failure",
-                        "detail": f"{tool_sequence[i]} called 3+ times consecutively",
-                    })
-                    break
-
-        # Tool error / timeout keywords in response.
-        response_lower = response.lower()
-        if "tool_error" in response_lower or "error executing tool" in response_lower:
-            signals.append({"type": "tool_error", "detail": "error in tool execution"})
-        if "timeout" in response_lower and "timed out" in response_lower:
-            signals.append({"type": "timeout", "detail": "timeout detected in response"})
-
-        return signals
-
-    # --- P1: Anti-Drift Goal Alignment ---
-
-    def _is_goal_aligned(self, task_desc: str) -> bool:
-        """Check if a P1 task description aligns with the owner's Soul Profile.
-
-        Tokenizes soul rules and task description, checks keyword overlap.
-        Returns False if overlap ratio < 0.15 (misaligned).
-        """
-        try:
-            from ring1.soul import get_rules
-            rules = get_rules()
-        except Exception:
-            return True  # If no soul, allow all
-
-        if not rules:
-            return True
-
-        # Tokenize rules.
-        rule_text = " ".join(rules) if isinstance(rules, list) else str(rules)
-        rule_tokens = set(_RECALL_KEYWORD_RE.findall(rule_text.lower()))
-        rule_tokens = {t for t in rule_tokens if len(t) >= 3}
-
-        if not rule_tokens:
-            return True
-
-        # Tokenize task description.
-        task_tokens = set(_RECALL_KEYWORD_RE.findall(task_desc.lower()))
-        task_tokens = {t for t in task_tokens if len(t) >= 3}
-
-        if not task_tokens:
-            return True
-
-        overlap = len(task_tokens & rule_tokens)
-        ratio = overlap / len(task_tokens)
-        if ratio < 0.15:
-            log.info("P1 task rejected (goal drift): ratio=%.2f, task=%s", ratio, task_desc[:80])
-            return False
-        return True
-
-    def _check_p1_opportunity(self) -> None:
-        """Check if we should trigger a P1 autonomous task."""
-        if not self.p1_enabled:
-            return
-
-        now = time.time()
-
-        # Check idle threshold
-        if now - self._last_p0_time < self.p1_idle_threshold_sec:
-            return
-        # Check interval between P1 checks
-        if now - self._last_p1_check < self.p1_check_interval_sec:
-            return
-
-        self._last_p1_check = now
-
-        # Need task history to infer useful work
-        if not self.memory_store:
-            return
-
-        try:
-            task_history = self.memory_store.get_by_type("task", limit=10)
-        except Exception:
-            return
-
-        if not task_history:
-            return
-
-        # Build P1 decision prompt
-        from datetime import datetime as _dt
-        parts = [f"## Current Time: {_dt.now().strftime('%Y-%m-%d %H:%M:%S %A')}", ""]
-        parts.append("## Recent Task History")
-        for task in task_history:
-            content = task.get("content", "")
-            meta = task.get("metadata", {})
-            summary = meta.get("response_summary", "")
-            parts.append(f"- Task: {content}")
-            if summary:
-                parts.append(f"  Result: {summary[:100]}")
-        parts.append("")
-
-        # Include recent P1 tasks to prevent re-triggering the same work
-        try:
-            p1_history = self.memory_store.get_by_type("p1_task", limit=5)
-        except Exception:
-            p1_history = []
-        if p1_history:
-            parts.append("## Recent Autonomous Work (DO NOT repeat these)")
-            for p1 in p1_history:
-                p1_content = p1.get("content", "")
-                p1_meta = p1.get("metadata", {})
-                p1_summary = p1_meta.get("response_summary", "")
-                parts.append(f"- P1: {p1_content}")
-                if p1_summary:
-                    parts.append(f"  Result: {p1_summary[:100]}")
-            parts.append("")
-
-        # Include directive if set
-        snap = self.state.snapshot()
-        directive = snap.get("evolution_directive", "")
-        if directive:
-            parts.append(f"## Standing Directive: {directive}")
-            parts.append("")
-
-        user_message = "\n".join(parts)
-
-        try:
-            decision = self.client.send_message(_p1_system_prompt(), user_message)
-        except LLMError as exc:
-            log.debug("P1 decision LLM error: %s", exc)
-            return
-
-        # Parse decision
-        if "## Decision" not in decision or "YES" not in decision.split("## Task")[0]:
-            log.debug("P1 decision: NO")
-            return
-
-        # Extract task description
-        task_desc = ""
-        if "## Task" in decision:
-            task_desc = decision.split("## Task", 1)[1].strip()
-
-        if not task_desc:
-            return
-
-        # P1 anti-drift: check goal alignment before executing.
-        if not self._is_goal_aligned(task_desc):
-            return
-
-        log.info("P1 autonomous task triggered: %s (chat_id=%s)", task_desc[:80], self._last_chat_id or "default")
-        self._execute_p1_task(task_desc, chat_id=self._last_chat_id)
-
-    def _execute_p1_task(self, task_desc: str, chat_id: str = "") -> None:
-        """Execute a P1 autonomous task and report via Telegram."""
-        self.state.p1_active.set()
-        # Set thread context so tools (message, send_file) route correctly.
-        threading.current_thread().task_chat_id = chat_id
-        threading.current_thread().reply_to_message_id = None
-        start = time.time()
-        response = ""
-        skills_used: list[str] = []
-        tool_sequence: list[str] = []
-        try:
-            # Build context (same as P0)
-            snap = self.state.snapshot()
-            ring2_source = ""
-            try:
-                ring2_source = (self.ring2_path / "main.py").read_text()
-            except FileNotFoundError:
-                pass
-
-            memories = []
-            if self.memory_store:
-                try:
-                    snapshots = self.memory_store.get_by_type("status_snapshot", limit=1)
-                    recent = self.memory_store.get_recent(3)
-                    recent = [m for m in recent if m.get("entry_type") != "status_snapshot"]
-                    memories = snapshots + recent[:2]
-                except Exception:
-                    pass
-
-            recalled: list[dict] = []
-            if self.memory_store:
-                try:
-                    keywords = _extract_recall_keywords(task_desc)
-                    emb = None
-                    if self.embedding_provider:
-                        try:
-                            vecs = self.embedding_provider.embed([task_desc])
-                            emb = vecs[0] if vecs else None
-                        except Exception:
-                            pass
-                    recalled = self.memory_store.recall(keywords, emb, limit=2)
-                except Exception:
-                    pass
-
-            # P1 task descriptions are LLM-generated (English), but translate if needed.
-            p1_match_text = task_desc
-            try:
-                p1_intent = self._extract_profile_intent(task_desc)
-                if p1_intent:
-                    p1_match_text = p1_intent
-            except Exception:
-                pass
-
-            skills = []
-            recommended_skills_p1: list[dict] = []
-            other_skills_p1: list[dict] = []
-            if self.skill_store:
-                try:
-                    skills = self.skill_store.get_active()
-                except Exception:
-                    pass
-                if skills and self.prefer_local_skills:
-                    recommended_skills_p1, other_skills_p1 = _match_skills(p1_match_text, skills)
-                else:
-                    other_skills_p1 = skills
-            skills_matched = [s["name"] for s in recommended_skills_p1]
-            if skills_matched and self.skill_store:
-                try:
-                    self.skill_store.record_matches(skills_matched)
-                except Exception:
-                    pass
-
-            semantic_rules_p1: list[dict] = []
-            if self.memory_store:
-                try:
-                    semantic_rules_p1 = self.memory_store.get_semantic_rules(limit=10)
-                except Exception:
-                    pass
-
-            strategies_p1: list[dict] = []
-            if self.memory_store:
-                try:
-                    strategies_p1 = self.memory_store.get_strategies(limit=5)
-                except Exception:
-                    pass
-
-            context = _build_task_context(
-                snap, ring2_source, memories=memories, recalled=recalled,
-                recommended_skills=recommended_skills_p1,
-                other_skills=other_skills_p1,
-                semantic_rules=semantic_rules_p1,
-                strategies=strategies_p1,
-            )
-            user_message = f"{context}\n\n## Autonomous Task\n{task_desc}"
-
-            try:
-                if self.registry:
-                    def tracking_execute(tool_name: str, tool_input: dict) -> str:
-                        tool_sequence.append(tool_name)
-                        if tool_name == "run_skill":
-                            skills_used.append(tool_input.get("skill_name", "unknown"))
-                        return self.registry.execute(tool_name, tool_input)
-
-                    response = self.client.send_message_with_tools(
-                        _task_system_prompt(), user_message,
-                        tools=self.registry.get_schemas(),
-                        tool_executor=tracking_execute,
-                        max_rounds=self.p1_max_tool_rounds,
-                    )
-                else:
-                    response = self.client.send_message(
-                        _task_system_prompt(), user_message,
-                    )
-            except LLMError as exc:
-                log.error("P1 task LLM error: %s", exc)
-                response = f"Error: {exc}"
-
-            # Fabrication detection for P1 tasks — no retry, just discard
-            fab_signals = _detect_fabrication(response, tool_sequence)
-            if fab_signals:
-                log.warning("P1 task fabricated actions (signals: %s), discarding", fab_signals)
-                return  # Don't send fabricated autonomous task results
-
-            if len(response) > _MAX_REPLY_LEN:
-                response = response[:_MAX_REPLY_LEN] + "\n... (truncated)"
-
-            # Report to user
-            elapsed = time.time() - start
-            if skills_used:
-                footer = f"\n---\nskill: {', '.join(skills_used)} | {elapsed:.0f}s"
-            else:
-                footer = f"\n---\nllm | {elapsed:.0f}s"
-            report = f"[P1 Autonomous Work] {task_desc}\n\n{response}{footer}"
-            if len(report) > _MAX_REPLY_LEN:
-                report = report[:_MAX_REPLY_LEN] + "\n... (truncated)"
-            p1_reply_fn = self.reply_fn
-            if self.reply_fn_factory and chat_id:
-                try:
-                    p1_reply_fn = self.reply_fn_factory(chat_id, None)
-                except Exception:
-                    pass
-            try:
-                _send_segmented(p1_reply_fn, report)
-            except Exception:
-                log.error("Failed to send P1 report", exc_info=True)
-        finally:
-            self.state.p1_active.clear()
-            # Record in memory
-            duration = time.time() - start
-            if self.memory_store:
-                try:
-                    snap = self.state.snapshot()
-                    self.memory_store.add(
-                        generation=snap.get("generation", 0),
-                        entry_type="p1_task",
-                        content=task_desc,
-                        metadata={
-                            "response_summary": response[:200],
-                            "duration_sec": round(duration, 2),
-                            "skills_used": skills_used,
-                            "skills_matched": skills_matched,
-                            "tool_sequence": tool_sequence,
-                        },
-                    )
-                except Exception:
-                    log.debug("Failed to record P1 task in memory", exc_info=True)
-
     def stop(self) -> None:
         """Signal the executor loop to stop."""
         self._running = False
@@ -1601,13 +1192,11 @@ def create_executor(
     skill_store=None,
     skill_runner=None,
     task_store=None,
-    registry_client=None,  # deprecated, kept for call-site compat
     user_profiler=None,
     embedding_provider=None,
     scheduled_store=None,
     send_file_fn=None,
     preference_store=None,
-    gene_pool=None,
     reply_fn_factory=None,
 ) -> TaskExecutor | None:
     """Create a TaskExecutor from Ring1Config, or None if no API key."""
@@ -1626,7 +1215,6 @@ def create_executor(
     (pathlib.Path(workspace) / "output").mkdir(parents=True, exist_ok=True)
     shell_timeout = getattr(config, "shell_timeout", 30)
     max_tool_rounds = getattr(config, "max_tool_rounds", 25)
-    p1_max_tool_rounds = getattr(config, "p1_max_tool_rounds", 15)
 
     # Create subagent manager (needs registry, so we build in two steps)
     base_registry = create_default_registry(
@@ -1659,17 +1247,12 @@ def create_executor(
         memory_store=memory_store,
         skill_store=skill_store,
         task_store=task_store,
-        p1_enabled=config.p1_enabled,
-        p1_idle_threshold_sec=config.p1_idle_threshold_sec,
-        p1_check_interval_sec=config.p1_check_interval_sec,
         max_tool_rounds=max_tool_rounds,
-        p1_max_tool_rounds=p1_max_tool_rounds,
         user_profiler=user_profiler,
         embedding_provider=embedding_provider,
         prefer_local_skills=prefer_local_skills,
         scheduled_store=scheduled_store,
         preference_store=preference_store,
-        gene_pool=gene_pool,
         reply_fn_factory=reply_fn_factory,
     )
     executor.subagent_manager = subagent_mgr

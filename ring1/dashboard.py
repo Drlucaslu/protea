@@ -453,14 +453,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     Class attributes injected before starting:
         memory_store, skill_store, fitness_tracker, user_profiler,
-        gene_pool, task_store, scheduled_store, state
+        task_store, scheduled_store, state
     """
 
     memory_store = None
     skill_store = None
     fitness_tracker = None
     user_profiler = None
-    gene_pool = None
     task_store = None
     scheduled_store = None
     state = None

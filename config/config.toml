@@ -11,26 +11,16 @@ ring2_path = "ring2"
 [ring0.fitness]
 db_path = "data/protea.db"
 
-[ring0.evolution]
-seed = 42
-cooldown_sec = 3600
-skill_max_count = 100
-# Adaptive evolution: skip LLM calls when scores plateau to save tokens.
-# plateau_window = how many recent scores to check for stagnation.
-# plateau_epsilon = max score variance to consider "plateaued".
-# When plateaued, evolution is skipped unless a user directive is pending.
-plateau_window = 3
-plateau_epsilon = 0.03
+[ring0.reflection]
+idle_threshold_sec = 7200        # 2h idle triggers deep reflection
+auto_confidence = 0.8            # >= 0.8 auto-execute proposals
+min_tasks_before_reflect = 3     # min tasks before post-task reflection
+cooldown_sec = 1800              # min 30min between reflections
 
 [ring1]
 claude_model = "claude-sonnet-4-5-20250929"
 claude_max_tokens = 16384
 max_prompt_history = 5
-
-[ring1.autonomy]
-enabled = true
-idle_threshold_sec = 600
-check_interval_sec = 300
 
 [ring1.tools]
 workspace_path = "."

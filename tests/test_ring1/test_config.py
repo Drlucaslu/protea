@@ -68,8 +68,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="sk-test", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
         )
         assert cfg.has_llm_config() is True
 
@@ -77,8 +76,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
         )
         assert cfg.has_llm_config() is False
 
@@ -87,8 +85,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
             llm_provider="openai", llm_api_key_env="OPENAI_API_KEY",
         )
         assert cfg.has_llm_config() is True
@@ -98,8 +95,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
             llm_provider="openai", llm_api_key_env="OPENAI_API_KEY",
         )
         assert cfg.has_llm_config() is False
@@ -108,8 +104,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
             llm_provider="deepseek", llm_api_key_env="",
         )
         assert cfg.has_llm_config() is False
@@ -118,8 +113,7 @@ class TestHasLlmConfig:
         cfg = Ring1Config(
             claude_api_key="sk-test", claude_model="m", claude_max_tokens=1,
             telegram_bot_token="", telegram_chat_id="", telegram_enabled=False,
-            max_prompt_history=1, p1_enabled=False, p1_idle_threshold_sec=1,
-            p1_check_interval_sec=1,
+            max_prompt_history=1,
             llm_provider="",
         )
         assert cfg.has_llm_config() is True
@@ -204,32 +198,6 @@ class TestLoadRing1Config:
         # NamedTuple should be immutable.
         with pytest.raises(AttributeError):
             cfg.claude_model = "other"  # type: ignore[misc]
-
-    def test_p1_defaults(self, tmp_path):
-        """P1 fields should default when no [ring1.autonomy] section."""
-        root = self._make_project(tmp_path)
-        for key in ("CLAUDE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
-            os.environ.pop(key, None)
-        cfg = load_ring1_config(root)
-        assert cfg.p1_enabled is True
-        assert cfg.p1_idle_threshold_sec == 600
-        assert cfg.p1_check_interval_sec == 60
-
-    def test_p1_reads_toml_values(self, tmp_path):
-        """P1 fields should be read from [ring1.autonomy]."""
-        extra = (
-            "\n[ring1.autonomy]\n"
-            "enabled = false\n"
-            "idle_threshold_sec = 300\n"
-            "check_interval_sec = 30\n"
-        )
-        root = self._make_project(tmp_path, toml_extra=extra)
-        for key in ("CLAUDE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
-            os.environ.pop(key, None)
-        cfg = load_ring1_config(root)
-        assert cfg.p1_enabled is False
-        assert cfg.p1_idle_threshold_sec == 300
-        assert cfg.p1_check_interval_sec == 30
 
 
 class TestLlmEnvOverride:

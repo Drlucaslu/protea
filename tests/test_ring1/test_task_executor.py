@@ -13,7 +13,6 @@ import pytest
 
 from ring1.task_executor import (
     _TASK_SYSTEM_PROMPT_BASE as TASK_SYSTEM_PROMPT,
-    _P1_SYSTEM_PROMPT_BASE as P1_SYSTEM_PROMPT,
     TaskExecutor,
     _build_task_context,
     _match_skills,
@@ -61,6 +60,7 @@ def _make_executor(
     if client is None:
         client = MagicMock()
         client.send_message_with_tools.return_value = "LLM response"
+        client.last_usage = {"input_tokens": 0, "output_tokens": 0}
     if reply_fn is None:
         reply_fn = MagicMock()
     if ring2_path is None:
@@ -92,8 +92,9 @@ class TestBuildTaskContext:
         long_source = "x" * 3000
         ctx = _build_task_context(snap, long_source)
         assert "truncated" in ctx
-        # Only first 2000 chars of source
-        assert "x" * 2000 in ctx
+        # Only first 500 chars of source
+        assert "x" * 500 in ctx
+        assert "x" * 501 not in ctx
 
     def test_empty_source(self):
         snap = {"generation": 0, "alive": False, "paused": False,
@@ -134,21 +135,21 @@ class TestBuildTaskContext:
             {"name": "translate", "description": "Translate text"},
         ]
         ctx = _build_task_context(snap, "", skills=skills)
-        assert "Available Skills" in ctx
-        assert "summarize: Summarize text" in ctx
-        assert "translate: Translate text" in ctx
+        assert "Available skills" in ctx
+        assert "summarize" in ctx
+        assert "translate" in ctx
 
     def test_no_skills_no_section(self):
         snap = {"generation": 0, "alive": False, "paused": False,
                 "last_score": 0.0, "last_survived": False}
         ctx = _build_task_context(snap, "", skills=None)
-        assert "Available Skills" not in ctx
+        assert "Available skills" not in ctx
 
     def test_empty_skills_no_section(self):
         snap = {"generation": 0, "alive": False, "paused": False,
                 "last_score": 0.0, "last_survived": False}
         ctx = _build_task_context(snap, "", skills=[])
-        assert "Available Skills" not in ctx
+        assert "Available skills" not in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +472,7 @@ class TestTaskHistoryRecording:
         ms = MemoryStore(tmp_path / "mem.db")
         client = MagicMock()
         client.send_message_with_tools.return_value = "answer"
+        client.last_usage = {"input_tokens": 0, "output_tokens": 0}
         reply_fn = MagicMock()
         registry = _make_registry()
 
@@ -532,158 +534,13 @@ class TestSkillInjection:
         executor._execute_task(task)
 
         assert len(captured) == 1
-        assert "Available Skills" in captured[0]
+        assert "Available skills" in captured[0]
         assert "summarize" in captured[0]
 
 
 # ---------------------------------------------------------------------------
 # TestP1IdleDetection
 # ---------------------------------------------------------------------------
-
-class TestP1IdleDetection:
-    """Test P1 autonomous task idle detection logic."""
-
-    def test_p1_disabled_no_check(self, tmp_path):
-        state = _make_state()
-        client = MagicMock()
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-
-        executor = TaskExecutor(state, client, ring2, reply_fn, p1_enabled=False)
-        executor._last_p0_time = 0  # long idle
-        executor._check_p1_opportunity()
-        client.send_message.assert_not_called()
-
-    def test_p1_not_idle_enough(self, tmp_path):
-        from ring0.memory import MemoryStore
-        state = _make_state()
-        client = MagicMock()
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-
-        ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "task", "test task")
-
-        executor = TaskExecutor(
-            state, client, ring2, reply_fn,
-            memory_store=ms, p1_enabled=True,
-            p1_idle_threshold_sec=600,
-        )
-        executor._last_p0_time = time.time()  # just now — not idle
-        executor._check_p1_opportunity()
-        client.send_message.assert_not_called()
-
-    def test_p1_check_interval_respected(self, tmp_path):
-        from ring0.memory import MemoryStore
-        state = _make_state()
-        client = MagicMock()
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-
-        ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "task", "test task")
-
-        executor = TaskExecutor(
-            state, client, ring2, reply_fn,
-            memory_store=ms, p1_enabled=True,
-            p1_idle_threshold_sec=0,  # always idle
-            p1_check_interval_sec=9999,  # very long interval
-        )
-        executor._last_p0_time = 0
-        executor._last_p1_check = time.time()  # just checked
-        executor._check_p1_opportunity()
-        client.send_message.assert_not_called()
-
-    def test_p1_no_task_history_no_check(self, tmp_path):
-        from ring0.memory import MemoryStore
-        state = _make_state()
-        client = MagicMock()
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-
-        ms = MemoryStore(tmp_path / "mem.db")
-        # No task entries
-
-        executor = TaskExecutor(
-            state, client, ring2, reply_fn,
-            memory_store=ms, p1_enabled=True,
-            p1_idle_threshold_sec=0,
-            p1_check_interval_sec=0,
-        )
-        executor._last_p0_time = 0
-        executor._check_p1_opportunity()
-        client.send_message.assert_not_called()
-
-    def test_p1_triggers_when_idle(self, tmp_path):
-        from ring0.memory import MemoryStore
-        state = _make_state()
-        state.p1_active = MagicMock()  # mock for set/clear tracking
-        state.p1_active.set = MagicMock()
-        state.p1_active.clear = MagicMock()
-
-        client = MagicMock()
-        # Decision call uses send_message
-        client.send_message.return_value = (
-            "## Decision\nYES\n\n## Task\nAnalyze patterns"
-        )
-        # Execution call uses send_message_with_tools
-        client.send_message_with_tools.return_value = "Here's my analysis..."
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-        (ring2 / "main.py").write_text("code")
-
-        ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "task", "What is 2+2?")
-
-        registry = _make_registry()
-
-        executor = TaskExecutor(
-            state, client, ring2, reply_fn,
-            registry=registry,
-            memory_store=ms, p1_enabled=True,
-            p1_idle_threshold_sec=0,
-            p1_check_interval_sec=0,
-        )
-        executor._last_p0_time = 0
-        executor._check_p1_opportunity()
-
-        # Decision via send_message + intent extraction for skill matching
-        assert client.send_message.call_count == 2
-        assert client.send_message_with_tools.call_count == 1
-        # Should have reported via Telegram
-        reply_fn.assert_called_once()
-        assert "[P1 Autonomous Work]" in reply_fn.call_args[0][0]
-
-    def test_p1_decision_no_skips(self, tmp_path):
-        from ring0.memory import MemoryStore
-        state = _make_state()
-        client = MagicMock()
-        client.send_message.return_value = "## Decision\nNO\n\n## Task\nNothing to do"
-        reply_fn = MagicMock()
-        ring2 = tmp_path / "ring2"
-        ring2.mkdir()
-
-        ms = MemoryStore(tmp_path / "mem.db")
-        ms.add(1, "task", "test task", importance=0.5)
-
-        executor = TaskExecutor(
-            state, client, ring2, reply_fn,
-            memory_store=ms, p1_enabled=True,
-            p1_idle_threshold_sec=0,
-            p1_check_interval_sec=0,
-        )
-        executor._last_p0_time = 0
-        executor._check_p1_opportunity()
-
-        # Only 1 LLM call for decision (no execution)
-        assert client.send_message.call_count == 1
-        client.send_message_with_tools.assert_not_called()
-        reply_fn.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -704,16 +561,12 @@ class TestCreateExecutor:
         cfg.claude_api_key = "sk-test"
         cfg.claude_model = "test-model"
         cfg.claude_max_tokens = 4096
-        cfg.p1_enabled = True
-        cfg.p1_idle_threshold_sec = 600
-        cfg.p1_check_interval_sec = 60
         cfg.workspace_path = "."
         cfg.shell_timeout = 30
         cfg.max_tool_rounds = 10
         state = _make_state()
         result = create_executor(cfg, state, pathlib.Path("/tmp"), MagicMock())
         assert isinstance(result, TaskExecutor)
-        assert result.p1_enabled is True
         assert result.registry is not None
 
     def test_executor_has_registry_tools(self):
@@ -721,9 +574,6 @@ class TestCreateExecutor:
         cfg.claude_api_key = "sk-test"
         cfg.claude_model = "test-model"
         cfg.claude_max_tokens = 4096
-        cfg.p1_enabled = False
-        cfg.p1_idle_threshold_sec = 600
-        cfg.p1_check_interval_sec = 60
         cfg.workspace_path = "."
         cfg.shell_timeout = 30
         cfg.max_tool_rounds = 10
@@ -747,9 +597,6 @@ class TestCreateExecutor:
         cfg.claude_api_key = "sk-test"
         cfg.claude_model = "test-model"
         cfg.claude_max_tokens = 4096
-        cfg.p1_enabled = False
-        cfg.p1_idle_threshold_sec = 600
-        cfg.p1_check_interval_sec = 60
         cfg.workspace_path = "."
         cfg.shell_timeout = 30
         cfg.max_tool_rounds = 10
@@ -763,9 +610,6 @@ class TestCreateExecutor:
         cfg.claude_api_key = "sk-test"
         cfg.claude_model = "test-model"
         cfg.claude_max_tokens = 4096
-        cfg.p1_enabled = False
-        cfg.p1_idle_threshold_sec = 600
-        cfg.p1_check_interval_sec = 60
         cfg.workspace_path = "."
         cfg.shell_timeout = 30
         cfg.max_tool_rounds = 10
@@ -782,16 +626,12 @@ class TestCreateExecutor:
 class TestSystemPrompt:
     """Test TASK_SYSTEM_PROMPT content."""
 
-    def test_mentions_all_tools(self):
-        assert "web_search" in TASK_SYSTEM_PROMPT
-        assert "web_fetch" in TASK_SYSTEM_PROMPT
-        assert "read_file" in TASK_SYSTEM_PROMPT
+    def test_has_key_sections(self):
+        assert "Protea" in TASK_SYSTEM_PROMPT
+        assert "ANTI-FABRICATION" in TASK_SYSTEM_PROMPT
         assert "write_file" in TASK_SYSTEM_PROMPT
-        assert "edit_file" in TASK_SYSTEM_PROMPT
-        assert "list_dir" in TASK_SYSTEM_PROMPT
-        assert "exec" in TASK_SYSTEM_PROMPT
+        assert "send_file" in TASK_SYSTEM_PROMPT
         assert "message" in TASK_SYSTEM_PROMPT
-        assert "spawn" in TASK_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -874,9 +714,6 @@ class TestTaskPersistence:
         cfg.claude_api_key = "sk-test"
         cfg.claude_model = "test-model"
         cfg.claude_max_tokens = 4096
-        cfg.p1_enabled = False
-        cfg.p1_idle_threshold_sec = 600
-        cfg.p1_check_interval_sec = 60
         cfg.workspace_path = "."
         cfg.shell_timeout = 30
         cfg.max_tool_rounds = 10
@@ -1700,43 +1537,6 @@ class TestMatchSkillsFiltering:
         assert len(recommended) == 1
         assert recommended[0]["name"] == "health_research"
 
-
-class TestGenePatternContext:
-    """Test that gene_patterns are injected into task context."""
-
-    _snap = {"generation": 1, "alive": True, "paused": False,
-             "last_score": 0.9, "last_survived": True}
-
-    def test_gene_patterns_in_context(self):
-        """_build_task_context includes Proven Code Patterns section."""
-        genes = [
-            {"score": 0.85, "total_task_hits": 3, "gene_summary": "Use asyncio for I/O"},
-            {"score": 0.72, "total_task_hits": 1, "gene_summary": "Cache API responses"},
-        ]
-        ctx = _build_task_context(self._snap, "", gene_patterns=genes)
-        assert "## Proven Code Patterns" in ctx
-        assert "[score=0.85, tasks=3] Use asyncio for I/O" in ctx
-        assert "[score=0.72, tasks=1] Cache API responses" in ctx
-
-    def test_empty_gene_patterns_no_section(self):
-        """Empty gene_patterns -> no section in context."""
-        ctx = _build_task_context(self._snap, "", gene_patterns=[])
-        assert "Proven Code Patterns" not in ctx
-
-    def test_none_gene_patterns_no_section(self):
-        """gene_patterns=None -> no section in context."""
-        ctx = _build_task_context(self._snap, "", gene_patterns=None)
-        assert "Proven Code Patterns" not in ctx
-
-    def test_gene_summary_truncation(self):
-        """Gene summaries longer than 200 chars are truncated."""
-        long_summary = "A" * 250
-        genes = [{"score": 0.5, "total_task_hits": 0, "gene_summary": long_summary}]
-        ctx = _build_task_context(self._snap, "", gene_patterns=genes)
-        assert "Proven Code Patterns" in ctx
-        # Should be truncated to 197 chars + "..."
-        assert "A" * 197 + "..." in ctx
-        assert "A" * 200 not in ctx
 
 
 # ---------------------------------------------------------------------------

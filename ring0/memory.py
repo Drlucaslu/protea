@@ -45,6 +45,7 @@ _IMPORTANCE_BASE: dict[str, float] = {
     "observation": 0.3,
     "evolution_intent": 0.3,
     "semantic_rule": 0.8,
+    "reflection_finding": 0.65,
 }
 
 _KEYWORD_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -218,8 +219,8 @@ def _is_system_noise(entry_type: str, content: str) -> bool:
     - Never filter 'task' entries (user input is sacred)
     - Never filter 'directive' entries (high-value instructions)
     """
-    # CRITICAL: Never filter user tasks or directives
-    if entry_type in ("task", "directive"):
+    # CRITICAL: Never filter user tasks, directives, or reflection findings
+    if entry_type in ("task", "directive", "reflection_finding"):
         return False
 
     # Reflections are machine-generated and consumed in-context by the evolver.

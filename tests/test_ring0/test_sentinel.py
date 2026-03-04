@@ -16,7 +16,6 @@ from ring0.heartbeat import HeartbeatMonitor
 from ring0.sentinel import (
     _classify_failure,
     _compute_skill_hit_ratio,
-    _effective_cooldown,
     _read_ring2_output,
     _start_ring2,
     _stop_ring2,
@@ -356,25 +355,6 @@ class TestComputeSkillHitRatio:
         assert result["total"] == 2
         assert result["skill"] == 0
 
-
-class TestEffectiveCooldown:
-    """Verify _effective_cooldown scaling."""
-
-    def test_zero_ratio(self):
-        assert _effective_cooldown(1800, 0.0) == 1800
-
-    def test_full_ratio(self):
-        assert _effective_cooldown(1800, 1.0) == 5400  # 3.0x
-
-    def test_half_ratio(self):
-        assert _effective_cooldown(1800, 0.5) == 3600  # 2.0x
-
-    def test_clamp_above_one(self):
-        # ratio > 1.0 should be clamped to 3.0x
-        assert _effective_cooldown(1800, 1.5) == 5400
-
-    def test_quarter_ratio(self):
-        assert _effective_cooldown(1000, 0.25) == 1500  # 1.5x
 
 
 class TestConfigLoading:

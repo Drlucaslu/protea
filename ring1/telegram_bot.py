@@ -54,9 +54,8 @@ class SentinelState:
         "convergence_proposals", "_convergence_context",
         # Preference store reference (for feedback)
         "_preference_store",
-        # Output queue + evolution feedback
-        "output_queue", "gene_pool", "_last_gene_summary",
-        "_pending_evo_schedule",
+        # Output queue
+        "output_queue",
         # Nudge engine
         "nudge_queue", "_nudge_context", "_nudge_context_path",
         # Soul onboarding
@@ -101,11 +100,8 @@ class SentinelState:
         self.convergence_proposals: queue.Queue = queue.Queue()
         self._convergence_context: dict[str, dict] = {}
         self._preference_store = None  # Set by Sentinel after creation
-        # Output queue + evolution feedback
+        # Output queue
         self.output_queue = None  # Set by Sentinel after creation
-        self.gene_pool = None  # Set by Sentinel after creation
-        self._last_gene_summary: str = ""
-        self._pending_evo_schedule: dict | None = None
         # Nudge engine
         self.nudge_queue: queue.Queue = queue.Queue()
         self._nudge_context: dict[str, dict] = {}
@@ -163,8 +159,7 @@ class SentinelState:
                 "last_survived": self.last_survived,
                 "paused": self.pause_event.is_set(),
                 "p0_active": self.p0_active.is_set(),
-                "p1_active": self.p1_active.is_set(),
-                "evolution_directive": self.evolution_directive,
+                "p1_active": self.p1_active.is_set(),  # kept for compat
                 "task_queue_size": self.task_queue.qsize(),
                 "executor_alive": (
                     self.executor_thread is not None
@@ -1019,8 +1014,9 @@ class TelegramBot:
         lines.append(f"排队中 (Queued): {snap['task_queue_size']}")
         p0 = "是" if snap["p0_active"] else "否"
         lines.append(f"P0 执行中 (Active): {p0}")
-        directive = snap["evolution_directive"]
-        lines.append(f"进化指令 (Directive): {directive if directive else '(无)'}")
+        directive = self.state.evolution_directive
+        if directive:
+            lines.append(f"指令 (Directive): {directive}")
         # Recent tasks from store
         ts = self.state.task_store
         if ts:
@@ -1493,49 +1489,20 @@ class TelegramBot:
             self.state._convergence_context.pop(rule_key, None)
             return "好的，不保存这条规则。"
 
-        # --- evolution output callbacks ---
+        # --- output feedback callbacks ---
         if data.startswith("evo:accept:"):
             item_id = int(data.split(":")[-1])
             oq = getattr(self.state, 'output_queue', None)
             if oq:
-                item = oq.get_by_id(item_id)
                 oq.mark_feedback(item_id, "accepted")
-                gp = getattr(self.state, 'gene_pool', None)
-                if gp and item and item.get("gene_id"):
-                    try:
-                        gp.record_task_hits([item["gene_id"]], self.state.generation)
-                    except Exception:
-                        pass
-            return "\U0001f44d 已记录，将继续往这个方向进化！"
-
-        if data.startswith("evo:schedule:"):
-            item_id = int(data.split(":")[-1])
-            oq = getattr(self.state, 'output_queue', None)
-            if oq:
-                item = oq.get_by_id(item_id)
-                oq.mark_feedback(item_id, "scheduled")
-                gp = getattr(self.state, 'gene_pool', None)
-                if gp and item and item.get("gene_id"):
-                    try:
-                        gp.record_task_hits([item["gene_id"]], self.state.generation)
-                    except Exception:
-                        pass
-                self.state._pending_evo_schedule = item
-            return "多久执行一次？请回复，例如：每天、每小时、每周一"
+            return "\U0001f44d Noted!"
 
         if data.startswith("evo:reject:"):
             item_id = int(data.split(":")[-1])
             oq = getattr(self.state, 'output_queue', None)
             if oq:
-                item = oq.get_by_id(item_id)
                 oq.mark_feedback(item_id, "rejected")
-                gp = getattr(self.state, 'gene_pool', None)
-                if gp and item and item.get("gene_id"):
-                    try:
-                        gp.delete_gene(item["gene_id"])
-                    except Exception:
-                        pass
-            return "\U0001f44e 已删除，不会再往这个方向进化。"
+            return "\U0001f44e Noted, won't repeat."
 
         # --- habit callbacks ---
         if data.startswith("habit:schedule:"):
@@ -1871,35 +1838,6 @@ class TelegramBot:
                         # Check for text message
                         text = msg.get("text", "")
                         if not text:
-                            continue
-
-                        # Check if there's a pending evolution schedule reply
-                        pending_evo = getattr(self.state, '_pending_evo_schedule', None)
-                        if (pending_evo and text.strip()
-                                and not text.strip().startswith("/")):
-                            cron = _parse_schedule_text(text.strip())
-                            if cron and self.state.scheduled_store:
-                                try:
-                                    self.state.scheduled_store.add(
-                                        name=pending_evo["capability"],
-                                        task_text=pending_evo["summary"][:500],
-                                        cron_expr=cron,
-                                        chat_id=msg_chat_id,
-                                    )
-                                    self._send_reply(
-                                        f"\u2705 已创建定期任务: {pending_evo['capability']} ({cron})",
-                                        **_reply_kw,
-                                    )
-                                except Exception:
-                                    log.debug("Failed to create evo scheduled task", exc_info=True)
-                                    self._send_reply("创建定期任务失败，请重试。", **_reply_kw)
-                            else:
-                                self._send_reply(
-                                    "无法识别时间，请用：每天、每小时、每周一 等格式",
-                                    **_reply_kw,
-                                )
-                            self.state._pending_evo_schedule = None
-                            handled = True
                             continue
 
                         # Check for pending soul onboarding reply

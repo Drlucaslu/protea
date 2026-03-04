@@ -1,8 +1,8 @@
-"""Integration test: End-to-end pipeline from Task → Memory → Profile → Evolution.
+"""Integration test: End-to-end pipeline from Task → Memory → Profile → Preferences.
 
 Verifies the complete data flow:
   Task input → Memory storage → Profile update → Preference extraction →
-  Preference aggregation → Evolution prompt injection → Gene retention
+  Preference aggregation → Drift detection → Task alignment scoring
 
 Each test validates one link in the chain.  The final test runs the full
 pipeline end-to-end in a single temp database.
@@ -16,12 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ring0.fitness import FitnessTracker
-from ring0.gene_pool import GenePool
 from ring0.memory import MemoryStore, _compute_importance
 from ring0.preference_store import PreferenceStore
 from ring0.user_profile import UserProfiler
 from ring1.memory_curator import MemoryCurator
-from ring1.prompts import build_evolution_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +33,7 @@ def _make_db(tmp_path):
     profiler = UserProfiler(db)
     prefs = PreferenceStore(db, config={"moment_aggregation_threshold": 3})
     fitness = FitnessTracker(db)
-    genes = GenePool(db)
-    return db, memory, profiler, prefs, fitness, genes
+    return db, memory, profiler, prefs, fitness
 
 
 # ---------------------------------------------------------------------------
@@ -189,55 +186,7 @@ class TestPreferenceFlow:
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: Preferences → Evolution Prompt
-# ---------------------------------------------------------------------------
-
-
-class TestPreferencesInEvolution:
-    """Structured preferences appear in the evolution prompt."""
-
-    def test_preference_summary_text(self, tmp_path):
-        """Preferences generate a summary text for prompt injection."""
-        _, _, _, prefs, *_ = _make_db(tmp_path)
-
-        # Create aggregated preferences.
-        for _ in range(4):
-            prefs.store_moment("interest", "AI coding", "ai", "AI development")
-        for _ in range(4):
-            prefs.store_moment("tool", "Python scripting", "coding", "Python tools")
-        prefs.aggregate_moments()
-
-        summary = prefs.get_preference_summary_text()
-        assert len(summary) > 0
-        assert "preferences" in summary.lower() or "interest" in summary.lower()
-
-    def test_preferences_injected_into_evolution_prompt(self, tmp_path):
-        """build_evolution_prompt includes structured preferences section."""
-        _, _, _, prefs, *_ = _make_db(tmp_path)
-
-        for _ in range(4):
-            prefs.store_moment("interest", "AI coding", "ai", "AI development")
-        prefs.aggregate_moments()
-
-        pref_text = prefs.get_preference_summary_text()
-
-        system_prompt, user_prompt = build_evolution_prompt(
-            current_source="print('hello')",
-            fitness_history=[],
-            best_performers=[],
-            params={"generation": 100, "mutation_rate": 0.1},
-            generation=100,
-            survived=True,
-            structured_preferences=pref_text,
-        )
-
-        # Structured preferences are in user_prompt (parts), not system_prompt.
-        assert "Structured Preferences" in user_prompt
-        assert "AI" in user_prompt or "ai" in user_prompt.lower()
-
-
-# ---------------------------------------------------------------------------
-# Stage 5: Drift Detection → Directive
+# Stage 4: Drift Detection → Directive
 # ---------------------------------------------------------------------------
 
 
@@ -285,7 +234,7 @@ class TestDriftDetection:
 
 
 # ---------------------------------------------------------------------------
-# Stage 6: Task Alignment Scoring
+# Stage 5: Task Alignment Scoring
 # ---------------------------------------------------------------------------
 
 
@@ -294,7 +243,7 @@ class TestTaskAlignment:
 
     def test_alignment_bonus_applied(self, tmp_path):
         """Output containing user-interest keywords gets alignment bonus."""
-        _, _, profiler, _, fitness, _ = _make_db(tmp_path)
+        _, _, profiler, _, fitness = _make_db(tmp_path)
 
         # Build a profile with strong "coding" interest.
         for _ in range(5):
@@ -303,9 +252,6 @@ class TestTaskAlignment:
         categories = profiler.get_category_distribution()
         assert "coding" in categories
 
-        # Ring 2 output that mentions coding-related terms.
-        # score_task_alignment matches category name tokens against output tokens,
-        # so "coding" must appear literally in the output.
         output_lines = [
             "class CodeAnalyzer:",
             "    '''A coding assistant for source analysis.'''",
@@ -321,38 +267,7 @@ class TestTaskAlignment:
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: Gene Adoption Verification
-# ---------------------------------------------------------------------------
-
-
-class TestGeneAdoption:
-    """Genes used in evolved code get verified hits."""
-
-    def test_verify_adoption_records_hits(self, tmp_path):
-        """Genes whose tags appear in new source get hit count incremented."""
-        _, _, _, _, _, genes = _make_db(tmp_path)
-
-        # Add some genes with tags.
-        genes.add(100, 0.8, "class LogAnalyzer: ...", {"tags": ["log", "analyzer", "parsing"]})
-        genes.add(101, 0.7, "class WebScraper: ...", {"tags": ["web", "scraper", "http"]})
-
-        all_genes = genes.get_top(10)
-        gene_ids = [g["id"] for g in all_genes]
-
-        # New source code that uses "log" and "analyzer" but not "web"/"scraper".
-        new_source = """
-class LogPatternMatcher:
-    def analyze(self, log_lines):
-        patterns = self._extract_patterns(log_lines)
-        return self._score_anomalies(patterns)
-"""
-
-        adopted = genes.verify_adoption(new_source, gene_ids, generation=105)
-        assert len(adopted) >= 1  # At least the LogAnalyzer gene was adopted.
-
-
-# ---------------------------------------------------------------------------
-# Stage 8: Nightly Consolidation
+# Stage 6: Nightly Consolidation
 # ---------------------------------------------------------------------------
 
 
@@ -402,7 +317,7 @@ class TestNightlyConsolidation:
 
 
 # ---------------------------------------------------------------------------
-# Stage 9: Cross-Domain Search
+# Stage 7: Cross-Domain Search
 # ---------------------------------------------------------------------------
 
 
@@ -429,8 +344,6 @@ class TestCrossDomainSearch:
             user_profile={"categories": categories},
             limit=3,
         )
-        # Should find results (may or may not include cross-domain hits
-        # depending on keyword overlap).
         assert isinstance(results, list)
 
 
@@ -440,11 +353,11 @@ class TestCrossDomainSearch:
 
 
 class TestFullPipeline:
-    """End-to-end: task → memory → profile → preferences → evolution prompt."""
+    """End-to-end: task → memory → profile → preferences."""
 
     def test_full_flow(self, tmp_path):
-        """Trace data from a task all the way to the evolution prompt."""
-        db, memory, profiler, prefs, fitness, genes = _make_db(tmp_path)
+        """Trace data from a task all the way to preferences."""
+        db, memory, profiler, prefs, fitness = _make_db(tmp_path)
 
         # ── Step 1: User sends tasks ──
         tasks = [
@@ -493,27 +406,9 @@ class TestFullPipeline:
         assert len(preferences) >= 1
         assert any(p["category"] == "ai" for p in preferences)
 
-        # ── Step 5: Verify preferences in evolution prompt ──
+        # ── Step 5: Verify preference summary ──
         pref_summary = prefs.get_preference_summary_text()
         assert len(pref_summary) > 0
-
-        profile_text = profiler.get_profile_summary()
-
-        system_prompt, user_prompt = build_evolution_prompt(
-            current_source="class TextClassifier: pass",
-            fitness_history=[],
-            best_performers=[],
-            params={"generation": 100, "mutation_rate": 0.1},
-            generation=100,
-            survived=True,
-            user_profile_summary=profile_text,
-            structured_preferences=pref_summary,
-        )
-
-        # Structured preferences are in user_prompt (parts), not system_prompt.
-        assert "Structured Preferences" in user_prompt
-        # User profile should also be there.
-        assert "User Profile" in user_prompt or "user" in user_prompt.lower()
 
         # ── Step 6: Verify task alignment ──
         output_lines = [
@@ -526,16 +421,7 @@ class TestFullPipeline:
         assert isinstance(bonus, float)
         assert 0 <= bonus <= 0.10
 
-        # ── Step 7: Verify gene flow ──
-        genes.add(100, 0.85, "class NLPPipeline: ...",
-                  {"tags": ["nlp", "transformer", "classification"]})
-        top_genes = genes.get_top(5)
-        assert len(top_genes) >= 1
-        assert top_genes[0]["score"] == 0.85
-
         # ── Pipeline complete ──
-        # Summary: Task → Memory(4) → Profile(categories) → Preferences(1+)
-        #          → Evolution prompt(with prefs) → Alignment scoring → Gene pool
         stats = memory.get_stats()
         assert stats["total"] == 4
         assert stats["by_type"]["task"] == 4

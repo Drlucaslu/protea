@@ -213,19 +213,9 @@ class TestSentinelState:
         state = SentinelState()
         snap = state.snapshot()
         assert "p0_active" in snap
-        assert "evolution_directive" in snap
         assert "task_queue_size" in snap
         assert snap["p0_active"] is False
-        assert snap["evolution_directive"] == ""
         assert snap["task_queue_size"] == 0
-
-    def test_p1_active_field(self):
-        state = SentinelState()
-        assert not state.p1_active.is_set()
-        state.p1_active.set()
-        assert state.p1_active.is_set()
-        state.p1_active.clear()
-        assert not state.p1_active.is_set()
 
     def test_last_evolution_time_field(self):
         state = SentinelState()
@@ -682,7 +672,6 @@ class TestTasksCommand:
             assert "*任务队列 (Task Queue):*" in reply
             assert "排队中 (Queued): 0" in reply
             assert "P0 执行中 (Active): 否" in reply
-            assert "进化指令 (Directive): (无)" in reply
         finally:
             server.shutdown()
 

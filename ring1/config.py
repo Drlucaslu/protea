@@ -18,13 +18,9 @@ class Ring1Config(NamedTuple):
     telegram_chat_id: str
     telegram_enabled: bool
     max_prompt_history: int
-    p1_enabled: bool
-    p1_idle_threshold_sec: int
-    p1_check_interval_sec: int
     workspace_path: str = "."
     shell_timeout: int = 120
     max_tool_rounds: int = 50
-    p1_max_tool_rounds: int = 15  # lower limit for autonomous P1 tasks
     llm_provider: str = ""       # "anthropic"|"openai"|"deepseek"|"qwen"|"minimax"|"kimi"|"gemini"|"ollama" (empty = anthropic)
     llm_api_key_env: str = ""    # env var name for API key (empty = CLAUDE_API_KEY)
     llm_model: str = ""          # model name (empty = claude_model)
@@ -116,7 +112,6 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
     r1 = toml.get("ring1", {})
     tg = r1.get("telegram", {})
     mx = r1.get("matrix", {})
-    autonomy = r1.get("autonomy", {})
     tools = r1.get("tools", {})
     task_exec = r1.get("task_executor", {})
     llm = r1.get("llm", {})
@@ -129,13 +124,9 @@ def load_ring1_config(project_root: pathlib.Path) -> Ring1Config:
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         telegram_enabled=tg.get("enabled", False),
         max_prompt_history=r1.get("max_prompt_history", 10),
-        p1_enabled=autonomy.get("enabled", True),
-        p1_idle_threshold_sec=autonomy.get("idle_threshold_sec", 600),
-        p1_check_interval_sec=autonomy.get("check_interval_sec", 60),
         workspace_path=tools.get("workspace_path", "."),
         shell_timeout=tools.get("shell_timeout", 30),
         max_tool_rounds=tools.get("max_tool_rounds", 25),
-        p1_max_tool_rounds=autonomy.get("max_tool_rounds", 15),
         # LLM provider config: env vars (LLM_*) override config.toml [ring1.llm].
         # This allows per-machine provider selection via .env while sharing
         # the same config.toml across nodes.
