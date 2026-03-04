@@ -253,83 +253,13 @@ You are helpful and concise.  Answer the user's question or perform the requeste
 analysis.  You have context about your current state (generation, survival, code).
 Keep responses under 3500 characters so they fit in a Telegram message.
 
-⚠️ CRITICAL: PROGRESS REPORTING IS MANDATORY ⚠️
+PROGRESS REPORTING: For multi-step tasks, call message() to report progress between steps.
+Example: message("🔄 Searching...") → [do work] → message("✅ Done, analyzing...")
+Report before expensive operations and after each major step. Use emojis: 🔄 ✅ ❌ 📊 🔍.
 
-The message tool is your PRIMARY way to communicate progress during work.
-You MUST follow these rules WITHOUT EXCEPTION:
-
-WHEN TO REPORT:
-✓ Send initial message IMMEDIATELY when starting any task expected to take >10 seconds
-✓ Report after EACH major step in multi-step operations (>3 steps)
-✓ Report every 100 iterations in loops, OR every 10 seconds (whichever comes first)
-✓ Always report BEFORE starting expensive operations (web scraping, file processing)
-✓ When using spawn, the subagent MUST report MORE frequently (user can't see logs)
-
-HOW TO REPORT:
-✓ Use clear emojis: 🔄 (working), ✅ (done), ❌ (error), 📊 (analyzing), 🔍 (searching)
-✓ Include progress metrics: percentages, counts, time estimates when possible
-✓ Show what's next: always preview the upcoming step
-✓ Keep messages concise but informative
-
-EXAMPLE - Research Task:
-User asks: "Research quantum computing trends"
-Your response should include:
-  1. message("🔄 Starting research on quantum computing...\n\n**Phase 1**: Web search\n**Phase 2**: Content extraction\n**Phase 3**: Analysis")
-  2. [perform web_search]
-  3. message("✅ **Phase 1 Complete**: Found 10 sources\n\n🔄 **Phase 2**: Extracting content...")
-  4. [web_fetch multiple sources]
-  5. message("✅ **Phase 2 Complete**: Extracted 15,000 words from 10 sources\n\n🔄 **Phase 3**: Analyzing...")
-  6. [analyze content]
-  7. [provide final response with completion summary]
-
-You have access to the following tools:
-
-Web tools:
-- web_search: Search the web using DuckDuckGo. Use for research or lookup tasks.
-- web_fetch: Fetch and read the content of a specific URL.
-
-File tools:
-- read_file: Read a file's contents (with line numbers, offset, limit).
-- write_file: Write content to a file (creates parent dirs if needed).
-- edit_file: Search-and-replace edit on a file (old_string must be unique).
-- list_dir: List files and subdirectories.
-File tools operate within the project workspace and telegram_output/.
-NEVER read, scan, or index the user's personal directories (Documents,
-Downloads, Desktop, Pictures, etc.) — this is a strict privacy boundary.
-
-Shell tool:
-- exec: Execute a shell command (timeout 120s). Only truly destructive commands
-  (rm -rf /, dd, mkfs, shutdown, fork bombs) are blocked. You CAN run browsers,
-  install packages, start services, etc.
-
-Message tool:
-- message: Send a progress update to the user during multi-step work.
-
-Background tool:
-- spawn: Start a long-running background task. Results are sent via Telegram when done.
-
-Skill tools:
-- run_skill: Start a stored skill by name. Returns status, output, HTTP port.
-- view_skill: Read the source code and metadata of a stored skill.
-- edit_skill: Edit a skill's source code using search-and-replace (old_string must be unique).
-  After editing, use run_skill to restart the skill with the updated code.
-
-Schedule tool:
-- manage_schedule: Create, list, remove, enable, or disable scheduled/recurring tasks.
-  Use when the user wants timers, reminders, cron jobs, or repeating tasks.
-  Actions: create (needs name, cron_expr, task_text), list, remove, enable, disable.
-  For cron: use 5-field cron expressions (e.g. "*/5 * * * *" = every 5 minutes).
-  For one-shot: set schedule_type="once" and cron_expr to an ISO datetime.
-
-File delivery tool:
-- send_file: Send a local file to the user via Telegram.
-  Use AFTER writing or generating any file that the user needs.
-
-Use web tools when the user's request requires current information from the web.
-Use file/shell tools when the user asks to read, modify, or explore files and code.
-Use the message tool to keep the user informed during long operations.
-Use spawn for tasks that may take a long time (complex analysis, multi-file operations).
-Do NOT use tools for questions you can answer from your training data alone.
+Use the tools provided to complete the task. Refer to tool descriptions for usage.
+Key workflows: spawn for long tasks, send_file after generating any file, view_skill before using a skill's API.
+NEVER read/scan the user's personal directories (Documents, Downloads, Desktop, etc.).
 
 ANTI-FABRICATION RULES (严格执行):
 - NEVER describe tool calls you didn't make. If you say "I fetched X", you MUST
@@ -430,10 +360,10 @@ def _build_task_context(
     parts.append("")
 
     if ring2_source:
-        truncated = ring2_source[:2000]
-        if len(ring2_source) > 2000:
+        truncated = ring2_source[:500]
+        if len(ring2_source) > 500:
             truncated += "\n... (truncated)"
-        parts.append("## Current Ring 2 Code (first 2000 chars)")
+        parts.append("## Ring 2 Code")
         parts.append("```python")
         parts.append(truncated)
         parts.append("```")
@@ -469,34 +399,40 @@ def _build_task_context(
     # Skill sections: recommended first (if skill matching is active), then other.
     if recommended_skills:
         parts.append("")
-        parts.append("## ⚡ Recommended Skills (match your task — use these first)")
+        parts.append("## ⚡ Recommended Skills (use these first)")
         for skill in recommended_skills:
             name = skill.get("name", "?")
             desc = skill.get("description", "")
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
             parts.append(f"- **{name}**: {desc}")
         if other_skills:
             parts.append("")
-            parts.append("## Other Available Skills")
-            for skill in other_skills:
-                name = skill.get("name", "?")
-                desc = skill.get("description", "")
-                parts.append(f"- {name}: {desc}")
+            _MAX_OTHER_SKILLS = 20
+            other_names = [s.get("name", "?") for s in other_skills[:_MAX_OTHER_SKILLS]]
+            remaining = len(other_skills) - _MAX_OTHER_SKILLS
+            names_str = ", ".join(other_names)
+            if remaining > 0:
+                names_str += f" (and {remaining} more)"
+            parts.append(f"Other skills: {names_str}")
     elif other_skills:
-        # No recommended — show all as a flat list (fallback / prefer_local_skills off).
         parts.append("")
-        parts.append("## Available Skills")
-        for skill in other_skills:
-            name = skill.get("name", "?")
-            desc = skill.get("description", "")
-            parts.append(f"- {name}: {desc}")
+        _MAX_OTHER_SKILLS = 20
+        other_names = [s.get("name", "?") for s in other_skills[:_MAX_OTHER_SKILLS]]
+        remaining = len(other_skills) - _MAX_OTHER_SKILLS
+        names_str = ", ".join(other_names)
+        if remaining > 0:
+            names_str += f" (and {remaining} more)"
+        parts.append(f"Available skills: {names_str}")
     elif skills:
-        # Legacy path: plain skills list (no matching).
         parts.append("")
-        parts.append("## Available Skills")
-        for skill in skills:
-            name = skill.get("name", "?")
-            desc = skill.get("description", "")
-            parts.append(f"- {name}: {desc}")
+        _MAX_OTHER_SKILLS = 20
+        skill_names = [s.get("name", "?") for s in skills[:_MAX_OTHER_SKILLS]]
+        remaining = len(skills) - _MAX_OTHER_SKILLS
+        names_str = ", ".join(skill_names)
+        if remaining > 0:
+            names_str += f" (and {remaining} more)"
+        parts.append(f"Available skills: {names_str}")
 
     if chat_history:
         parts.append("")
@@ -520,9 +456,8 @@ def _build_task_context(
     if semantic_rules:
         parts.append("")
         parts.append("## Learned Patterns")
-        parts.append("These are observed patterns. If any conflicts with the Soul Profile above, the Soul Profile takes precedence.")
-        for rule in semantic_rules[:10]:
-            content = rule.get("content", "")[:150]
+        for rule in semantic_rules[:5]:
+            content = rule.get("content", "")[:100]
             parts.append(f"- {content}")
 
     return "\n".join(parts)
