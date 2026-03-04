@@ -101,11 +101,14 @@ dimensions = 256
 # api_url = "https://8f00b8b7.onetest02.olares.com/v1/chat/completions"
 
 # --- Qwen 3.5 online ---
-[ring1.llm]
-provider = "qwen"
-api_key_env = "DASHSCOPE_API_KEY"
-model = "qwen3.5-plus"
-max_tokens = 32768
+# [ring1.llm]
+# provider = "qwen"
+# api_key_env = "DASHSCOPE_API_KEY"
+# model = "qwen3.5-plus"
+# max_tokens = 32768
+#
+# LLM provider is configured per-machine via .env (LLM_PROVIDER, LLM_MODEL, etc.)
+# so config.toml stays provider-neutral across nodes.
 
 [ring1.skill_sandbox]
 enabled = true
