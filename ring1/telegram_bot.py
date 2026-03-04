@@ -186,6 +186,7 @@ class Task:
     reply_to_message_id: int | None = None
     created_at: float = field(default_factory=time.time)
     task_id: str = field(default_factory=lambda: f"t-{int(time.time() * 1000) % 1_000_000}")
+    exec_mode: str = "llm"  # "llm" (full LLM pipeline) or "shell" (direct script execution)
 
 
 # ---------------------------------------------------------------------------

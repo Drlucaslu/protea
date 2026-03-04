@@ -9,6 +9,7 @@ Pure stdlib — no external dependencies.
 from __future__ import annotations
 
 import pathlib
+import re
 import time
 import uuid
 from datetime import datetime
@@ -44,6 +45,8 @@ class ScheduledTaskStore(SQLiteStore):
             con.execute("ALTER TABLE scheduled_tasks ADD COLUMN expires_at REAL DEFAULT NULL")
         if "published_template_hash" not in cols:
             con.execute("ALTER TABLE scheduled_tasks ADD COLUMN published_template_hash TEXT DEFAULT NULL")
+        if "exec_mode" not in cols:
+            con.execute("ALTER TABLE scheduled_tasks ADD COLUMN exec_mode TEXT DEFAULT 'llm'")
 
     def add(
         self,
@@ -53,10 +56,14 @@ class ScheduledTaskStore(SQLiteStore):
         schedule_type: str = "cron",
         chat_id: str = "",
         expires_at: float | None = None,
+        exec_mode: str | None = None,
     ) -> str:
         """Insert a new scheduled task and return its schedule_id."""
         schedule_id = f"sched-{uuid.uuid4().hex[:8]}"
         now = time.time()
+
+        if exec_mode is None:
+            exec_mode = self.detect_exec_mode(task_text)
 
         # Compute next_run_at
         next_at = self._compute_next_run(cron_expr, schedule_type)
@@ -64,9 +71,9 @@ class ScheduledTaskStore(SQLiteStore):
         with self._connect() as con:
             con.execute(
                 "INSERT INTO scheduled_tasks "
-                "(schedule_id, name, task_text, chat_id, cron_expr, schedule_type, enabled, created_at, next_run_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
-                (schedule_id, name, task_text, chat_id, cron_expr, schedule_type, now, next_at, expires_at),
+                "(schedule_id, name, task_text, chat_id, cron_expr, schedule_type, enabled, created_at, next_run_at, expires_at, exec_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                (schedule_id, name, task_text, chat_id, cron_expr, schedule_type, now, next_at, expires_at, exec_mode),
             )
         return schedule_id
 
@@ -229,6 +236,29 @@ class ScheduledTaskStore(SQLiteStore):
                 "WHERE schedule_id = ?",
                 (template_hash, schedule_id),
             )
+
+    # ------------------------------------------------------------------
+    # Exec-mode detection
+    # ------------------------------------------------------------------
+
+    # Pattern: task text ends with "：<command>" or ": <command>" where command
+    # starts with a known interpreter (python3, bash, sh, node).
+    _SHELL_CMD_RE = re.compile(
+        r"[：:]\s*((?:python3?|bash|sh|node)\s+\S+.*)$"
+    )
+
+    @staticmethod
+    def detect_exec_mode(task_text: str) -> str:
+        """Return 'shell' if task_text contains a trailing shell command, else 'llm'."""
+        if ScheduledTaskStore._SHELL_CMD_RE.search(task_text):
+            return "shell"
+        return "llm"
+
+    @staticmethod
+    def extract_shell_command(task_text: str) -> str | None:
+        """Extract the shell command after the ：/: separator, or None."""
+        m = ScheduledTaskStore._SHELL_CMD_RE.search(task_text)
+        return m.group(1).strip() if m else None
 
     # ------------------------------------------------------------------
     # Helpers

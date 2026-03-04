@@ -624,6 +624,42 @@ class TaskExecutor:
         except Exception:
             log.error("Task recovery failed", exc_info=True)
 
+    def _execute_shell_task(self, task, reply_fn) -> None:
+        """Execute a shell-mode task directly via subprocess, bypassing the LLM."""
+        import subprocess
+        from ring0.scheduled_task_store import ScheduledTaskStore
+
+        command = ScheduledTaskStore.extract_shell_command(task.text)
+        if not command:
+            log.warning("Shell task but no command extracted, falling back to LLM: %s", task.text[:80])
+            self._execute_task_llm(task)
+            return
+
+        log.info("Shell bypass: %s", command[:120])
+        start = time.time()
+        try:
+            project_root = self.ring2_path.parent
+            result = subprocess.run(
+                command, shell=True, capture_output=True, timeout=120,
+                cwd=str(project_root), text=True,
+            )
+            output = result.stdout or ""
+            if result.returncode != 0 and result.stderr:
+                output += f"\n[stderr]\n{result.stderr}"
+            if not output.strip():
+                output = f"(completed with exit code {result.returncode})"
+        except subprocess.TimeoutExpired:
+            output = "[error] Command timed out after 120s"
+        except Exception as exc:
+            output = f"[error] {exc}"
+
+        elapsed = time.time() - start
+        footer = f"\n---\nshell | {elapsed:.0f}s"
+        try:
+            _send_segmented(reply_fn, output + footer)
+        except Exception:
+            log.error("Failed to send shell task reply", exc_info=True)
+
     def _execute_task(self, task) -> None:
         """Execute a single task: set p0_active -> LLM call -> reply -> clear."""
         log.info("P0 task received: %s", task.text[:80])
@@ -637,6 +673,30 @@ class TaskExecutor:
             self._last_chat_id = task_chat_id
         if self.reply_fn_factory and task_chat_id:
             task_reply_fn = self.reply_fn_factory(task_chat_id, reply_to_id)
+
+        # Shell-mode bypass: run script directly, skip LLM pipeline entirely.
+        if getattr(task, "exec_mode", "llm") == "shell":
+            start = time.time()
+            try:
+                if self.task_store:
+                    try:
+                        self.task_store.set_status(task.task_id, "executing")
+                    except Exception:
+                        pass
+                self._execute_shell_task(task, task_reply_fn)
+            finally:
+                self.state.p0_active.clear()
+                now = time.time()
+                with self.state.lock:
+                    self.state.last_task_completion = now
+                if self.task_store:
+                    try:
+                        self.task_store.set_status(task.task_id, "completed", "(shell)")
+                    except Exception:
+                        pass
+                log.info("Shell task done (%.1fs): %s", time.time() - start, task.text[:80])
+            return
+
         # Mark executing in store
         if self.task_store:
             try:

@@ -1236,6 +1236,7 @@ def run(project_root: pathlib.Path) -> None:
     last_injected_gene_ids: list[int] = []
     last_attributed_task_id: int = 0
     directive_remaining_cycles: int = 0
+    consecutive_evo_failures: int = 0   # Track consecutive evolution failures for backoff
     consecutive_plateau_skips: int = 0  # Track how many times plateau suppressed evolution
     auto_directive_attempt: int = 0    # Track auto-directive attempts for intent rotation
     _is_auto_directive: bool = False   # Whether current directive is auto-generated
@@ -1308,7 +1309,8 @@ def run(project_root: pathlib.Path) -> None:
                     due = scheduled_store.get_due(time.time())
                     for sched in due:
                         from ring1.telegram_bot import Task
-                        task = Task(text=sched["task_text"], chat_id=sched["chat_id"])
+                        task = Task(text=sched["task_text"], chat_id=sched["chat_id"],
+                                    exec_mode=sched.get("exec_mode", "llm"))
                         state.task_queue.put(task)
                         state.p0_event.set()
                         if sched["schedule_type"] == "cron":
@@ -1427,6 +1429,12 @@ def run(project_root: pathlib.Path) -> None:
                     except Exception:
                         pass
                 eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
+                # Apply exponential backoff on consecutive evolution failures.
+                if consecutive_evo_failures > 0:
+                    backoff = min(2 ** consecutive_evo_failures, 4)  # cap 4x
+                    eff_cooldown = int(eff_cooldown * backoff)
+                    log.info("Evolution backoff: %dx (failures=%d, cooldown=%ds)",
+                             backoff, consecutive_evo_failures, eff_cooldown)
 
                 with state.lock:
                     pending_directive = state.evolution_directive
@@ -1442,6 +1450,20 @@ def run(project_root: pathlib.Path) -> None:
                         consecutive_plateau_skips += 1
                         if consecutive_plateau_skips <= _MAX_PLATEAU_AUTO_DIRECTIVES:
                             auto_dir = _try_auto_directive(memory_store, user_profiler, project_root)
+                            if auto_dir:
+                                # Fuzzy dedup: discard if semantically similar to recent directives.
+                                is_dup = False
+                                if memory_store:
+                                    try:
+                                        is_dup = memory_store.is_duplicate_content(
+                                            "directive", auto_dir,
+                                            lookback=10, similarity_threshold=0.75,
+                                        )
+                                    except Exception:
+                                        pass
+                                if is_dup:
+                                    log.info("Auto-directive discarded (duplicate): %s", auto_dir[:80])
+                                    auto_dir = None
                             if auto_dir:
                                 with state.lock:
                                     state.evolution_directive = auto_dir
@@ -1539,11 +1561,15 @@ def run(project_root: pathlib.Path) -> None:
                         except Exception:
                             pass
                 if evolved:
+                    consecutive_evo_failures = 0
                     state.last_evolution_time = time.time()
                     try:
                         git.snapshot(f"gen-{generation} evolved")
                     except subprocess.CalledProcessError:
                         pass
+                else:
+                    consecutive_evo_failures += 1
+                    state.last_evolution_time = time.time()  # Enforce backed-off cooldown
 
                 # Notify.
                 if notifier:
@@ -1778,6 +1804,12 @@ def run(project_root: pathlib.Path) -> None:
                 except Exception:
                     pass
             eff_cooldown = _effective_cooldown(cooldown_sec, skill_hit["ratio"])
+            # Apply exponential backoff on consecutive evolution failures.
+            if consecutive_evo_failures > 0:
+                backoff = min(2 ** consecutive_evo_failures, 4)  # cap 4x
+                eff_cooldown = int(eff_cooldown * backoff)
+                log.info("Evolution backoff (death): %dx (failures=%d, cooldown=%ds)",
+                         backoff, consecutive_evo_failures, eff_cooldown)
 
             with state.lock:
                 pending_directive = state.evolution_directive
@@ -1865,11 +1897,15 @@ def run(project_root: pathlib.Path) -> None:
                     except Exception:
                         pass
             if evolved:
+                consecutive_evo_failures = 0
                 state.last_evolution_time = time.time()
                 try:
                     git.snapshot(f"gen-{generation} evolved-from-rollback")
                 except subprocess.CalledProcessError:
                     pass
+            else:
+                consecutive_evo_failures += 1
+                state.last_evolution_time = time.time()  # Enforce backed-off cooldown
 
             # Notify.
             if notifier:
