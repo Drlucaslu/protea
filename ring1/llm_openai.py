@@ -54,10 +54,55 @@ class OpenAIClient(LLMClient):
     def _call_api(self, payload: dict) -> dict:
         """POST *payload* to the chat completions endpoint with retry."""
         data = json.dumps(payload).encode("utf-8")
+        # --- Debug: dump full payload to log file ---
+        self._dump_payload(payload, len(data))
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return self._call_api_with_retry(self.api_url, data, headers)
+
+    @staticmethod
+    def _dump_payload(payload: dict, total_bytes: int) -> None:
+        """Append a debug snapshot of the LLM request to data/llm_debug.jsonl."""
+        import pathlib, time as _time
+        debug_path = pathlib.Path("data/llm_debug.jsonl")
+        try:
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            messages = payload.get("messages", [])
+            tools = payload.get("tools", [])
+            # Measure each component
+            system_msgs = [m for m in messages if m.get("role") == "system"]
+            user_msgs = [m for m in messages if m.get("role") == "user"]
+            asst_msgs = [m for m in messages if m.get("role") == "assistant"]
+            tool_msgs = [m for m in messages if m.get("role") == "tool"]
+            system_text = "\n".join(m.get("content", "") for m in system_msgs)
+            user_text = "\n".join(
+                m.get("content", "") if isinstance(m.get("content"), str)
+                else json.dumps(m.get("content", ""), ensure_ascii=False)
+                for m in user_msgs
+            )
+            tools_json = json.dumps(tools, ensure_ascii=False) if tools else ""
+            entry = {
+                "ts": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                "model": payload.get("model", ""),
+                "max_tokens": payload.get("max_tokens", 0),
+                "total_payload_bytes": total_bytes,
+                "system_prompt_chars": len(system_text),
+                "user_message_chars": len(user_text),
+                "tools_schema_chars": len(tools_json),
+                "num_tools": len(tools),
+                "num_messages": len(messages),
+                "msg_roles": [m.get("role", "?") for m in messages],
+                "num_assistant_msgs": len(asst_msgs),
+                "num_tool_result_msgs": len(tool_msgs),
+                "system_prompt": system_text[:5000],
+                "user_message": user_text[:3000],
+                "tools_schema": tools_json[:3000] if tools_json else "",
+            }
+            with open(debug_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass  # never break the API call
 
     # ------------------------------------------------------------------
     # Public: simple message (no tools)
