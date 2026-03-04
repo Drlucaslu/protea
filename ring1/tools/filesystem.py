@@ -329,6 +329,8 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
 
     # -- list_dir ---------------------------------------------------------
 
+    _LIST_DIR_MAX_ENTRIES = 200
+
     def _exec_list(inp: dict) -> str:
         path_str = inp.get("path", ".")
         try:
@@ -345,7 +347,7 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
             return f"Error listing directory: {exc}"
 
         lines = []
-        for entry in entries:
+        for entry in entries[:_LIST_DIR_MAX_ENTRIES]:
             try:
                 rel = entry.relative_to(workspace)
             except ValueError:
@@ -355,6 +357,9 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
 
         if not lines:
             return "(empty directory)"
+        remaining = len(entries) - _LIST_DIR_MAX_ENTRIES
+        if remaining > 0:
+            lines.append(f"\n... and {remaining} more entries (use a more specific path)")
         return "\n".join(lines)
 
     list_dir = Tool(
