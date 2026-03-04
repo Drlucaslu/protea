@@ -95,9 +95,9 @@ class OpenAIClient(LLMClient):
                 "msg_roles": [m.get("role", "?") for m in messages],
                 "num_assistant_msgs": len(asst_msgs),
                 "num_tool_result_msgs": len(tool_msgs),
-                "system_prompt": system_text[:5000],
-                "user_message": user_text[:3000],
-                "tools_schema": tools_json[:3000] if tools_json else "",
+                "system_prompt": system_text[:10000],
+                "user_message": user_text[:20000],
+                "tools_schema": tools_json[:10000] if tools_json else "",
             }
             with open(debug_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
