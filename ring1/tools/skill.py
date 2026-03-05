@@ -110,8 +110,78 @@ def make_run_skill_tool(skill_store, skill_runner) -> Tool:
     )
 
 
+def _extract_skeleton(source: str) -> str:
+    """Extract module docstring, imports, constants, and class/function signatures.
+
+    Skips function bodies to keep the output compact while preserving
+    all the information needed to understand the skill's API.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source[:3000] + "\n... (parse error, truncated)"
+
+    lines = source.splitlines()
+    parts: list[str] = []
+
+    # Module docstring
+    ds = ast.get_docstring(tree, clean=True)
+    if ds:
+        parts.append('"""' + ds + '"""')
+        parts.append("")
+
+    def _func_sig(node) -> str:
+        start = node.lineno - 1
+        sig_lines = []
+        for i in range(start, min(start + 5, len(lines))):
+            sig_lines.append(lines[i])
+            if lines[i].rstrip().endswith(":"):
+                break
+        sig = "\n".join(sig_lines)
+        fds = ast.get_docstring(node, clean=True)
+        if fds:
+            indent = "    " * (1 + (node.col_offset // 4))
+            sig += f"\n{indent}" + '"""' + fds.split("\n")[0] + '"""'
+        sig += "\n" + "    " * (1 + (node.col_offset // 4)) + "..."
+        return sig
+
+    def _class_sig(node) -> str:
+        start = node.lineno - 1
+        sig_lines = []
+        for i in range(start, min(start + 3, len(lines))):
+            sig_lines.append(lines[i])
+            if lines[i].rstrip().endswith(":"):
+                break
+        sig = "\n".join(sig_lines)
+        cds = ast.get_docstring(node, clean=True)
+        if cds:
+            sig += '\n    """' + cds.split("\n")[0] + '"""'
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                sig += "\n" + _func_sig(child)
+        return sig
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            seg = ast.get_source_segment(source, node)
+            if seg:
+                parts.append(seg)
+        elif isinstance(node, ast.Assign):
+            seg = ast.get_source_segment(source, node)
+            if seg and len(seg) < 120:
+                parts.append(seg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            parts.append(_func_sig(node))
+        elif isinstance(node, ast.ClassDef):
+            parts.append(_class_sig(node))
+
+    return "\n".join(parts)
+
+
 def make_view_skill_tool(skill_store) -> Tool:
-    """Create a Tool that reads a stored skill's source code and metadata."""
+    """Create a Tool that reads a stored skill's signature skeleton and metadata."""
 
     def _exec_view_skill(inp: dict) -> str:
         skill_name = inp["skill_name"]
@@ -119,14 +189,17 @@ def make_view_skill_tool(skill_store) -> Tool:
         if skill is None:
             return f"Error: skill '{skill_name}' not found."
 
+        source = skill.get("source_code", "")
+        skeleton = _extract_skeleton(source)
+
         parts = [
             f"Name: {skill.get('name', '')}",
             f"Description: {skill.get('description', '')}",
             f"Tags: {skill.get('tags', [])}",
             "",
-            "Source code:",
+            f"Source skeleton ({len(source)} chars full, use read_file for complete code):",
             "```python",
-            skill.get("source_code", ""),
+            skeleton,
             "```",
         ]
         return "\n".join(parts)
@@ -134,8 +207,8 @@ def make_view_skill_tool(skill_store) -> Tool:
     return Tool(
         name="view_skill",
         description=(
-            "Read the source code and metadata of a stored Protea skill. "
-            "Use this to inspect a skill before editing or debugging it."
+            "View a skill's API skeleton: docstrings, imports, class/function signatures. "
+            "Use read_file on the skill file for full source code."
         ),
         input_schema={
             "type": "object",
