@@ -808,17 +808,6 @@ def run(project_root: pathlib.Path) -> None:
                         generation, score, True, last_good_hash or "unknown",
                     )
 
-                # Reflection trigger: after task completion (event-driven).
-                if reflector and state.last_task_completion > last_reflection_time:
-                    if time.time() - last_reflection_time > r0.reflection_cooldown_sec:
-                        try:
-                            proposals = reflector.reflect_after_task()
-                            if proposals:
-                                reflector.process_proposals(proposals)
-                            last_reflection_time = time.time()
-                        except Exception:
-                            log.debug("Post-task reflection failed", exc_info=True)
-
                 # Next generation.
                 generation += 1
 
@@ -891,11 +880,22 @@ def run(project_root: pathlib.Path) -> None:
 
             # --- heartbeat check ---
             if hb.is_alive():
-                # Idle reflection check.
                 if reflector:
-                    idle_since_task = time.time() - state.last_task_completion
-                    if (idle_since_task > r0.reflection_idle_threshold_sec
-                            and time.time() - last_reflection_time > r0.reflection_idle_threshold_sec):
+                    now = time.time()
+                    since_last = now - last_reflection_time
+                    # Post-task reflection: fires after any task completion.
+                    if (state.last_task_completion > last_reflection_time
+                            and since_last > r0.reflection_cooldown_sec):
+                        try:
+                            proposals = reflector.reflect_after_task()
+                            if proposals:
+                                reflector.process_proposals(proposals)
+                            last_reflection_time = time.time()
+                        except Exception:
+                            log.debug("Post-task reflection failed", exc_info=True)
+                    # Idle reflection: deep reflection during quiet periods.
+                    elif (now - state.last_task_completion > r0.reflection_idle_threshold_sec
+                            and since_last > r0.reflection_cooldown_sec):
                         try:
                             proposals = reflector.reflect_on_idle()
                             if proposals:
