@@ -18,7 +18,7 @@ log = logging.getLogger("protea.reflector")
 
 
 class ReflectionProposal(NamedTuple):
-    category: str       # "ring2_patch", "memory_cleanup", "config_tune", "task_pattern"
+    category: str       # "memory_cleanup", "config_tune", "task_pattern"
     description: str    # human-readable description
     confidence: float   # 0.0-1.0
     dimensions: dict    # multi-dimensional scores
@@ -31,7 +31,6 @@ CATEGORY_RISK = {
     "memory_cleanup": 0.2,
     "task_pattern": 0.3,
     "config_tune": 0.4,
-    "ring2_patch": 0.7,
 }
 
 DIMENSION_WEIGHTS = {
@@ -43,18 +42,24 @@ DIMENSION_WEIGHTS = {
 
 # Reflection system prompt.
 _REFLECTION_SYSTEM_PROMPT = """\
-You are the reflection engine for Protea, a self-evolving AI system.
+You are the reflection engine for Protea, a personal AI assistant system.
 Analyze task execution data and identify actionable improvements.
+
+## Important Context
+- Ring 2 code is NOT auto-evolved. It runs the same code every generation.
+- Stable/unchanged fitness scores across generations are NORMAL, not a problem.
+- Do NOT suggest evolution-related actions (mutation, population, crossover, etc.).
+- Focus on task quality, token efficiency, memory health, and config tuning.
 
 ## Evaluation Dimensions
 1. Task effectiveness: Were tasks completed correctly? Any failures/timeouts/retries?
 2. Token efficiency: Are input/output tokens reasonable? Any waste?
-3. System health: Ring 2 fitness trends, error patterns
-4. Memory quality: Any contradictory/outdated memories? Is retrieval effective?
+3. Memory quality: Any contradictory/outdated memories? Is retrieval effective?
+4. Config optimization: Any settings that could be tuned for better performance?
 
 ## Response Format
 JSON array. Each proposal:
-- category: "ring2_patch" | "memory_cleanup" | "config_tune" | "task_pattern"
+- category: "memory_cleanup" | "config_tune" | "task_pattern"
 - description: What to change and why (concise)
 - confidence: 0.0-1.0 (based on evidence strength)
 - evidence: [specific observations] (must have data support, no speculation)
@@ -64,8 +69,9 @@ Return [] when no improvements needed. Prefer no proposals over low-quality ones
 """
 
 _IDLE_REFLECTION_SYSTEM_PROMPT = """\
-You are the reflection engine for Protea, a self-evolving AI system.
+You are the reflection engine for Protea, a personal AI assistant system.
 The system has been idle. Perform a deep review including memory organization.
+Ring 2 code is NOT auto-evolved — do NOT suggest evolution-related changes.
 
 ## Review Areas
 1. Memory health: contradictions, stale entries, organization opportunities
@@ -224,9 +230,6 @@ class Reflector:
             elif category == "config_tune":
                 log.info("Config tune proposal noted: %s", proposal.description[:80])
                 return True  # Config changes are advisory only.
-            elif category == "ring2_patch":
-                log.info("Ring2 patch proposal noted: %s", proposal.description[:80])
-                return True  # Ring2 patches need manual review.
             else:
                 log.warning("Unknown proposal category: %s", category)
                 return False
@@ -293,7 +296,6 @@ class Reflector:
 
         # Impact scope: category-dependent.
         impact_map = {
-            "ring2_patch": 0.8,
             "config_tune": 0.5,
             "memory_cleanup": 0.4,
             "task_pattern": 0.6,
@@ -309,7 +311,6 @@ class Reflector:
             "memory_cleanup": 0.7,
             "task_pattern": 1.0,
             "config_tune": 0.8,
-            "ring2_patch": 0.3,
         }
         reversibility = reversibility_map.get(category, 0.5)
 
@@ -371,21 +372,6 @@ class Reflector:
                         f"tools={tools} skills={skills}"
                     )
                 parts.append("")
-            except Exception:
-                pass
-
-        # Recent fitness scores.
-        if self.fitness:
-            try:
-                history = self.fitness.get_history(limit=5)
-                if history:
-                    parts.append("## Recent Fitness")
-                    for h in history:
-                        parts.append(
-                            f"- gen={h.get('generation')} score={h.get('score', 0):.3f} "
-                            f"survived={h.get('survived')}"
-                        )
-                    parts.append("")
             except Exception:
                 pass
 
