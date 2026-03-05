@@ -155,6 +155,8 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
 
     # -- read_file --------------------------------------------------------
 
+    _READ_FILE_MAX_CHARS = 30_000  # Hard cap on returned content
+
     def _exec_read(inp: dict) -> str:
         try:
             target = _resolve_safe(workspace, inp["path"])
@@ -170,14 +172,24 @@ def make_filesystem_tools(workspace_path: str) -> list[Tool]:
             return f"Error reading file: {exc}"
 
         lines = text.splitlines(keepends=True)
+        total_lines = len(lines)
         offset = inp.get("offset", 0)
-        limit = inp.get("limit", len(lines))
+        limit = inp.get("limit", total_lines)
         selected = lines[offset : offset + limit]
 
         # Add line numbers
         numbered = []
+        char_count = 0
         for i, line in enumerate(selected, start=offset + 1):
-            numbered.append(f"{i:>6}\t{line}")
+            entry = f"{i:>6}\t{line}"
+            char_count += len(entry)
+            if char_count > _READ_FILE_MAX_CHARS:
+                numbered.append(
+                    f"\n... truncated at {_READ_FILE_MAX_CHARS} chars "
+                    f"(file has {total_lines} lines, use offset/limit to read more)"
+                )
+                break
+            numbered.append(entry)
         return "".join(numbered)
 
     read_file = Tool(
