@@ -51,6 +51,7 @@ provider = "local"              # "openai" | "local" | "none"
 api_key_env = "OPENAI_API_KEY"  # environment variable name
 model = "text-embedding-3-small"
 dimensions = 256
+context_token_budget = 3000     # token budget for context fragment selection
 
 # [ring1.llm]
 # provider = "openai"         # anthropic | openai | deepseek | qwen

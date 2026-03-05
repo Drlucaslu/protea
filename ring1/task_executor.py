@@ -318,8 +318,28 @@ def _build_task_context(
     semantic_rules: list[dict] | None = None,
     strategies: list[dict] | None = None,
     reflections: list[dict] | None = None,
+    fragment_registry=None,
+    task_text: str | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
+    # Fragment-based path: rank and select by relevance within token budget.
+    if fragment_registry and task_text:
+        fragments = fragment_registry.collect(
+            state_snapshot, ring2_source, memories, skills,
+            recommended_skills, other_skills, semantic_rules,
+            strategies, reflections, recalled, chat_history,
+        )
+        ranked = fragment_registry.rank(fragments, task_text)
+        selected = fragment_registry.select(ranked)
+        log.info(
+            "Context fragmentation: %d fragments collected, %d selected (%d/%d tokens)",
+            len(fragments), len(selected),
+            sum(f.token_est for f in selected),
+            fragment_registry.token_budget,
+        )
+        return fragment_registry.assemble(selected)
+
+    # Fallback: original concatenation logic.
     from datetime import datetime
     parts = ["## Protea State"]
     parts.append(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %A')}")
@@ -690,7 +710,7 @@ class TaskExecutor:
                             emb = vecs[0] if vecs else None
                         except Exception:
                             pass
-                    recalled = self.memory_store.recall(keywords, emb, limit=2)
+                    recalled = self.memory_store.recall(keywords, query_embedding=emb, limit=2)
                 except Exception:
                     pass
 
@@ -745,6 +765,16 @@ class TaskExecutor:
                 except Exception:
                     pass
 
+            # Build fragment registry for context selection (if embedding available).
+            frag_registry = None
+            if self.embedding_provider:
+                try:
+                    from ring1.context_fragments import FragmentRegistry
+                    budget = getattr(self, '_context_token_budget', 3000)
+                    frag_registry = FragmentRegistry(self.embedding_provider, token_budget=budget)
+                except Exception:
+                    log.debug("FragmentRegistry init failed", exc_info=True)
+
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
                 chat_history=history, recalled=recalled,
@@ -753,6 +783,8 @@ class TaskExecutor:
                 semantic_rules=semantic_rules,
                 strategies=strategies,
                 reflections=reflections,
+                fragment_registry=frag_registry,
+                task_text=task.text,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -1256,6 +1288,10 @@ def create_executor(
         reply_fn_factory=reply_fn_factory,
     )
     executor.subagent_manager = subagent_mgr
+
+    # Context fragment token budget from config.
+    emb_cfg = getattr(config, "_raw_cfg", {}).get("ring1", {}).get("embeddings", {})
+    executor._context_token_budget = emb_cfg.get("context_token_budget", 3000)
 
     # Initialize preference extractor.
     if preference_store:

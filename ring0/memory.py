@@ -453,6 +453,30 @@ class MemoryStore(SQLiteStore):
             self._auto_link(con, rowid, keywords)
             return rowid  # type: ignore[return-value]
 
+    def add_with_embedding(
+        self,
+        generation: int,
+        entry_type: str,
+        content: str,
+        metadata: dict | None = None,
+        embedding: list[float] | None = None,
+        importance: float | None = None,
+    ) -> int:
+        """Insert a memory entry with an optional embedding vector.
+
+        Same pipeline as ``add()`` but also stores the embedding as JSON
+        in the ``embedding`` column.
+        """
+        rowid = self.add(generation, entry_type, content, metadata, importance)
+        if rowid > 0 and embedding is not None:
+            emb_json = json.dumps(embedding)
+            with self._connect() as con:
+                con.execute(
+                    "UPDATE memory SET embedding = ? WHERE id = ?",
+                    (emb_json, rowid),
+                )
+        return rowid
+
     def get_recent(self, limit: int = 10) -> list[dict]:
         """Return the most recent non-archived entries ordered by *id* descending."""
         with self._connect() as con:
@@ -578,17 +602,21 @@ class MemoryStore(SQLiteStore):
     def recall(
         self,
         keywords: list[str],
+        query_embedding: list[float] | None = None,
         limit: int = 2,
     ) -> list[dict]:
         """Search only the archive tier for related old memories.
 
         Uses keyword search restricted to archive with time decay.
+        When ``query_embedding`` is provided, entries with stored embeddings
+        get a cosine-similarity boost for reranking.
         Returns entries with ``recalled = True`` marker, or empty list.
         """
         if not keywords:
             return []
 
         import datetime
+        import math
 
         with self._connect() as con:
             rows = con.execute(
@@ -625,6 +653,23 @@ class MemoryStore(SQLiteStore):
                 decay = max(0.1, 1.0 - (age_days / 90))
                 importance = row["importance"] or 0.5
                 final_score = kw_score * decay * importance
+
+                # Embedding reranking boost.
+                if query_embedding is not None:
+                    emb_str = row["embedding"] or ""
+                    if emb_str:
+                        try:
+                            entry_emb = json.loads(emb_str)
+                            dot = sum(a * b for a, b in zip(query_embedding, entry_emb))
+                            na = math.sqrt(sum(a * a for a in query_embedding))
+                            nb = math.sqrt(sum(b * b for b in entry_emb))
+                            if na > 0 and nb > 0:
+                                sim = dot / (na * nb)
+                                # Blend: 70% keyword, 30% embedding similarity
+                                final_score = 0.7 * final_score + 0.3 * max(0.0, sim)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                 d["search_score"] = round(final_score, 4)
                 d["recalled"] = True
                 scored.append((final_score, d))
@@ -940,6 +985,7 @@ class MemoryStore(SQLiteStore):
         current_task: str,
         user_profile: dict,
         limit: int = 3,
+        query_embedding: list[float] | None = None,
     ) -> list[dict]:
         """Cross-domain associative search: find memories from *different* domains
         that might inspire connections with the current task.
@@ -1012,6 +1058,21 @@ class MemoryStore(SQLiteStore):
 
             if other_overlap > 0 and task_overlap > 0:
                 score = (other_overlap * 0.6 + task_overlap * 0.4) / max(len(entry_kw), 1)
+                # Embedding boost if available.
+                if query_embedding is not None:
+                    emb_str = entry.get("embedding", "") or ""
+                    if emb_str:
+                        try:
+                            import math
+                            entry_emb = json.loads(emb_str) if isinstance(emb_str, str) else emb_str
+                            dot = sum(a * b for a, b in zip(query_embedding, entry_emb))
+                            na = math.sqrt(sum(a * a for a in query_embedding))
+                            nb = math.sqrt(sum(b * b for b in entry_emb))
+                            if na > 0 and nb > 0:
+                                sim = max(0.0, dot / (na * nb))
+                                score = 0.7 * score + 0.3 * sim
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
                 entry["cross_domain_score"] = round(score, 4)
                 results.append((score, entry))
 
