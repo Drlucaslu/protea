@@ -110,9 +110,9 @@ class PreferenceExtractor:
             return 0
 
         # Build user message.
-        user_msg = f"Task: {task_text[:500]}"
+        user_msg = f"Task: {task_text[:1000]}"
         if response_text:
-            user_msg += f"\nResponse summary: {response_text[:200]}"
+            user_msg += f"\nResponse summary: {response_text[:800]}"
 
         try:
             result = self._client.send_message(_build_system_prompt(), user_msg)

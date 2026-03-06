@@ -552,7 +552,7 @@ class PreferenceStore:
             p for p in profile["preferences"] if p["confidence"] >= 0.5
         ]
         if high_conf:
-            pref_parts = [f"{p['value']} ({p['confidence']:.0%})" for p in high_conf[:5]]
+            pref_parts = [f"{p['value']} ({p['confidence']:.0%})" for p in high_conf[:15]]
             parts.append(f"Strong preferences: {', '.join(pref_parts)}")
 
         parts.append(

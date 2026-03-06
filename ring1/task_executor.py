@@ -432,21 +432,21 @@ def _build_task_context(
         parts.append("## Recalled Memories")
         for mem in recalled:
             gen = mem.get("generation", "?")
-            content = mem.get("content", "")[:200]
+            content = mem.get("content", "")[:400]
             parts.append(f"- [Gen {gen}, archived] {content}")
 
     if semantic_rules:
         parts.append("")
         parts.append("## Learned Patterns")
-        for rule in semantic_rules[:5]:
-            content = rule.get("content", "")[:100]
+        for rule in semantic_rules[:10]:
+            content = rule.get("content", "")[:300]
             parts.append(f"- {content}")
 
     if reflections:
         parts.append("")
         parts.append("## Past Reflections (lessons from similar tasks)")
-        for ref in reflections[:3]:
-            content = ref.get("content", "")[:200]
+        for ref in reflections[:5]:
+            content = ref.get("content", "")[:400]
             parts.append(f"- {content}")
 
     if preference_summary:
@@ -1022,7 +1022,7 @@ class TaskExecutor:
                 try:
                     self.preference_extractor.extract_and_store(
                         task_text=memory_text,
-                        response_text=response[:200],
+                        response_text=response[:800],
                         category_hint=dominant_category,
                     )
                 except Exception:

@@ -198,15 +198,15 @@ class NudgeEngine:
         self, task_text: str, response: str, context: dict,
     ) -> str:
         parts: list[str] = []
-        parts.append(f"Task: {task_text[:200]}")
-        parts.append(f"Response summary: {response[:300]}")
+        parts.append(f"Task: {task_text[:500]}")
+        parts.append(f"Response summary: {response[:600]}")
 
         # User profile
         if self._user_profiler:
             try:
                 summary = self._user_profiler.get_profile_summary()
                 if summary:
-                    parts.append(f"User profile: {summary[:200]}")
+                    parts.append(f"User profile: {summary[:400]}")
             except Exception:
                 pass
 
@@ -238,7 +238,7 @@ class NudgeEngine:
             try:
                 summary = self._user_profiler.get_profile_summary()
                 if summary:
-                    parts.append(f"User profile: {summary[:200]}")
+                    parts.append(f"User profile: {summary[:400]}")
             except Exception:
                 pass
 

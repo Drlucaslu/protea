@@ -243,7 +243,7 @@ class FragmentRegistry:
             lines = ["", "## Recalled Memories"]
             for mem in recalled:
                 gen = mem.get("generation", "?")
-                content = mem.get("content", "")[:200]
+                content = mem.get("content", "")[:400]
                 lines.append(f"- [Gen {gen}, archived] {content}")
             tag = _classify_text("\n".join(lines))
             fragments.append(Fragment(
@@ -255,8 +255,8 @@ class FragmentRegistry:
         # 9. Semantic rules
         if semantic_rules:
             lines = ["", "## Learned Patterns"]
-            for rule in semantic_rules[:5]:
-                content = rule.get("content", "")[:100]
+            for rule in semantic_rules[:10]:
+                content = rule.get("content", "")[:300]
                 lines.append(f"- {content}")
             tag = _classify_text("\n".join(lines))
             fragments.append(Fragment(
@@ -268,8 +268,8 @@ class FragmentRegistry:
         # 10. Reflections
         if reflections:
             lines = ["", "## Past Reflections (lessons from similar tasks)"]
-            for ref in reflections[:3]:
-                content = ref.get("content", "")[:200]
+            for ref in reflections[:5]:
+                content = ref.get("content", "")[:400]
                 lines.append(f"- {content}")
             tag = _classify_text("\n".join(lines))
             fragments.append(Fragment(
