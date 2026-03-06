@@ -129,6 +129,7 @@ class FragmentRegistry:
         reflections: list[dict] | None = None,
         recalled: list[dict] | None = None,
         chat_history: list[tuple[str, str]] | None = None,
+        preference_summary: str | None = None,
     ) -> list[Fragment]:
         """Split all context sources into Fragment objects."""
         fragments: list[Fragment] = []
@@ -275,6 +276,14 @@ class FragmentRegistry:
                 tag=tag, section="reflections",
                 content="\n".join(lines),
                 importance=0.7,
+            ))
+
+        # 11. User preferences (structured, from preference_store)
+        if preference_summary:
+            fragments.append(Fragment(
+                tag="global", section="state",
+                content="\n## User Preferences\n" + preference_summary,
+                importance=0.9,
             ))
 
         return fragments

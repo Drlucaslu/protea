@@ -320,6 +320,7 @@ def _build_task_context(
     reflections: list[dict] | None = None,
     fragment_registry=None,
     task_text: str | None = None,
+    preference_summary: str | None = None,
 ) -> str:
     """Build context string from current Protea state for LLM task calls."""
     # Fragment-based path: rank and select by relevance within token budget.
@@ -328,6 +329,7 @@ def _build_task_context(
             state_snapshot, ring2_source, memories, skills,
             recommended_skills, other_skills, semantic_rules,
             strategies, reflections, recalled, chat_history,
+            preference_summary=preference_summary,
         )
         ranked = fragment_registry.rank(fragments, task_text)
         selected = fragment_registry.select(ranked)
@@ -446,6 +448,11 @@ def _build_task_context(
         for ref in reflections[:3]:
             content = ref.get("content", "")[:200]
             parts.append(f"- {content}")
+
+    if preference_summary:
+        parts.append("")
+        parts.append("## User Preferences")
+        parts.append(preference_summary)
 
     return "\n".join(parts)
 
@@ -775,6 +782,14 @@ class TaskExecutor:
                 except Exception:
                     log.debug("FragmentRegistry init failed", exc_info=True)
 
+            # Fetch structured preference summary.
+            pref_summary = ""
+            if self.preference_store:
+                try:
+                    pref_summary = self.preference_store.get_preference_summary_text()
+                except Exception:
+                    log.debug("Failed to get preference summary", exc_info=True)
+
             context = _build_task_context(
                 snap, ring2_source, memories=memories,
                 chat_history=history, recalled=recalled,
@@ -785,6 +800,7 @@ class TaskExecutor:
                 reflections=reflections,
                 fragment_registry=frag_registry,
                 task_text=task.text,
+                preference_summary=pref_summary,
             )
             user_message = f"{context}\n\n## User Request\n{task.text}"
 
@@ -878,7 +894,8 @@ class TaskExecutor:
                 self._record_history(task.text, response)
 
             # Check for correction pattern and persist as semantic_rule.
-            self._check_and_store_correction(task.text)
+            # Use stripped text to avoid storing conversation metadata as rules.
+            self._check_and_store_correction(_strip_context_prefix(task.text))
 
             # Multi-round convergence detection.
             if self.convergence_detector:
