@@ -657,9 +657,11 @@ def run(project_root: pathlib.Path) -> None:
     except Exception as exc:
         log.debug("Reflector not available: %s", exc)
 
-    # Pass reflector to executor for task context augmentation.
-    if reflector and executor:
-        executor.reflector = reflector
+    # Pass reflector to executor and state for task context augmentation + approval.
+    if reflector:
+        if executor:
+            executor.reflector = reflector
+        state.reflector = reflector
 
     try:
         params = generate_params(generation, 42)

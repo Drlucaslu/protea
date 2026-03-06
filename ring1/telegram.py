@@ -50,6 +50,35 @@ class TelegramNotifier:
             log.debug("Telegram send failed", exc_info=True)
             return False
 
+    def send_with_keyboard(self, text: str, buttons: list[list[dict]]) -> int | None:
+        """Send message with inline keyboard. Returns message_id or None."""
+        if not self.chat_id:
+            return None
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": {
+                "inline_keyboard": buttons,
+            },
+        }
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                self._url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                if body.get("ok"):
+                    return body.get("result", {}).get("message_id")
+                return None
+        except Exception:
+            log.debug("Telegram send_with_keyboard failed", exc_info=True)
+            return None
+
     def notify_generation_complete(
         self,
         generation: int,

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import pathlib
+import re
+import subprocess
 import time
 from typing import NamedTuple
 
@@ -199,10 +202,27 @@ class Reflector:
                          proposal.description[:80], proposal.confidence)
                 success = self.execute_proposal(proposal)
                 outcome = "auto_applied" if success else "auto_failed"
+                self._store_reflection(proposal, outcome)
             else:
                 log.info("Proposal needs approval: %s (conf=%.2f)",
                          proposal.description[:80], proposal.confidence)
-                if self.notifier:
+                # Store first to get memory ID for callback buttons.
+                entry_id = self._store_reflection(proposal, "pending")
+                if self.notifier and entry_id > 0:
+                    try:
+                        text = (
+                            f"*\\[Reflection\\] {proposal.category}*\n"
+                            f"{proposal.description}\n"
+                            f"Confidence: {proposal.confidence:.0%}"
+                        )
+                        buttons = [[
+                            {"text": "\u2705 执行", "callback_data": f"proposal:approve:{entry_id}"},
+                            {"text": "\u274c 拒绝", "callback_data": f"proposal:reject:{entry_id}"},
+                        ]]
+                        self.notifier.send_with_keyboard(text, buttons)
+                    except Exception:
+                        pass
+                elif self.notifier:
                     try:
                         self.notifier.notify_error(
                             0,
@@ -211,10 +231,6 @@ class Reflector:
                         )
                     except Exception:
                         pass
-                outcome = "pending"
-
-            # Store in episodic memory (Reflexion core).
-            self._store_reflection(proposal, outcome)
 
     def execute_proposal(self, proposal: ReflectionProposal) -> bool:
         """Execute a single proposal and return success status."""
@@ -341,6 +357,47 @@ class Reflector:
 
     # === Internal Helpers ===
 
+    def _read_recent_log_events(self) -> str:
+        """Read recent WARNING/ERROR entries from protea.log via tail subprocess."""
+        log_path = pathlib.Path(__file__).resolve().parent.parent / "protea.log"
+        if not log_path.exists():
+            return ""
+        try:
+            result = subprocess.run(
+                ["tail", "-200", str(log_path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            lines = result.stdout.splitlines()
+        except Exception:
+            return ""
+
+        # Extract WARNING and ERROR lines.
+        # Format: HH:MM:SS [logger.name] LEVEL  message
+        pattern = re.compile(r"^\d{2}:\d{2}:\d{2}\s+\[.*?\]\s+(WARNING|ERROR)\s+(.+)")
+        seen: dict[str, tuple[str, int]] = {}  # message -> (full_line, count)
+        for line in lines:
+            m = pattern.match(line)
+            if not m:
+                continue
+            msg = m.group(2).strip()[:120]
+            key = msg[:60]  # dedup key
+            if key in seen:
+                _, count = seen[key]
+                seen[key] = (f"[{m.group(1)}] {msg}", count + 1)
+            else:
+                seen[key] = (f"[{m.group(1)}] {msg}", 1)
+
+        if not seen:
+            return ""
+
+        items = list(seen.values())[-10:]  # most recent 10
+        parts = ["## Runtime Log (recent warnings/errors)"]
+        for text, count in items:
+            suffix = f" (x{count})" if count > 1 else ""
+            parts.append(f"- {text}{suffix}")
+        parts.append("")
+        return "\n".join(parts)
+
     def _build_task_reflection_context(self) -> str:
         """Build context for post-task reflection from recent task metrics."""
         parts = []
@@ -408,6 +465,11 @@ class Reflector:
                     parts.append("")
             except Exception:
                 pass
+
+        # Runtime log warnings/errors.
+        log_section = self._read_recent_log_events()
+        if log_section:
+            parts.append(log_section)
 
         return "\n".join(parts) if parts else ""
 
@@ -486,14 +548,14 @@ class Reflector:
 
         return proposals
 
-    def _store_reflection(self, proposal: ReflectionProposal, outcome: str) -> None:
-        """Store reflection result in episodic memory."""
+    def _store_reflection(self, proposal: ReflectionProposal, outcome: str) -> int:
+        """Store reflection result in episodic memory. Returns entry ID or -1."""
         if not self.memory_store:
-            return
+            return -1
 
         try:
             gen = self.fitness.get_max_generation() if self.fitness else 0
-            self.memory_store.add(
+            return self.memory_store.add(
                 generation=gen,
                 entry_type="reflection_finding",
                 content=f"{proposal.category}: {proposal.description}",
@@ -501,12 +563,14 @@ class Reflector:
                     "confidence": proposal.confidence,
                     "dimensions": proposal.dimensions,
                     "evidence": proposal.evidence,
+                    "action": proposal.action,
                     "outcome": outcome,
                     "effect": None,
                 },
             )
         except Exception:
             log.debug("Failed to store reflection finding", exc_info=True)
+            return -1
 
     def _execute_memory_cleanup(self, action: dict) -> bool:
         """Execute a memory cleanup action."""

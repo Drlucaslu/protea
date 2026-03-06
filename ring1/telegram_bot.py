@@ -63,6 +63,8 @@ class SentinelState:
         "_pending_soul_question",
         # Habit detection
         "_pending_habits", "_habit_dismissed", "_habit_context",
+        # Reflector reference (for proposal approval)
+        "reflector",
     )
 
     def __init__(self) -> None:
@@ -114,6 +116,8 @@ class SentinelState:
         self._pending_habits: dict[str, dict] = {}
         self._habit_dismissed: set[str] = set()
         self._habit_context: dict[str, dict] = {}
+        # Reflector reference (set by Sentinel after creation)
+        self.reflector = None
 
     def _save_nudge_context(self):
         if not self._nudge_context_path:
@@ -1540,6 +1544,56 @@ class TelegramBot:
             template_key = data[len("habit:dismiss:"):]
             self.state._habit_dismissed.add(template_key)
             return "好的，不再提醒这个习惯。"
+
+        # --- proposal approval/rejection callbacks ---
+        if data.startswith("proposal:approve:"):
+            entry_id_str = data[len("proposal:approve:"):]
+            try:
+                entry_id = int(entry_id_str)
+            except ValueError:
+                return "无效的 proposal ID。"
+            ms = self.state.memory_store
+            if not ms:
+                return "Memory store 不可用。"
+            entry = ms.get_by_id(entry_id)
+            if not entry:
+                return "Proposal 已过期或不存在。"
+            meta = entry.get("metadata", {})
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (json.JSONDecodeError, ValueError):
+                    meta = {}
+            # Build ReflectionProposal from stored data.
+            reflector = getattr(self.state, "reflector", None)
+            if not reflector:
+                return "Reflector 不可用。"
+            from ring1.reflector import ReflectionProposal
+            proposal = ReflectionProposal(
+                category=entry.get("content", "").split(":")[0].strip(),
+                description=entry.get("content", ""),
+                confidence=meta.get("confidence", 0.5),
+                dimensions=meta.get("dimensions", {}),
+                action=meta.get("action", {}),
+                evidence=meta.get("evidence", []),
+            )
+            success = reflector.execute_proposal(proposal)
+            outcome = "user_approved" if success else "user_approved_failed"
+            ms.update_metadata(entry_id, {"outcome": outcome})
+            if success:
+                return "\u2705 已执行"
+            return "\u2705 已批准，但执行失败"
+
+        if data.startswith("proposal:reject:"):
+            entry_id_str = data[len("proposal:reject:"):]
+            try:
+                entry_id = int(entry_id_str)
+            except ValueError:
+                return "无效的 proposal ID。"
+            ms = self.state.memory_store
+            if ms:
+                ms.update_metadata(entry_id, {"outcome": "user_rejected"})
+            return "\u274c 已拒绝，不会执行"
 
         if data.startswith("run:"):
             name = data[4:]

@@ -487,6 +487,37 @@ class MemoryStore(SQLiteStore):
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
+    def get_by_id(self, entry_id: int) -> dict | None:
+        """Return a single memory entry by ID, or None if not found."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM memory WHERE id = ?", (entry_id,),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def update_metadata(self, entry_id: int, metadata: dict) -> bool:
+        """Merge *metadata* into an existing entry's metadata. Returns success."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT metadata FROM memory WHERE id = ?", (entry_id,),
+            ).fetchone()
+            if not row:
+                return False
+            existing = row["metadata"]
+            if isinstance(existing, str):
+                try:
+                    existing = json.loads(existing)
+                except (json.JSONDecodeError, ValueError):
+                    existing = {}
+            if not isinstance(existing, dict):
+                existing = {}
+            existing.update(metadata)
+            con.execute(
+                "UPDATE memory SET metadata = ? WHERE id = ?",
+                (json.dumps(existing, ensure_ascii=False), entry_id),
+            )
+            return True
+
     def get_by_type(self, entry_type: str, limit: int = 10) -> list[dict]:
         """Return non-archived entries of a specific type, most recent first."""
         with self._connect() as con:
