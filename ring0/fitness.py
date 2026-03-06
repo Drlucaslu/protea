@@ -381,19 +381,27 @@ class FitnessTracker(SQLiteStore):
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
-    def get_llm_usage_summary(self) -> dict:
+    def get_llm_usage_summary(self, hours: int = 24) -> dict:
         """Return aggregate LLM usage statistics.
+
+        Args:
+            hours: Only include records from the last *hours* hours.
 
         Returns a dict with keys:
         - total_input, total_output, total_calls
         - by_caller: {caller: {input_tokens, output_tokens, calls}}
         """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         with self._connect() as con:
             # Overall totals.
             row = con.execute(
                 "SELECT COALESCE(SUM(input_tokens), 0) AS total_input, "
                 "COALESCE(SUM(output_tokens), 0) AS total_output, "
-                "COUNT(*) AS total_calls FROM llm_usage",
+                "COUNT(*) AS total_calls FROM llm_usage "
+                "WHERE timestamp >= ?",
+                (cutoff,),
             ).fetchone()
             summary: dict = {
                 "total_input": row["total_input"],
@@ -407,7 +415,8 @@ class FitnessTracker(SQLiteStore):
                 "SUM(input_tokens) AS input_tokens, "
                 "SUM(output_tokens) AS output_tokens, "
                 "COUNT(*) AS calls "
-                "FROM llm_usage GROUP BY caller",
+                "FROM llm_usage WHERE timestamp >= ? GROUP BY caller",
+                (cutoff,),
             ).fetchall()
             summary["by_caller"] = {
                 r["caller"]: {
