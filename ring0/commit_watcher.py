@@ -39,6 +39,7 @@ class CommitWatcher:
         self._stop_event = threading.Event()
         self._last_fetch_time: float = -float('inf')
         self._failed_hash: str | None = None
+        self._rebase_failures: int = 0  # Consecutive rebase failure count
         self._state_path = self._root_path / STATE_FILE
         self._last_synced_hash = self._load_state()
 
@@ -217,14 +218,42 @@ class CommitWatcher:
                 behind = int(behind_result.stdout.strip())
 
             if behind > 0:
+                # Backoff: skip rebase if recent consecutive failures.
+                if self._rebase_failures >= 3:
+                    backoff = min(self._fetch_interval * (2 ** (self._rebase_failures - 3)), 3600)
+                    log.debug(
+                        "Rebase backoff: %d consecutive failures, skipping (next in ~%ds)",
+                        self._rebase_failures, backoff,
+                    )
+                    return
+
                 log.info(
                     "Local is %d ahead, %d behind — rebasing before push",
                     ahead, behind,
                 )
+                # Stash unstaged changes before rebase to avoid "You have unstaged changes".
+                stashed = False
+                try:
+                    st = self._git("stash", "push", "-m", "commit_watcher auto-stash", timeout=10)
+                    stashed = st.returncode == 0 and "No local changes" not in st.stdout
+                except Exception:
+                    pass
+
                 rebase = self._git("pull", "--rebase", "origin", "main", timeout=60)
                 if rebase.returncode != 0:
-                    log.warning("Rebase failed: %s", rebase.stderr.strip())
+                    self._rebase_failures += 1
+                    log.warning(
+                        "Rebase failed (%d consecutive): %s",
+                        self._rebase_failures, rebase.stderr.strip(),
+                    )
+                    if stashed:
+                        self._git("stash", "pop", timeout=10)
                     return
+                self._rebase_failures = 0  # Reset on success.
+                if stashed:
+                    pop = self._git("stash", "pop", timeout=10)
+                    if pop.returncode != 0:
+                        log.warning("Stash pop failed: %s", pop.stderr.strip())
 
             log.info("Local is %d commit(s) ahead, pushing to origin", ahead)
             push_result = self._git("push", "origin", "main", timeout=60)

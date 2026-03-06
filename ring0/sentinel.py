@@ -638,6 +638,7 @@ def run(project_root: pathlib.Path) -> None:
     # Reflection system — replaces evolution.
     reflector = None
     last_reflection_time: float = 0.0
+    last_resource_alert_time: float = 0.0
     try:
         from ring1.reflector import Reflector
         from ring1.config import load_ring1_config
@@ -677,14 +678,16 @@ def run(project_root: pathlib.Path) -> None:
                 except Exception:
                     log.debug("Proactive check failed (non-fatal)", exc_info=True)
 
-            # --- resource check ---
+            # --- resource check (60s cooldown to avoid log spam) ---
             ok, msg = check_resources(
                 r0.max_cpu_percent,
                 r0.max_memory_percent,
                 r0.max_disk_percent,
             )
             if not ok:
-                log.warning("Resource alert: %s", msg)
+                if time.time() - last_resource_alert_time > 60:
+                    log.warning("Resource alert: %s", msg)
+                    last_resource_alert_time = time.time()
 
             elapsed = time.time() - start_time
 
@@ -883,8 +886,22 @@ def run(project_root: pathlib.Path) -> None:
                 if reflector:
                     now = time.time()
                     since_last = now - last_reflection_time
+                    # Urgent reflection: bypasses normal cooldown (5 min minimum).
+                    urgent = getattr(state, "pending_reflection_reason", "")
+                    if urgent and since_last > 300:
+                        try:
+                            log.info("Urgent reflection triggered: %s", urgent)
+                            proposals = reflector.reflect_after_task()
+                            if proposals:
+                                reflector.process_proposals(proposals)
+                            last_reflection_time = time.time()
+                        except Exception:
+                            log.debug("Urgent reflection failed", exc_info=True)
+                        finally:
+                            with state.lock:
+                                state.pending_reflection_reason = ""
                     # Post-task reflection: fires after any task completion.
-                    if (state.last_task_completion > last_reflection_time
+                    elif (state.last_task_completion > last_reflection_time
                             and since_last > r0.reflection_cooldown_sec):
                         try:
                             proposals = reflector.reflect_after_task()

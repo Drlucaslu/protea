@@ -933,6 +933,19 @@ class TaskExecutor:
                      getattr(task, "task_id", "?"), duration,
                      usage.get("input_tokens", 0), usage.get("output_tokens", 0),
                      len(tool_sequence), ",".join(skills_used) or "none")
+            # Signal urgent reflection for significant events.
+            urgent_reason = ""
+            input_tokens = usage.get("input_tokens", 0)
+            if input_tokens > 50000:
+                urgent_reason = f"high_tokens({input_tokens})"
+            elif fab_signals:
+                urgent_reason = "fabrication_detected"
+            elif any(pat.search(task.text) for pat in _CORRECTION_PATTERNS):
+                urgent_reason = "user_correction"
+            if urgent_reason and hasattr(self.state, "pending_reflection_reason"):
+                with self.state.lock:
+                    self.state.pending_reflection_reason = urgent_reason
+                log.info("Urgent reflection flagged: %s", urgent_reason)
             # Strip conversation context prefix so only the user's actual
             # text is persisted in memory and used for profile analysis.
             clean_text = _strip_context_prefix(task.text)

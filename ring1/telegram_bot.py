@@ -46,6 +46,7 @@ class SentinelState:
         # Task / scheduling
         "task_queue", "evolution_directive", "last_evolution_time",
         "last_task_completion", "executor_thread",
+        "pending_reflection_reason",
         # Store references
         "memory_store", "skill_store", "task_store", "scheduled_store",
         # Service references
@@ -86,6 +87,7 @@ class SentinelState:
         self.last_evolution_time: float = 0.0
         self.last_task_completion: float = 0.0
         self.executor_thread: threading.Thread | None = None
+        self.pending_reflection_reason: str = ""  # Set by executor for urgent reflection
         # Store references (set by Sentinel after creation)
         self.memory_store = None
         self.skill_store = None
