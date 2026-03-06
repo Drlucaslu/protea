@@ -1340,15 +1340,18 @@ def create_executor(
 
     # Initialize convergence detector.
     if memory_store and embedding_provider:
-        from ring1.convergence_detector import ConvergenceDetector
-        conv_cfg = getattr(config, "_raw_cfg", {}).get("ring1", {}).get("convergence", {})
-        executor.convergence_detector = ConvergenceDetector(
-            memory_store=memory_store,
-            embedding_provider=embedding_provider,
-            llm_client=client,
-            convergence_context=state._convergence_context,
-            config=conv_cfg,
-        )
+        try:
+            from ring1.convergence_detector import ConvergenceDetector
+            conv_cfg = getattr(config, "_raw_cfg", {}).get("ring1", {}).get("convergence", {})
+            executor.convergence_detector = ConvergenceDetector(
+                memory_store=memory_store,
+                embedding_provider=embedding_provider,
+                llm_client=client,
+                convergence_context=state._convergence_context,
+                config=conv_cfg,
+            )
+        except Exception:
+            log.debug("ConvergenceDetector init failed (non-fatal)", exc_info=True)
 
     return executor
 

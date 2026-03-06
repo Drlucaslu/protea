@@ -183,7 +183,7 @@ class TestViewSkillTool:
         assert "my_skill" in result
         assert "A cool skill" in result
         assert "web" in result
-        assert "print('hello')" in result
+        assert "Source skeleton" in result
 
     def test_schema(self):
         store = MagicMock()
