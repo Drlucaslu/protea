@@ -1,8 +1,7 @@
-"""Dashboard — local web UI for Protea system state visualization.
+"""Dashboard — local web UI for Protea system state & debug visualization.
 
-Provides an HTTP server (default port 8899) with pages for memory browsing,
-skill gallery, intent timeline, user profile, and a system overview with
-SVG fitness charts.
+Provides an HTTP server (default port 8899) with pages for overview, memory
+browsing, pipeline inspection, skill gallery, and scheduled tasks.
 
 Architecture mirrors skill_portal.py: DashboardHandler + type()-injected
 class attributes + factory + thread helper.
@@ -107,10 +106,8 @@ _NAV_HTML = """\
 <nav>
 <a href="/">Overview</a>
 <a href="/memory">Memory</a>
+<a href="/pipeline">Pipeline</a>
 <a href="/skills">Skills</a>
-<a href="/templates">Templates</a>
-<a href="/intent">Intent</a>
-<a href="/profile">Profile</a>
 <a href="/schedule">Schedule</a>
 </nav>
 """
@@ -200,79 +197,6 @@ def _render_fitness_svg(history: list[dict], width: int = 800, height: int = 200
     return "".join(parts)
 
 
-def _render_category_bars_svg(categories: dict[str, float], width: int = 400, height: int = 0) -> str:
-    """Horizontal bar chart SVG for category distribution."""
-    if not categories:
-        return '<p style="color:#777">No profile data yet.</p>'
-
-    total = sum(categories.values())
-    if total == 0:
-        return '<p style="color:#777">No profile data yet.</p>'
-
-    bar_h = 24
-    gap = 6
-    label_w = 80
-    value_w = 60
-    bar_area = width - label_w - value_w - 20
-    n = len(categories)
-    if height <= 0:
-        height = n * (bar_h + gap) + 10
-
-    colors = ["#667eea", "#764ba2", "#4ecdc4", "#ff6b6b", "#feca57", "#48dbfb", "#a29bfe", "#fd79a8", "#00cec9"]
-
-    parts = [f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">']
-
-    for i, (cat, weight) in enumerate(categories.items()):
-        pct = weight / total
-        y = i * (bar_h + gap) + 5
-        bar_w = max(2, pct * bar_area)
-        color = colors[i % len(colors)]
-        parts.append(f'<text x="{label_w - 5}" y="{y + bar_h / 2 + 4}" fill="#999" font-size="12" text-anchor="end">{_esc(cat)}</text>')
-        parts.append(f'<rect x="{label_w}" y="{y}" width="{bar_w:.1f}" height="{bar_h}" rx="3" fill="{color}" opacity="0.8"/>')
-        parts.append(f'<text x="{label_w + bar_w + 5}" y="{y + bar_h / 2 + 4}" fill="#777" font-size="11">{pct:.0%}</text>')
-
-    parts.append("</svg>")
-    return "".join(parts)
-
-
-def _compute_daily_skill_hit_ratio(memory_store, days: int = 14) -> list[dict]:
-    """Compute daily skill hit ratio from task memory entries.
-
-    Returns a list of {date, total, skill, ratio} dicts for the last *days* days.
-    """
-    from datetime import datetime, timedelta, timezone
-
-    entries = []
-    for entry_type in ("task", "p1_task"):
-        try:
-            entries.extend(memory_store.get_by_type(entry_type, 200))
-        except Exception:
-            pass
-
-    # Bucket by date
-    buckets: dict[str, dict] = {}
-    for e in entries:
-        ts = e.get("timestamp", "")
-        if not ts:
-            continue
-        day = ts[:10]  # "YYYY-MM-DD"
-        if day not in buckets:
-            buckets[day] = {"total": 0, "skill": 0}
-        buckets[day]["total"] += 1
-        meta = e.get("metadata", {})
-        if meta.get("skills_used"):
-            buckets[day]["skill"] += 1
-
-    # Fill in missing days
-    today = datetime.now(timezone.utc).date()
-    result = []
-    for i in range(days - 1, -1, -1):
-        d = today - timedelta(days=i)
-        key = d.isoformat()
-        b = buckets.get(key, {"total": 0, "skill": 0})
-        ratio = b["skill"] / b["total"] if b["total"] > 0 else 0.0
-        result.append({"date": key, "total": b["total"], "skill": b["skill"], "ratio": ratio})
-    return result
 
 
 def _compute_token_usage_30min(fitness_tracker) -> list[dict]:
@@ -401,47 +325,22 @@ def _render_token_usage_svg(data: list[dict], width: int = 960, height: int = 22
     return "".join(parts)
 
 
-def _render_skill_hit_ratio_svg(daily_data: list[dict], width: int = 800, height: int = 200) -> str:
-    """Bar chart SVG for daily skill hit ratio."""
-    if not daily_data or all(d["total"] == 0 for d in daily_data):
-        return '<p style="color:#777">No task data yet.</p>'
 
-    margin = 40
-    plot_w = width - margin * 2
-    plot_h = height - margin * 2
-    n = len(daily_data)
-    bar_w = max(4, plot_w / n - 4)
 
-    parts = [
-        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">'
-        f'<rect width="{width}" height="{height}" fill="#0d1230" rx="8"/>',
-        # Axes
-        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
-        f'<line x1="{margin}" y1="{margin + plot_h}" x2="{margin + plot_w}" y2="{margin + plot_h}" stroke="#1a1f3a" stroke-width="1"/>',
-    ]
-
-    # Y-axis labels (0% - 100%)
-    for pct in (0, 25, 50, 75, 100):
-        y = margin + plot_h - pct / 100 * plot_h
-        parts.append(f'<text x="{margin - 5}" y="{y + 4}" fill="#555" font-size="10" text-anchor="end">{pct}%</text>')
-        parts.append(f'<line x1="{margin}" y1="{y}" x2="{margin + plot_w}" y2="{y}" stroke="#1a1f3a" stroke-width="0.5" stroke-dasharray="4"/>')
-
-    # Bars
-    for i, d in enumerate(daily_data):
-        x = margin + i * (plot_w / n) + 2
-        ratio = d["ratio"]
-        bar_h = max(0, ratio * plot_h)
-        y = margin + plot_h - bar_h
-        if d["total"] > 0:
-            parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" rx="2" fill="#667eea" opacity="0.8"/>')
-            # Label: skill/total
-            parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{y - 4:.1f}" fill="#999" font-size="9" text-anchor="middle">{d["skill"]}/{d["total"]}</text>')
-        # X-axis: day number
-        day_num = d["date"][8:10]  # DD
-        parts.append(f'<text x="{x + bar_w / 2:.1f}" y="{margin + plot_h + 14}" fill="#555" font-size="9" text-anchor="middle">{day_num}</text>')
-
-    parts.append("</svg>")
-    return "".join(parts)
+_PIPELINE_CSS = """\
+<style>
+.pipeline-stage {
+    background: #151a3a; border: 1px solid #252a4a; border-radius: 10px;
+    padding: 1.2rem; margin: 0.5rem 0; max-width: 700px;
+}
+.pipeline-stage:hover { border-color: #667eea; }
+.pipeline-label { color: #667eea; font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; }
+.pipeline-detail { color: #e0e0e0; font-size: 0.9rem; margin-bottom: 0.3rem; }
+.pipeline-meta { color: #777; font-size: 0.8rem; margin-top: 0.2rem; }
+.pipeline-list { color: #999; font-size: 0.78rem; margin: 0.2rem 0 0.4rem 1rem; line-height: 1.6; }
+.pipeline-arrow { color: #667eea; font-size: 1.2rem; text-align: left; padding: 0.2rem 0 0.2rem 2rem; }
+</style>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -479,14 +378,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_overview()
         elif path == "/memory":
             self._serve_memory(query)
+        elif path == "/pipeline":
+            self._serve_pipeline()
         elif path == "/skills":
             self._serve_skills()
-        elif path == "/templates":
-            self._serve_templates()
-        elif path == "/intent":
-            self._serve_intent()
-        elif path == "/profile":
-            self._serve_profile()
         elif path == "/schedule":
             self._serve_schedule()
         # API routes
@@ -494,22 +389,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_memory(query)
         elif path == "/api/memory/stats":
             self._api_memory_stats()
+        elif path == "/api/memory/confidence":
+            self._api_memory_confidence()
+        elif path == "/api/pipeline":
+            self._api_pipeline()
         elif path == "/api/skills":
             self._api_skills()
-        elif path == "/api/templates":
-            self._api_templates()
-        elif path == "/api/intent":
-            self._api_intent()
-        elif path == "/api/profile":
-            self._api_profile()
         elif path == "/api/fitness":
             self._api_fitness()
         elif path == "/api/status":
             self._api_status()
         elif path == "/api/schedules":
             self._api_schedules()
-        elif path == "/api/skill_hit_ratio":
-            self._api_skill_hit_ratio()
         elif path == "/api/llm_usage":
             self._api_llm_usage()
         elif path == "/api/token_usage_daily":
@@ -522,7 +413,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _serve_overview(self) -> None:
-        """Overview page with stat cards + fitness chart."""
+        """Overview page with stat cards, token usage, and recent tasks."""
+        # Ring 2 status
+        cycle_num = 0
+        r2_alive = False
+        if self.state:
+            try:
+                snap = self.state.snapshot()
+                cycle_num = snap.get("cycle", 0)
+                r2_alive = snap.get("alive", False)
+            except Exception:
+                pass
+        status_label = '<span style="color:#4ecdc4">alive</span>' if r2_alive else '<span style="color:#ff6b6b">dead</span>'
+        gen_card = (
+            f'<div class="card"><h3>Cycle</h3>'
+            f'<div class="value">{cycle_num}</div>'
+            f'<div class="detail">Ring 2: {status_label}</div></div>'
+        )
+
         # Memory stats
         mem_stats = {}
         if self.memory_store:
@@ -539,6 +447,56 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f'</div>'
         )
 
+        # Token usage card (24h)
+        token_total = 0
+        token_detail = ""
+        if self.fitness_tracker:
+            try:
+                usage_summary = self.fitness_tracker.get_llm_usage_summary()
+                token_total = usage_summary.get("total_input", 0) + usage_summary.get("total_output", 0)
+                token_detail = f'in: {usage_summary.get("total_input", 0):,} out: {usage_summary.get("total_output", 0):,}'
+            except Exception:
+                pass
+        token_card = (
+            f'<div class="card"><h3>LLM Tokens (24h)</h3>'
+            f'<div class="value">{token_total:,}</div>'
+            f'<div class="detail">{token_detail}</div></div>'
+        )
+
+        # Tasks today
+        from datetime import datetime, timezone
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        tasks_today = 0
+        if self.memory_store:
+            try:
+                for entry_type in ("task", "p1_task"):
+                    try:
+                        entries = self.memory_store.get_by_type(entry_type, 200)
+                        tasks_today += sum(1 for e in entries if e.get("timestamp", "").startswith(today_str))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        tasks_card = (
+            f'<div class="card"><h3>Tasks Today</h3>'
+            f'<div class="value">{tasks_today}</div>'
+            f'<div class="detail">{today_str}</div></div>'
+        )
+
+        # Reflections
+        reflection_count = 0
+        if self.memory_store:
+            try:
+                findings = self.memory_store.get_by_type("reflection_finding", 200)
+                reflection_count = len(findings)
+            except Exception:
+                pass
+        reflection_card = (
+            f'<div class="card"><h3>Reflections</h3>'
+            f'<div class="value">{reflection_count}</div>'
+            f'<div class="detail">reflection findings</div></div>'
+        )
+
         # Skills stats
         skill_count = 0
         if self.skill_store:
@@ -552,120 +510,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f'<div class="detail">active skills</div></div>'
         )
 
-        # Intent
-        intent_text = "—"
-        if self.memory_store:
-            try:
-                intents = self.memory_store.get_by_type("evolution_intent", limit=1)
-                if intents:
-                    content = intents[0].get("content", "")
-                    intent_text = content.split(":")[0] if ":" in content else content[:20]
-            except Exception:
-                pass
-        intent_card = (
-            f'<div class="card"><h3>Intent</h3>'
-            f'<div class="value">{_esc(intent_text)}</div>'
-            f'<div class="detail">current direction</div></div>'
-        )
-
-        # Profile
-        top_cat = "—"
-        if self.user_profiler:
-            try:
-                dist = self.user_profiler.get_category_distribution()
-                if dist:
-                    top_cat = next(iter(dist))
-            except Exception:
-                pass
-        profile_card = (
-            f'<div class="card"><h3>Profile</h3>'
-            f'<div class="value">{_esc(top_cat)}</div>'
-            f'<div class="detail">top interest</div></div>'
-        )
-
-        # Gene count
-        gene_count = 0
-        template_count = 0
-        if self.scheduled_store:
-            try:
-                template_count = len(self.scheduled_store.get_publishable(min_runs=2))
-            except Exception:
-                pass
-        template_card = (
-            f'<div class="card"><h3>Templates</h3>'
-            f'<div class="value">{template_count}</div>'
-            f'<div class="detail">publishable tasks</div></div>'
-        )
-
-        # Generation / Ring 2 status
-        gen_num = 0
-        r2_alive = False
-        if self.state:
-            try:
-                snap = self.state.snapshot()
-                gen_num = snap.get("generation", 0)
-                r2_alive = snap.get("alive", False)
-            except Exception:
-                pass
-        status_label = '<span style="color:#4ecdc4">alive</span>' if r2_alive else '<span style="color:#ff6b6b">dead</span>'
-        gen_card = (
-            f'<div class="card"><h3>Generation</h3>'
-            f'<div class="value">{gen_num}</div>'
-            f'<div class="detail">Ring 2: {status_label}</div></div>'
-        )
-
-        # Fitness chart
-        fitness_svg = ""
-        if self.fitness_tracker:
-            try:
-                history = self.fitness_tracker.get_history(limit=30)
-                history.reverse()
-                fitness_svg = _render_fitness_svg(history)
-            except Exception:
-                pass
-
-        # Cooldown status card
-        recent_ratio = 0.0
-        if self.memory_store:
-            try:
-                from ring0.sentinel import _compute_skill_hit_ratio
-                hit = _compute_skill_hit_ratio(self.memory_store)
-                recent_ratio = hit["ratio"]
-            except Exception:
-                pass
-        multiplier = 1.0 + 2.0 * recent_ratio
-        cooldown_card = (
-            f'<div class="card"><h3>Evo Cooldown</h3>'
-            f'<div class="value">{multiplier:.1f}x</div>'
-            f'<div class="detail">skill coverage: {recent_ratio:.0%}</div></div>'
-        )
-
-        # Token usage card
-        token_total = 0
-        token_detail = ""
-        if self.fitness_tracker:
-            try:
-                usage_summary = self.fitness_tracker.get_llm_usage_summary()
-                token_total = usage_summary.get("total_input", 0) + usage_summary.get("total_output", 0)
-                token_detail = f'in: {usage_summary.get("total_input", 0):,} out: {usage_summary.get("total_output", 0):,}'
-            except Exception:
-                pass
-        token_card = (
-            f'<div class="card"><h3>LLM Tokens</h3>'
-            f'<div class="value">{token_total:,}</div>'
-            f'<div class="detail">{token_detail}</div></div>'
-        )
-
-        # Skill hit ratio chart
-        hit_ratio_svg = ""
-        if self.memory_store:
-            try:
-                daily_data = _compute_daily_skill_hit_ratio(self.memory_store)
-                hit_ratio_svg = _render_skill_hit_ratio_svg(daily_data)
-            except Exception:
-                pass
-
-        # Token usage chart (5-min buckets, rolling 24h)
+        # Token usage chart (30-min buckets, rolling 24h)
         token_usage_svg = ""
         if self.fitness_tracker:
             try:
@@ -674,45 +519,102 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Recent tasks table (last 5)
+        recent_tasks_html = ""
+        if self.memory_store:
+            try:
+                recent = []
+                for entry_type in ("task", "p1_task"):
+                    try:
+                        recent.extend(self.memory_store.get_by_type(entry_type, 10))
+                    except Exception:
+                        pass
+                recent.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+                recent = recent[:5]
+                if recent:
+                    rows = []
+                    for e in recent:
+                        meta = e.get("metadata", {})
+                        content = _esc(e.get("content", "")[:60])
+                        dur = meta.get("duration_sec", 0)
+                        inp = meta.get("input_tokens", 0)
+                        out = meta.get("output_tokens", 0)
+                        tools = len(meta.get("tool_sequence", []))
+                        sk = ", ".join(meta.get("skills_used", [])) or "—"
+                        ts = e.get("timestamp", "")[:16]
+                        rows.append(
+                            f'<tr><td>{content}</td><td>{dur:.1f}s</td>'
+                            f'<td>{inp:,}/{out:,}</td><td>{tools}</td>'
+                            f'<td>{_esc(sk)}</td><td>{ts}</td></tr>'
+                        )
+                    recent_tasks_html = (
+                        '<h2 style="margin:2rem 0 1rem">Recent Tasks</h2>'
+                        "<table><thead><tr>"
+                        "<th>Task</th><th>Duration</th><th>Tokens (in/out)</th>"
+                        "<th>Tools</th><th>Skills</th><th>Time</th>"
+                        "</tr></thead><tbody>"
+                        + "".join(rows)
+                        + "</tbody></table>"
+                    )
+            except Exception:
+                pass
+
         body = (
-            f'<div class="cards">{gen_card}{mem_card}{skill_card}{template_card}{intent_card}{profile_card}{cooldown_card}{token_card}</div>'
-            f'<h2 style="margin-bottom:1rem">Fitness Trend</h2>'
-            f'{fitness_svg}'
-            f'<h2 style="margin:2rem 0 1rem">Skill Hit Ratio</h2>'
-            f'{hit_ratio_svg}'
+            f'<div class="cards">{gen_card}{mem_card}{token_card}{tasks_card}{reflection_card}{skill_card}</div>'
             f'<h2 style="margin:2rem 0 1rem">LLM Token Usage (24h)</h2>'
             f'{token_usage_svg}'
+            f'{recent_tasks_html}'
         )
         self._send_html(_page("Overview", body))
 
     def _serve_memory(self, query: dict) -> None:
-        """Memory browser with tier/type filters."""
+        """Memory browser with tier/type/source filters and confidence column."""
         tier_filter = query.get("tier", [None])[0]
         type_filter = query.get("type", [None])[0]
+        source_filter = query.get("source", [None])[0]
+
+        # Helper to build filter query string
+        def _filter_href(**overrides):
+            params = {}
+            t = overrides.get("tier", tier_filter)
+            tp = overrides.get("type", type_filter)
+            s = overrides.get("source", source_filter)
+            if t and t != "all":
+                params["tier"] = t
+            if tp and tp != "all":
+                params["type"] = tp
+            if s and s != "all":
+                params["source"] = s
+            if not params:
+                return "/memory"
+            return "/memory?" + "&".join(f"{k}={v}" for k, v in params.items())
 
         # Build filter links
         tiers = ["all", "hot", "warm", "cold"]
         tier_links = []
         for t in tiers:
             active = "active" if (t == "all" and not tier_filter) or t == tier_filter else ""
-            href = "/memory" if t == "all" else f"/memory?tier={t}"
-            if type_filter and t != "all":
-                href += f"&type={type_filter}"
-            elif type_filter:
-                href += f"?type={type_filter}"
+            href = _filter_href(tier=t)
             tier_links.append(f'<a href="{href}" class="{active}">{t}</a>')
 
-        types = ["all", "task", "crash_log", "reflection", "observation", "directive", "evolution_intent", "p1_task"]
+        types = ["all", "task", "crash_log", "reflection", "observation", "directive", "p1_task"]
         type_links = []
         for tp in types:
             active = "active" if (tp == "all" and not type_filter) or tp == type_filter else ""
-            base = f"/memory?tier={tier_filter}" if tier_filter else "/memory"
-            href = base if tp == "all" else f"{base}{'&' if tier_filter else '?'}type={tp}"
+            href = _filter_href(type=tp)
             type_links.append(f'<a href="{href}" class="{active}">{tp}</a>')
+
+        sources = ["all", "user", "llm", "distilled", "unknown"]
+        source_links = []
+        for s in sources:
+            active = "active" if (s == "all" and not source_filter) or s == source_filter else ""
+            href = _filter_href(source=s)
+            source_links.append(f'<a href="{href}" class="{active}">{s}</a>')
 
         filters_html = (
             f'<div class="filters">Tier: {" ".join(tier_links)}</div>'
             f'<div class="filters">Type: {" ".join(type_links)}</div>'
+            f'<div class="filters">Source: {" ".join(source_links)}</div>'
         )
 
         # Fetch entries
@@ -725,25 +627,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     entries = self.memory_store.get_recent(limit=100)
                 if type_filter and type_filter != "all":
                     entries = [e for e in entries if e.get("entry_type") == type_filter]
+                if source_filter and source_filter != "all":
+                    entries = [e for e in entries if e.get("metadata", {}).get("source_type", "unknown") == source_filter]
             except Exception:
                 pass
 
-        # Build table
+        # Stats panel (4 mini cards)
+        total_entries = len(entries)
+        confidences = [e.get("confidence") or 0.5 for e in entries]
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        source_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        for e in entries:
+            src = e.get("metadata", {}).get("source_type", "unknown")
+            source_counts[src] = source_counts.get(src, 0) + 1
+            et = e.get("entry_type", "unknown")
+            type_counts[et] = type_counts.get(et, 0) + 1
+        source_detail = " ".join(f'{k}:{v}' for k, v in sorted(source_counts.items(), key=lambda x: -x[1]))
+        top_types = sorted(type_counts.items(), key=lambda x: -x[1])[:3]
+        top_types_detail = " ".join(f'{k}:{v}' for k, v in top_types)
+
+        stats_html = (
+            '<div class="cards">'
+            f'<div class="card"><h3>Total Entries</h3><div class="value">{total_entries}</div></div>'
+            f'<div class="card"><h3>Avg Confidence</h3><div class="value">{avg_conf:.2f}</div></div>'
+            f'<div class="card"><h3>Source Distribution</h3><div class="detail" style="margin-top:0.5rem">{source_detail or "—"}</div></div>'
+            f'<div class="card"><h3>Top Types</h3><div class="detail" style="margin-top:0.5rem">{top_types_detail or "—"}</div></div>'
+            '</div>'
+        )
+
+        # Build table with confidence + source columns
         rows_html = []
         for e in entries:
             tier = e.get("tier", "hot")
             tier_cls = f"tier-{tier}"
             importance = e.get("importance", 0.5)
             bar_w = int(importance * 80)
+            conf = e.get("confidence") or 0.5
+            if conf >= 0.95:
+                conf_color = "#4ecdc4"
+            elif conf >= 0.70:
+                conf_color = "#667eea"
+            elif conf >= 0.40:
+                conf_color = "#feca57"
+            else:
+                conf_color = "#ff6b6b"
+            conf_bar_w = int(conf * 60)
+            source_type = e.get("metadata", {}).get("source_type", "unknown")
+            source_colors = {"user": "#4ecdc4", "llm": "#667eea", "distilled": "#764ba2", "unknown": "#555"}
+            src_color = source_colors.get(source_type, "#555")
             content = _esc(e.get("content", ""))
             ts = e.get("timestamp", "")[:16]
             rows_html.append(
                 f'<tr>'
                 f'<td>{e.get("id", "")}</td>'
-                f'<td>{e.get("generation", "")}</td>'
                 f'<td>{_esc(e.get("entry_type", ""))}</td>'
                 f'<td class="{tier_cls}">{tier}</td>'
                 f'<td><span class="importance-bar" style="width:{bar_w}px"></span> {importance:.2f}</td>'
+                f'<td><span style="display:inline-block;height:10px;width:{conf_bar_w}px;background:{conf_color};border-radius:2px;vertical-align:middle"></span> {conf:.2f}</td>'
+                f'<td><span class="badge" style="background:{src_color};color:#fff">{_esc(source_type)}</span></td>'
                 f'<td class="content-cell">{content}</td>'
                 f'<td>{ts}</td>'
                 f'</tr>'
@@ -751,13 +693,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         table_html = (
             "<table><thead><tr>"
-            "<th>ID</th><th>Gen</th><th>Type</th><th>Tier</th><th>Importance</th><th>Content</th><th>Time</th>"
+            "<th>ID</th><th>Type</th><th>Tier</th><th>Importance</th>"
+            "<th>Confidence</th><th>Source</th><th>Content</th><th>Time</th>"
             "</tr></thead><tbody>"
             + "".join(rows_html)
             + "</tbody></table>"
         )
 
-        body = f"<h2>Memory Browser</h2>{filters_html}{table_html}"
+        body = f"<h2>Memory Browser</h2>{stats_html}{filters_html}{table_html}"
         self._send_html(_page("Memory", body))
 
     def _serve_skills(self) -> None:
@@ -823,83 +766,115 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = f"{leaderboard_html}<h2>Skills Gallery</h2>{body_content}"
         self._send_html(_page("Skills", body))
 
-    def _serve_intent(self) -> None:
-        """Evolution intent timeline."""
-        intents = []
-        if self.memory_store:
-            try:
-                intents = self.memory_store.get_by_type("evolution_intent", limit=30)
-            except Exception:
-                pass
+    def _serve_pipeline(self) -> None:
+        """Pipeline visualization — last task's data flow through the system."""
+        pipeline = None
+        if self.state:
+            pipeline = getattr(self.state, "_last_pipeline", None)
 
-        items = []
-        for entry in intents:
-            gen = entry.get("generation", "?")
-            content = entry.get("content", "")
-            meta = entry.get("metadata", {})
-            blast = meta.get("blast_radius", {})
-            scope = blast.get("scope", "")
-            lines = blast.get("lines_changed", 0)
-
-            # Parse intent from content (format: "INTENT: signal1, signal2")
-            intent_name = content.split(":")[0].strip() if ":" in content else content[:30]
-            signals = content.split(":", 1)[1].strip() if ":" in content else ""
-            intent_cls = f"intent-{intent_name.lower()}" if intent_name.lower() in ("repair", "optimize", "explore", "adapt") else ""
-
-            items.append(
-                f'<div class="timeline-item {intent_cls}">'
-                f'<div class="gen">Gen {gen}: {_esc(intent_name.upper())}</div>'
-                f'<div class="info">signals: {_esc(signals)}</div>'
-                + (f'<div class="info">scope: {_esc(scope)} ({lines} lines)</div>' if scope else "")
-                + f'</div>'
+        if not pipeline:
+            # Placeholder when no pipeline data available
+            placeholder_css = "color:#555;border-color:#252a4a"
+            body = (
+                '<h2>Pipeline Inspector</h2>'
+                '<p style="color:#777;margin-bottom:1.5rem">Shows data flow for the most recent task execution.</p>'
+                f'<div class="pipeline-stage" style="{placeholder_css}">'
+                '<div class="pipeline-label">Task Input</div>'
+                '<div style="color:#555">No task executed yet</div></div>'
+                '<div class="pipeline-arrow">&#9660;</div>'
+                f'<div class="pipeline-stage" style="{placeholder_css}">'
+                '<div class="pipeline-label">Memory Retrieval</div>'
+                '<div style="color:#555">—</div></div>'
+                '<div class="pipeline-arrow">&#9660;</div>'
+                f'<div class="pipeline-stage" style="{placeholder_css}">'
+                '<div class="pipeline-label">Context Assembly</div>'
+                '<div style="color:#555">—</div></div>'
+                '<div class="pipeline-arrow">&#9660;</div>'
+                f'<div class="pipeline-stage" style="{placeholder_css}">'
+                '<div class="pipeline-label">LLM Response</div>'
+                '<div style="color:#555">—</div></div>'
             )
+            self._send_html(_page("Pipeline", _PIPELINE_CSS + body))
+            return
 
-        timeline = '<div class="timeline">' + "".join(items) + "</div>" if items else '<p style="color:#777">No evolution intents yet.</p>'
-        body = f"<h2>Intent Timeline</h2>{timeline}"
-        self._send_html(_page("Intent", body))
+        # Stage 1: Task Input
+        task_text = _esc(pipeline.get("task_text", "")[:200])
+        task_id = _esc(str(pipeline.get("task_id", "")))
+        from datetime import datetime, timezone
+        ts = pipeline.get("timestamp", 0)
+        ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S") if ts else "—"
 
-    def _serve_profile(self) -> None:
-        """User profile page with category chart and stats."""
-        categories: dict[str, float] = {}
-        stats: dict = {}
-        top_topics: list[dict] = []
+        stage1 = (
+            '<div class="pipeline-stage">'
+            '<div class="pipeline-label">Task Input</div>'
+            f'<div class="pipeline-detail">{task_text}</div>'
+            f'<div class="pipeline-meta">{task_id} | {ts_str}</div>'
+            '</div>'
+        )
 
-        if self.user_profiler:
-            try:
-                categories = self.user_profiler.get_category_distribution()
-                stats = self.user_profiler.get_stats()
-                top_topics = self.user_profiler.get_top_topics(10)
-            except Exception:
-                pass
+        # Stage 2: Memory Retrieval
+        def _format_items(items, label):
+            if not items:
+                return f'<div class="pipeline-meta">{label} (0): none</div>'
+            parts = []
+            for m in items:
+                mid = m.get("id", "?")
+                conf = m.get("confidence")
+                conf_str = f" conf={conf:.2f}" if conf is not None else ""
+                score = m.get("score")
+                score_str = f" score={score:.2f}" if score is not None else ""
+                content = _esc(m.get("content", "")[:60])
+                parts.append(f'#{mid}{conf_str}{score_str} {content}')
+            return f'<div class="pipeline-meta">{label} ({len(items)}):</div><div class="pipeline-list">{"<br>".join(parts)}</div>'
 
-        bars_svg = _render_category_bars_svg(categories, width=450)
+        memories_html = _format_items(pipeline.get("memories", []), "Recent")
+        recalled_html = _format_items(pipeline.get("recalled", []), "Recalled")
+        rules_html = _format_items(pipeline.get("rules", []), "Rules")
+        strategies_html = _format_items(pipeline.get("strategies", []), "Strategies")
+        reflections_html = _format_items(pipeline.get("reflections", []), "Reflections")
 
-        # Stats panel
-        stat_items = []
-        if stats:
-            stat_items.append(f'<div class="stat-item"><span class="label">Total interactions:</span> <span class="val">{stats.get("interaction_count", 0)}</span></div>')
-            if stats.get("earliest_interaction"):
-                stat_items.append(f'<div class="stat-item"><span class="label">First seen:</span> <span class="val">{stats["earliest_interaction"][:10]}</span></div>')
-            if stats.get("latest_interaction"):
-                stat_items.append(f'<div class="stat-item"><span class="label">Last seen:</span> <span class="val">{stats["latest_interaction"][:10]}</span></div>')
-            stat_items.append(f'<div class="stat-item"><span class="label">Active topics:</span> <span class="val">{stats.get("topic_count", 0)}</span></div>')
+        stage2 = (
+            '<div class="pipeline-stage">'
+            '<div class="pipeline-label">Memory Retrieval</div>'
+            f'{memories_html}{recalled_html}{rules_html}{strategies_html}{reflections_html}'
+            '</div>'
+        )
 
-        # Top topics
-        if top_topics:
-            stat_items.append('<h3 style="margin-top:1rem;margin-bottom:0.5rem">Top Topics</h3>')
-            for t in top_topics:
-                stat_items.append(f'<div class="stat-item">{_esc(t["topic"])} <span class="label">({t["category"]}, weight: {t["weight"]:.1f})</span></div>')
+        # Stage 3: Context Assembly
+        ctx_chars = pipeline.get("context_chars", 0)
+        ctx_tokens = pipeline.get("context_tokens_est", 0)
+        stage3 = (
+            '<div class="pipeline-stage">'
+            '<div class="pipeline-label">Context Assembly</div>'
+            f'<div class="pipeline-detail">{ctx_chars:,} chars (~{ctx_tokens:,} tokens)</div>'
+            '</div>'
+        )
 
-        stats_html = "".join(stat_items) if stat_items else '<p style="color:#777">No profile data yet.</p>'
+        # Stage 4: LLM Response
+        inp = pipeline.get("input_tokens", 0)
+        out = pipeline.get("output_tokens", 0)
+        dur = pipeline.get("duration_sec", 0)
+        tools = pipeline.get("tools_used", [])
+        skills = pipeline.get("skills_used", [])
+        tools_str = f'{len(tools)} ({", ".join(tools[:5])})' if tools else "0"
+        skills_str = ", ".join(skills) if skills else "none"
+        stage4 = (
+            '<div class="pipeline-stage">'
+            '<div class="pipeline-label">LLM Response</div>'
+            f'<div class="pipeline-detail">In: {inp:,} | Out: {out:,} | {dur:.1f}s</div>'
+            f'<div class="pipeline-meta">Tools: {tools_str} | Skills: {_esc(skills_str)}</div>'
+            '</div>'
+        )
 
         body = (
-            f'<h2>User Profile</h2>'
-            f'<div class="profile-grid">'
-            f'<div><h3 style="margin-bottom:1rem">Interest Distribution</h3>{bars_svg}</div>'
-            f'<div><h3 style="margin-bottom:1rem">Statistics</h3>{stats_html}</div>'
-            f'</div>'
+            '<h2>Pipeline Inspector</h2>'
+            '<p style="color:#777;margin-bottom:1.5rem">Data flow for the most recent task execution.</p>'
+            f'{stage1}<div class="pipeline-arrow">&#9660;</div>'
+            f'{stage2}<div class="pipeline-arrow">&#9660;</div>'
+            f'{stage3}<div class="pipeline-arrow">&#9660;</div>'
+            f'{stage4}'
         )
-        self._send_html(_page("Profile", body))
+        self._send_html(_page("Pipeline", _PIPELINE_CSS + body))
 
     def _serve_schedule(self) -> None:
         """Scheduled tasks page with table."""
@@ -967,65 +942,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = f"<h2>Scheduled Tasks ({count})</h2>{table_html}"
         self._send_html(_page("Schedule", body))
 
-    def _serve_templates(self) -> None:
-        """Task Templates page — published and discovered templates."""
-        published = []
-        if self.scheduled_store:
-            try:
-                all_tasks = self.scheduled_store.get_publishable(min_runs=2)
-                published = [t for t in all_tasks if t.get("published_template_hash")]
-            except Exception:
-                pass
-
-        publishable = []
-        if self.scheduled_store:
-            try:
-                all_tasks = self.scheduled_store.get_publishable(min_runs=2)
-                publishable = [t for t in all_tasks if not t.get("published_template_hash")]
-            except Exception:
-                pass
-
-        total_published = len(published)
-        total_publishable = len(publishable)
-
-        cards_html = (
-            '<div class="cards">'
-            f'<div class="card"><h3>Published</h3><div class="value">{total_published}</div>'
-            f'<div class="detail">shared to hub</div></div>'
-            f'<div class="card"><h3>Publishable</h3><div class="value">{total_publishable}</div>'
-            f'<div class="detail">ready to share</div></div>'
-            '</div>'
-        )
-
-        rows_html = []
-        for t in published + publishable:
-            name = _esc(t.get("name", ""))
-            cron = _esc(t.get("cron_expr", ""))
-            runs = t.get("run_count", 0)
-            status = "published" if t.get("published_template_hash") else "local"
-            status_color = "#4ecdc4" if status == "published" else "#feca57"
-            task_text = _esc(str(t.get("task_text", ""))[:100])
-            rows_html.append(
-                f'<tr>'
-                f'<td>{name}</td>'
-                f'<td style="color:{status_color}">{status}</td>'
-                f'<td>{cron}</td>'
-                f'<td>{runs}</td>'
-                f'<td class="content-cell">{task_text}</td>'
-                f'</tr>'
-            )
-
-        table = (
-            '<table><thead><tr>'
-            '<th>Name</th><th>Status</th><th>Schedule</th>'
-            '<th>Runs</th><th>Task</th>'
-            '</tr></thead><tbody>'
-            + "".join(rows_html)
-            + '</tbody></table>'
-        ) if rows_html else '<p style="color:#777">No task templates yet. Tasks with 2+ runs become publishable.</p>'
-
-        body = f"<h2>Task Templates</h2>{cards_html}{table}"
-        self._send_html(_page("Templates", body))
 
     # ------------------------------------------------------------------
     # API handlers
@@ -1056,14 +972,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
         self._send_json(stats)
 
-    def _api_templates(self) -> None:
-        templates = []
-        if self.scheduled_store:
+    def _api_memory_confidence(self) -> None:
+        """Confidence distribution statistics for memory entries."""
+        data = {"total": 0, "buckets": {"high": 0, "medium": 0, "low": 0, "very_low": 0}, "avg": 0.0}
+        if self.memory_store:
             try:
-                templates = self.scheduled_store.get_publishable(min_runs=2)
+                entries = self.memory_store.get_recent(limit=500)
+                data["total"] = len(entries)
+                total_conf = 0.0
+                for e in entries:
+                    conf = e.get("confidence") or 0.5
+                    total_conf += conf
+                    if conf >= 0.95:
+                        data["buckets"]["high"] += 1
+                    elif conf >= 0.70:
+                        data["buckets"]["medium"] += 1
+                    elif conf >= 0.40:
+                        data["buckets"]["low"] += 1
+                    else:
+                        data["buckets"]["very_low"] += 1
+                if entries:
+                    data["avg"] = round(total_conf / len(entries), 4)
             except Exception:
                 pass
-        self._send_json(templates)
+        self._send_json(data)
+
+    def _api_pipeline(self) -> None:
+        """Return last pipeline snapshot."""
+        data = {}
+        if self.state:
+            data = getattr(self.state, "_last_pipeline", None) or {}
+        self._send_json(data)
 
     def _api_skills(self) -> None:
         skills = []
@@ -1074,26 +1013,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
         self._send_json(skills)
 
-    def _api_intent(self) -> None:
-        intents = []
-        if self.memory_store:
-            try:
-                intents = self.memory_store.get_by_type("evolution_intent", limit=30)
-            except Exception:
-                pass
-        self._send_json(intents)
-
-    def _api_profile(self) -> None:
-        data: dict = {"categories": {}, "stats": {}, "topics": []}
-        if self.user_profiler:
-            try:
-                data["categories"] = self.user_profiler.get_category_distribution()
-                data["stats"] = self.user_profiler.get_stats()
-                data["topics"] = self.user_profiler.get_top_topics(20)
-            except Exception:
-                pass
-        self._send_json(data)
-
     def _api_schedules(self) -> None:
         tasks = []
         if self.scheduled_store:
@@ -1102,15 +1021,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._send_json(tasks)
-
-    def _api_skill_hit_ratio(self) -> None:
-        data = []
-        if self.memory_store:
-            try:
-                data = _compute_daily_skill_hit_ratio(self.memory_store)
-            except Exception:
-                pass
-        self._send_json(data)
 
     def _api_llm_usage(self) -> None:
         data: dict = {"recent": [], "summary": {}}
@@ -1141,18 +1051,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(history)
 
     def _api_status(self) -> None:
-        gen = 0
+        cycle = 0
         alive = False
         if self.state:
             try:
                 snap = self.state.snapshot()
-                gen = snap.get("generation", 0)
+                cycle = snap.get("cycle", 0)
                 alive = snap.get("alive", False)
             except Exception:
                 pass
         self._send_json({
             "dashboard": "running",
-            "generation": gen,
+            "cycle": cycle,
             "alive": alive,
             "timestamp": time.time(),
         })

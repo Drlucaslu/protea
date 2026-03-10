@@ -105,7 +105,7 @@ class MatrixBot:
         raw = "PAUSED" if snap["paused"] else ("ALIVE" if snap["alive"] else "DEAD")
         lines = [
             "Protea Status",
-            f"Generation: {snap['generation']}",
+            f"Cycle: {snap['cycle']}",
             f"Status: {raw}",
             f"Uptime: {elapsed:.0f}s",
             f"Queued tasks: {snap['task_queue_size']}",

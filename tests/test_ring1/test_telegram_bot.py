@@ -154,22 +154,19 @@ def _make_bot(port: int, tmp_path: pathlib.Path, monkeypatch) -> TelegramBot:
 class TestSentinelState:
     def test_initial_values(self):
         state = SentinelState()
-        assert state.generation == 0
+        assert state.cycle == 0
         assert state.alive is False
-        assert state.mutation_rate == 0.0
         assert not state.pause_event.is_set()
         assert not state.kill_event.is_set()
 
     def test_snapshot_under_lock(self):
         state = SentinelState()
         with state.lock:
-            state.generation = 5
+            state.cycle = 5
             state.alive = True
-            state.mutation_rate = 0.3
         snap = state.snapshot()
-        assert snap["generation"] == 5
+        assert snap["cycle"] == 5
         assert snap["alive"] is True
-        assert snap["mutation_rate"] == 0.3
         assert snap["paused"] is False
 
     def test_pause_event(self):
@@ -202,13 +199,6 @@ class TestSentinelState:
         state.p0_event.set()
         assert state.p0_event.is_set()
 
-    def test_evolution_directive_field(self):
-        state = SentinelState()
-        assert state.evolution_directive == ""
-        with state.lock:
-            state.evolution_directive = "test"
-        assert state.evolution_directive == "test"
-
     def test_snapshot_includes_new_fields(self):
         state = SentinelState()
         snap = state.snapshot()
@@ -216,12 +206,6 @@ class TestSentinelState:
         assert "task_queue_size" in snap
         assert snap["p0_active"] is False
         assert snap["task_queue_size"] == 0
-
-    def test_last_evolution_time_field(self):
-        state = SentinelState()
-        assert state.last_evolution_time == 0.0
-        state.last_evolution_time = 1234.0
-        assert state.last_evolution_time == 1234.0
 
     def test_skill_store_field(self):
         state = SentinelState()
@@ -247,15 +231,12 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             with bot.state.lock:
-                bot.state.generation = 7
+                bot.state.cycle = 7
                 bot.state.alive = True
-                bot.state.mutation_rate = 0.25
-                bot.state.max_runtime_sec = 60
             reply = bot._handle_command("/status")
             assert "*Protea 状态面板*" in reply
-            assert "🧬 代 (Generation): 7" in reply
+            assert "🔄 周期 (Cycle): 7" in reply
             assert "ALIVE (运行中)" in reply
-            assert "🎲 变异率 (Mutation rate): 0.25" in reply
         finally:
             server.shutdown()
 
@@ -274,9 +255,9 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/history")
-            assert "第 3 代" in reply
-            assert "0.95" in reply
-            assert "第 2 代" in reply
+            assert "周期 3" in reply
+            assert "✅ 正常" in reply
+            assert "周期 2" in reply
             assert "❌ 失败" in reply
             bot.fitness.get_history.assert_called_once_with(limit=10)
         finally:
@@ -289,27 +270,6 @@ class TestTelegramBotCommands:
             bot.fitness.get_history.return_value = []
             reply = bot._handle_command("/history")
             assert "暂无历史记录。" in reply
-        finally:
-            server.shutdown()
-
-    def test_top(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            reply = bot._handle_command("/top")
-            assert "第 3 代" in reply
-            assert "0.95" in reply
-            bot.fitness.get_best.assert_called_once_with(n=5)
-        finally:
-            server.shutdown()
-
-    def test_top_empty(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            bot.fitness.get_best.return_value = []
-            reply = bot._handle_command("/top")
-            assert "暂无适应度数据。" in reply
         finally:
             server.shutdown()
 
@@ -348,7 +308,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/pause")
-            assert "进化已暂停。" in reply
+            assert "Ring 2 已暂停。" in reply
             assert bot.state.pause_event.is_set()
         finally:
             server.shutdown()
@@ -369,7 +329,7 @@ class TestTelegramBotCommands:
             bot = _make_bot(port, tmp_path, monkeypatch)
             bot.state.pause_event.set()
             reply = bot._handle_command("/resume")
-            assert "进化已恢复。" in reply
+            assert "Ring 2 已恢复。" in reply
             assert not bot.state.pause_event.is_set()
         finally:
             server.shutdown()
@@ -408,7 +368,7 @@ class TestTelegramBotCommands:
         try:
             bot = _make_bot(port, tmp_path, monkeypatch)
             reply = bot._handle_command("/status@ProteaBot")
-            assert "🧬 代 (Generation):" in reply
+            assert "🔄 周期 (Cycle):" in reply
         finally:
             server.shutdown()
 
@@ -564,7 +524,7 @@ class TestBotLifecycle:
             assert len(_BotHandler.sent_messages) >= 1
             reply = _BotHandler.sent_messages[0]
             assert reply["chat_id"] == "12345"
-            assert "🧬 代 (Generation):" in reply["text"]
+            assert "🔄 周期 (Cycle):" in reply["text"]
 
             bot.stop()
             thread.join(timeout=5)
@@ -627,40 +587,6 @@ class TestFreeTextEnqueue:
             server.shutdown()
 
 
-class TestDirectCommand:
-    """Test /direct command sets evolution directive."""
-
-    def test_direct_sets_directive(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            reply = bot._handle_command("/direct 变成贪吃蛇", chat_id="12345")
-            assert "进化指令已设置:" in reply
-            assert "贪吃蛇" in reply
-            with bot.state.lock:
-                assert bot.state.evolution_directive == "变成贪吃蛇"
-        finally:
-            server.shutdown()
-
-    def test_direct_no_args_shows_usage(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            reply = bot._handle_command("/direct", chat_id="12345")
-            assert "用法: /direct" in reply
-        finally:
-            server.shutdown()
-
-    def test_direct_pulses_p0_event(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            bot._handle_command("/direct make a game", chat_id="12345")
-            assert bot.state.p0_event.is_set()
-        finally:
-            server.shutdown()
-
-
 class TestTasksCommand:
     """Test /tasks command shows queue status."""
 
@@ -674,18 +600,6 @@ class TestTasksCommand:
             assert "P0 执行中 (Active): 否" in reply
         finally:
             server.shutdown()
-
-    def test_tasks_shows_directive(self, tmp_path, monkeypatch):
-        server, port = _make_server()
-        try:
-            bot = _make_bot(port, tmp_path, monkeypatch)
-            with bot.state.lock:
-                bot.state.evolution_directive = "make snake game"
-            reply = bot._handle_command("/tasks")
-            assert "make snake game" in reply
-        finally:
-            server.shutdown()
-
 
 class TestMemoryCommand:
     """Test /memory command shows recent memories."""
@@ -721,7 +635,7 @@ class TestMemoryCommand:
             ms.add(2, "observation", "CA patterns are stable")
             bot.state.memory_store = ms
             reply = bot._handle_command("/memory")
-            assert "[第 1 代," in reply
+            assert "[observation]" in reply
             assert "observation" in reply
             assert "CA patterns" in reply
             assert "最近记忆" in reply

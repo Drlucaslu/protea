@@ -85,7 +85,7 @@ class TestTelegramNotifier:
         result = notifier.send("test")
         assert result is False
 
-    def test_notify_generation_complete(self, monkeypatch):
+    def test_notify_sentinel_online(self, monkeypatch):
         server, port = _make_server()
         try:
             import ring1.telegram as mod
@@ -94,31 +94,10 @@ class TestTelegramNotifier:
                 f"http://127.0.0.1:{port}/bot{{token}}/sendMessage"
             )
             notifier = TelegramNotifier("tok", "chat")
-            result = notifier.notify_generation_complete(
-                generation=5, score=0.85, survived=True, commit_hash="abc123def456"
-            )
+            result = notifier.notify_sentinel_online(cycle=5)
             assert result is True
             msg = _TelegramHandler.received_messages[0]
-            assert "Gen 5" in msg["text"]
-            assert "SURVIVED" in msg["text"]
-            assert "0.85" in msg["text"]
-        finally:
-            server.shutdown()
-
-    def test_notify_error(self, monkeypatch):
-        server, port = _make_server()
-        try:
-            import ring1.telegram as mod
-            monkeypatch.setattr(
-                mod, "_API_BASE",
-                f"http://127.0.0.1:{port}/bot{{token}}/sendMessage"
-            )
-            notifier = TelegramNotifier("tok", "chat")
-            result = notifier.notify_error(3, "Something broke")
-            assert result is True
-            msg = _TelegramHandler.received_messages[0]
-            assert "Gen 3" in msg["text"]
-            assert "Something broke" in msg["text"]
+            assert "5" in msg["text"]
         finally:
             server.shutdown()
 

@@ -31,7 +31,7 @@ from ring1.telegram_bot import SentinelState, Task
 def _make_state() -> SentinelState:
     state = SentinelState()
     with state.lock:
-        state.generation = 5
+        state.cycle = 5
         state.alive = True
     return state
 
@@ -73,15 +73,13 @@ def _make_executor(
 # ---------------------------------------------------------------------------
 
 class TestBuildTaskContext:
-    def test_includes_generation(self):
-        snap = {"generation": 7, "alive": True, "paused": False,
-                "last_score": 0.9, "last_survived": True}
+    def test_includes_cycle(self):
+        snap = {"cycle": 7, "alive": True, "paused": False}
         ctx = _build_task_context(snap, "")
-        assert "Generation: 7" in ctx
+        assert "Cycle: 7" in ctx
 
     def test_includes_source(self):
-        snap = {"generation": 0, "alive": False, "paused": False,
-                "last_score": 0.0, "last_survived": False}
+        snap = {"cycle": 0, "alive": False, "paused": False}
         ctx = _build_task_context(snap, "print('hello')")
         assert "print('hello')" in ctx
         assert "```python" in ctx

@@ -79,37 +79,17 @@ class TelegramNotifier:
             log.debug("Telegram send_with_keyboard failed", exc_info=True)
             return None
 
-    def notify_generation_complete(
-        self,
-        generation: int,
-        score: float,
-        survived: bool,
-        commit_hash: str,
-    ) -> bool:
-        """Notify about a completed generation."""
-        status = "SURVIVED" if survived else "DIED"
-        msg = (
-            f"*Protea Gen {generation}*\n"
-            f"Status: {status}\n"
-            f"Score: {score:.2f}\n"
-            f"Commit: `{commit_hash[:12]}`"
-        )
+    def notify_error(self, context: int, error: str) -> bool:
+        """Send an error notification."""
+        msg = f"*Protea ERROR*\n```\n{error[:500]}\n```"
         return self.send(msg)
 
-    def notify_error(self, generation: int, error: str) -> bool:
-        """Notify about an error during evolution."""
-        msg = (
-            f"*Protea Gen {generation} ERROR*\n"
-            f"```\n{error[:500]}\n```"
-        )
-        return self.send(msg)
-
-    def notify_sentinel_online(self, generation: int) -> bool:
+    def notify_sentinel_online(self, cycle: int = 0) -> bool:
         """Notify that the sentinel (Ring 0) has started/restarted."""
         msg = (
             f"🛡️ *哨兵程序已上线*\n\n"
             f"Ring 0 已启动\n"
-            f"当前代数: Gen {generation}\n"
+            f"当前周期: {cycle}\n"
             f"监控状态: ✅ 运行中"
         )
         return self.send(msg)

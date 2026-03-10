@@ -43,16 +43,17 @@ DIMENSION_WEIGHTS = {
     "reversibility": 0.15,
 }
 
+# Quality gate thresholds for reflection findings.
+_REFLECTION_MIN_CONFIDENCE = 0.45
+_REFLECTION_MIN_EVIDENCE = 1
+
 # Reflection system prompt.
 _REFLECTION_SYSTEM_PROMPT = """\
 You are the reflection engine for Protea, a personal AI assistant system.
 Analyze task execution data and identify actionable improvements.
 
-## Important Context
-- Ring 2 code is NOT auto-evolved. It runs the same code every generation.
-- Stable/unchanged fitness scores across generations are NORMAL, not a problem.
-- Do NOT suggest evolution-related actions (mutation, population, crossover, etc.).
-- Focus on task quality, token efficiency, memory health, and config tuning.
+## Focus Areas
+- Task quality, token efficiency, memory health, and config tuning.
 
 ## Evaluation Dimensions
 1. Task effectiveness: Were tasks completed correctly? Any failures/timeouts/retries?
@@ -74,7 +75,6 @@ Return [] when no improvements needed. Prefer no proposals over low-quality ones
 _IDLE_REFLECTION_SYSTEM_PROMPT = """\
 You are the reflection engine for Protea, a personal AI assistant system.
 The system has been idle. Perform a deep review including memory organization.
-Ring 2 code is NOT auto-evolved — do NOT suggest evolution-related changes.
 
 ## Review Areas
 1. Memory health: contradictions, stale entries, organization opportunities
@@ -211,7 +211,7 @@ class Reflector:
                 if self.notifier and entry_id > 0:
                     try:
                         text = (
-                            f"*\\[Reflection\\] {proposal.category}*\n"
+                            f"*[Reflection] {proposal.category}*\n"
                             f"{proposal.description}\n"
                             f"Confidence: {proposal.confidence:.0%}"
                         )
@@ -286,6 +286,13 @@ class Reflector:
                 # Skip rejected or failed reflections.
                 outcome = meta.get("outcome", "")
                 if outcome in ("user_rejected", "auto_failed"):
+                    continue
+
+                # Skip low-confidence reflections from retrieval.
+                entry_conf = r.get("confidence")
+                if entry_conf is None:
+                    entry_conf = meta.get("confidence", 0.5)
+                if entry_conf < _REFLECTION_MIN_CONFIDENCE:
                     continue
 
                 # Check keyword overlap.
@@ -549,9 +556,36 @@ class Reflector:
         return proposals
 
     def _store_reflection(self, proposal: ReflectionProposal, outcome: str) -> int:
-        """Store reflection result in episodic memory. Returns entry ID or -1."""
+        """Store reflection result in episodic memory. Returns entry ID or -1.
+
+        Quality gate (inspired by OpenClaw inner-life-reflect):
+        - Reject low-confidence proposals (< _REFLECTION_MIN_CONFIDENCE)
+        - Reject proposals without evidence
+        - Reject near-duplicate proposals (> 70% similarity to recent findings)
+        """
         if not self.memory_store:
             return -1
+
+        # Quality gate: minimum confidence.
+        if proposal.confidence < _REFLECTION_MIN_CONFIDENCE:
+            log.info("Reflection rejected (low confidence %.2f): %s",
+                     proposal.confidence, proposal.description[:80])
+            return -1
+
+        # Quality gate: minimum evidence.
+        if len(proposal.evidence) < _REFLECTION_MIN_EVIDENCE:
+            log.info("Reflection rejected (no evidence): %s",
+                     proposal.description[:80])
+            return -1
+
+        # Quality gate: novelty check against recent findings.
+        from difflib import SequenceMatcher
+        recent = self.memory_store.get_by_type("reflection_finding", limit=3)
+        for r in recent:
+            if SequenceMatcher(None, proposal.description, r.get("content", "")).ratio() > 0.70:
+                log.info("Reflection rejected (duplicate of #%d): %s",
+                         r.get("id", 0), proposal.description[:80])
+                return -1
 
         try:
             gen = self.fitness.get_max_generation() if self.fitness else 0
@@ -575,6 +609,11 @@ class Reflector:
     def _execute_memory_cleanup(self, action: dict) -> bool:
         """Execute a memory cleanup action."""
         if not self.memory_store:
+            return False
+
+        # Guard: LLM sometimes returns action as a string instead of dict.
+        if isinstance(action, str):
+            log.warning("Memory cleanup action is a string, not dict: %s", action[:80])
             return False
 
         action_type = action.get("type", "")

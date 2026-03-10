@@ -250,7 +250,7 @@ def _extract_recall_keywords(text: str) -> list[str]:
 _TASK_SYSTEM_PROMPT_BASE = """\
 You are Protea, a self-evolving artificial life agent running on a host machine.
 You are helpful and concise.  Answer the user's question or perform the requested
-analysis.  You have context about your current state (generation, survival, code).
+analysis.  You have context about your current state.
 Keep responses under 3500 characters so they fit in a Telegram message.
 
 PROGRESS REPORTING: For multi-step tasks, call message() to report progress between steps.
@@ -345,11 +345,9 @@ def _build_task_context(
     from datetime import datetime
     parts = ["## Protea State"]
     parts.append(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %A')}")
-    parts.append(f"Generation: {state_snapshot.get('generation', '?')}")
+    parts.append(f"Cycle: {state_snapshot.get('cycle', '?')}")
     parts.append(f"Alive: {state_snapshot.get('alive', '?')}")
     parts.append(f"Paused: {state_snapshot.get('paused', '?')}")
-    parts.append(f"Last score: {state_snapshot.get('last_score', '?')}")
-    parts.append(f"Last survived: {state_snapshot.get('last_survived', '?')}")
     parts.append("")
 
     if ring2_source:
@@ -700,8 +698,10 @@ class TaskExecutor:
                 try:
                     # Load latest status snapshot as context anchor.
                     snapshots = self.memory_store.get_by_type("status_snapshot", limit=1)
-                    recent = self.memory_store.get_recent(3)
+                    recent = self.memory_store.get_recent(6)
                     recent = [m for m in recent if m.get("entry_type") != "status_snapshot"]
+                    # Prefer higher-confidence memories for context slots.
+                    recent.sort(key=lambda m: m.get("confidence") or 0.5, reverse=True)
                     memories = snapshots + recent[:2]
                 except Exception:
                     pass
@@ -950,6 +950,34 @@ class TaskExecutor:
                      getattr(task, "task_id", "?"), duration,
                      usage.get("input_tokens", 0), usage.get("output_tokens", 0),
                      len(tool_sequence), ",".join(skills_used) or "none")
+            # Save pipeline snapshot for dashboard visualization.
+            try:
+                self.state._last_pipeline = {
+                    "task_text": task.text[:200],
+                    "task_id": getattr(task, "task_id", ""),
+                    "timestamp": time.time(),
+                    "memories": [{"id": m.get("id"), "type": m.get("entry_type"),
+                                  "confidence": m.get("confidence"), "content": m.get("content", "")[:100]}
+                                 for m in memories],
+                    "recalled": [{"id": m.get("id"), "content": m.get("content", "")[:100],
+                                  "score": m.get("search_score"), "confidence": m.get("confidence")}
+                                 for m in recalled],
+                    "rules": [{"id": r.get("id"), "content": r.get("content", "")[:100],
+                               "confidence": r.get("confidence")} for r in semantic_rules],
+                    "strategies": [{"id": s.get("id"), "content": s.get("content", "")[:100],
+                                    "confidence": s.get("confidence")} for s in strategies],
+                    "reflections": [{"id": r.get("id"), "content": r.get("content", "")[:100],
+                                     "confidence": r.get("confidence")} for r in reflections],
+                    "context_chars": len(context),
+                    "context_tokens_est": len(context) // 4,
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                    "duration_sec": round(duration, 2),
+                    "tools_used": tool_sequence,
+                    "skills_used": skills_used,
+                }
+            except Exception:
+                log.debug("Failed to save pipeline snapshot", exc_info=True)
             # Signal urgent reflection for significant events.
             urgent_reason = ""
             input_tokens = usage.get("input_tokens", 0)
@@ -994,7 +1022,7 @@ class TaskExecutor:
                     }
                     if embedding is not None:
                         self.memory_store.add_with_embedding(
-                            generation=snap.get("generation", 0),
+                            generation=snap.get("cycle", 0),
                             entry_type="task",
                             content=memory_text,
                             metadata=task_meta,
@@ -1002,7 +1030,7 @@ class TaskExecutor:
                         )
                     else:
                         self.memory_store.add(
-                            generation=snap.get("generation", 0),
+                            generation=snap.get("cycle", 0),
                             entry_type="task",
                             content=memory_text,
                             metadata=task_meta,
@@ -1106,7 +1134,7 @@ class TaskExecutor:
                 if len(rule_text) > 200:
                     rule_text = rule_text[:200]
                 self.memory_store.add(
-                    generation=self.state.snapshot().get("generation", 0),
+                    generation=self.state.snapshot().get("cycle", 0),
                     entry_type="semantic_rule",
                     content=rule_text,
                     importance=0.8,
@@ -1223,7 +1251,7 @@ class TaskExecutor:
 
             # Parse strategies (lines starting with '- ').
             snap = self.state.snapshot()
-            gen = snap.get("generation", 0)
+            gen = snap.get("cycle", 0)
             for line in result.strip().splitlines():
                 line = line.strip()
                 if line.startswith("- "):

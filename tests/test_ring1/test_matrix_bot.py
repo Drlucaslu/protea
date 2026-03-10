@@ -69,7 +69,7 @@ class TestCommandDispatch:
 
     def test_status(self, bot):
         reply = bot._handle_command("/status")
-        assert "Generation" in reply
+        assert "Cycle" in reply
         assert "Status" in reply
 
     def test_tasks(self, bot):

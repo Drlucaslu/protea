@@ -40,11 +40,11 @@ class SentinelState:
         # Synchronisation primitives
         "lock", "pause_event", "kill_event", "p0_event", "restart_event",
         "p0_active", "p1_active",
-        # Generation state
-        "generation", "start_time", "alive", "mutation_rate",
+        # Cycle state
+        "cycle", "start_time", "alive",
         "max_runtime_sec", "last_score", "last_survived",
         # Task / scheduling
-        "task_queue", "evolution_directive", "last_evolution_time",
+        "task_queue",
         "last_task_completion", "executor_thread",
         "pending_reflection_reason",
         # Store references
@@ -55,8 +55,6 @@ class SentinelState:
         "convergence_proposals", "_convergence_context",
         # Preference store reference (for feedback)
         "_preference_store",
-        # Output queue
-        "output_queue",
         # Nudge engine
         "nudge_queue", "_nudge_context", "_nudge_context_path",
         # Soul onboarding
@@ -76,17 +74,14 @@ class SentinelState:
         self.p0_active = threading.Event()
         self.p1_active = threading.Event()
         # Mutable fields — protected by self.lock
-        self.generation: int = 0
+        self.cycle: int = 0
         self.start_time: float = time.time()
         self.alive: bool = False
-        self.mutation_rate: float = 0.0
-        self.max_runtime_sec: float = 0.0
+        self.max_runtime_sec: float = 600.0
         self.last_score: float = 0.0
         self.last_survived: bool = False
         # Task / scheduling
         self.task_queue: queue.Queue = queue.Queue()
-        self.evolution_directive: str = ""
-        self.last_evolution_time: float = 0.0
         self.last_task_completion: float = 0.0
         self.executor_thread: threading.Thread | None = None
         self.pending_reflection_reason: str = ""  # Set by executor for urgent reflection
@@ -105,7 +100,6 @@ class SentinelState:
         self._convergence_context: dict[str, dict] = {}
         self._preference_store = None  # Set by Sentinel after creation
         # Output queue
-        self.output_queue = None  # Set by Sentinel after creation
         # Nudge engine
         self.nudge_queue: queue.Queue = queue.Queue()
         self._nudge_context: dict[str, dict] = {}
@@ -156,10 +150,9 @@ class SentinelState:
         """Return a consistent copy of all fields."""
         with self.lock:
             return {
-                "generation": self.generation,
+                "cycle": self.cycle,
                 "start_time": self.start_time,
                 "alive": self.alive,
-                "mutation_rate": self.mutation_rate,
                 "max_runtime_sec": self.max_runtime_sec,
                 "last_score": self.last_score,
                 "last_survived": self.last_survived,
@@ -430,28 +423,8 @@ class TelegramBot:
         })
 
     def deliver_evolution_outputs(self) -> None:
-        """Check output queue and send pending evolution outputs to user."""
-        oq = getattr(self.state, 'output_queue', None)
-        if not oq:
-            return
-        try:
-            pending = oq.get_pending(limit=2)
-        except Exception:
-            log.debug("Output queue get_pending failed", exc_info=True)
-            return
-        for item in pending:
-            text = f"\U0001f9ec 新进化能力: **{item['capability']}**\n\n{item['summary'][:300]}"
-            buttons = [[
-                {"text": "\U0001f44d 不错", "callback_data": f"evo:accept:{item['id']}"},
-                {"text": "\U0001f4cc 定期执行", "callback_data": f"evo:schedule:{item['id']}"},
-                {"text": "\U0001f44e 不要了", "callback_data": f"evo:reject:{item['id']}"},
-            ]]
-            result = self._send_message_with_keyboard(text, buttons)
-            msg_id = result.get("result", {}).get("message_id") if result else None
-            try:
-                oq.mark_delivered(item['id'], msg_id)
-            except Exception:
-                log.debug("Output queue mark_delivered failed", exc_info=True)
+        """No-op — evolution outputs removed."""
+        pass
 
     def send_feedback_prompt(self) -> None:
         """Send a quick feedback prompt after a completed task.
@@ -896,11 +869,9 @@ class TelegramBot:
         desc = self._get_ring2_description()
         lines = [
             f"*Protea 状态面板*",
-            f"🧬 代 (Generation): {snap['generation']}",
+            f"🔄 周期 (Cycle): {snap['cycle']}",
             f"📡 状态 (Status): {status}",
             f"⏱ 运行时长 (Uptime): {elapsed:.0f}s",
-            f"🎲 变异率 (Mutation rate): {snap['mutation_rate']:.2f}",
-            f"⏳ 最大运行时间 (Max runtime): {snap['max_runtime_sec']:.0f}s",
         ]
         if desc:
             lines.append(f"🧠 当前程序 (Program): {desc}")
@@ -919,25 +890,11 @@ class TelegramBot:
         rows = self.fitness.get_history(limit=10)
         if not rows:
             return "暂无历史记录。"
-        lines = ["*最近 10 代历史 (Recent 10 generations):*"]
+        lines = ["*最近 10 个周期 (Recent 10 cycles):*"]
         for r in rows:
-            surv = "✅ 存活" if r["survived"] else "❌ 失败"
+            surv = "✅ 正常" if r["survived"] else "❌ 失败"
             lines.append(
-                f"第 {r['generation']} 代  适应度={r['score']:.2f}  "
-                f"{surv}  {r['runtime_sec']:.0f}s"
-            )
-        return "\n".join(lines)
-
-    def _cmd_top(self) -> str:
-        rows = self.fitness.get_best(n=5)
-        if not rows:
-            return "暂无适应度数据。"
-        lines = ["*适应度排行 Top 5 (Top 5 generations):*"]
-        for r in rows:
-            surv = "✅ 存活" if r["survived"] else "❌ 失败"
-            lines.append(
-                f"第 {r['generation']} 代  适应度={r['score']:.2f}  "
-                f"{surv}  `{r['commit_hash'][:8]}`"
+                f"周期 {r['generation']}  {surv}  {r['runtime_sec']:.0f}s"
             )
         return "\n".join(lines)
 
@@ -955,13 +912,13 @@ class TelegramBot:
         if self.state.pause_event.is_set():
             return "已经处于暂停状态。"
         self.state.pause_event.set()
-        return "进化已暂停。"
+        return "Ring 2 已暂停。"
 
     def _cmd_resume(self) -> str:
         if not self.state.pause_event.is_set():
             return "当前未暂停。"
         self.state.pause_event.clear()
-        return "进化已恢复。"
+        return "Ring 2 已恢复。"
 
     def _cmd_kill(self) -> str:
         self.state.kill_event.set()
@@ -970,15 +927,13 @@ class TelegramBot:
     def _cmd_help(self) -> str:
         return (
             "*Protea 指令列表:*\n"
-            "/status — 查看状态 (代数、运行时间、状态)\n"
-            "/history — 最近 10 代历史\n"
-            "/top — 适应度排行 Top 5\n"
+            "/status — 查看状态\n"
+            "/history — 最近运行记录\n"
             "/code — 查看当前 Ring 2 源码\n"
-            "/pause — 暂停进化循环\n"
-            "/resume — 恢复进化循环\n"
-            "/kill — 重启 Ring 2 (不推进代数)\n"
-            "/direct <文本> — 设置进化指令\n"
-            "/tasks — 查看任务队列与指令\n"
+            "/pause — 暂停 Ring 2\n"
+            "/resume — 恢复 Ring 2\n"
+            "/kill — 重启 Ring 2\n"
+            "/tasks — 查看任务队列\n"
             "/memory — 查看最近记忆\n"
             "/forget — 清除所有记忆\n"
             "/skills — 列出已保存的技能\n"
@@ -1001,28 +956,13 @@ class TelegramBot:
             "💾 所有文件自动保存到 telegram_output/ 目录"
         )
 
-    def _cmd_direct(self, full_text: str) -> str:
-        """Set an evolution directive from /direct <text>."""
-        # Strip the /direct prefix (and optional @botname)
-        parts = full_text.strip().split(None, 1)
-        if len(parts) < 2 or not parts[1].strip():
-            return "用法: /direct <指令文本>\n示例: /direct 变成贪吃蛇"
-        directive = parts[1].strip()
-        with self.state.lock:
-            self.state.evolution_directive = directive
-        self.state.p0_event.set()  # wake sentinel
-        return f"进化指令已设置: {directive}"
-
     def _cmd_tasks(self) -> str:
-        """Show task queue status, current directive, and recent tasks."""
+        """Show task queue status and recent tasks."""
         snap = self.state.snapshot()
         lines = ["*任务队列 (Task Queue):*"]
         lines.append(f"排队中 (Queued): {snap['task_queue_size']}")
         p0 = "是" if snap["p0_active"] else "否"
         lines.append(f"P0 执行中 (Active): {p0}")
-        directive = self.state.evolution_directive
-        if directive:
-            lines.append(f"指令 (Directive): {directive}")
         # Recent tasks from store
         ts = self.state.task_store
         if ts:
@@ -1047,7 +987,7 @@ class TelegramBot:
         lines = [f"*最近记忆 (共 {ms.count()} 条):*"]
         for e in entries:
             lines.append(
-                f"[第 {e['generation']} 代, {e['entry_type']}] {e['content']}"
+                f"[{e['entry_type']}] {e['content']}"
             )
         return "\n".join(lines)
 
@@ -1482,7 +1422,7 @@ class TelegramBot:
             ms = self.state.memory_store
             if ms:
                 ms.add(
-                    generation=self.state.snapshot().get("generation", 0),
+                    generation=self.state.snapshot().get("cycle", 0),
                     entry_type="semantic_rule",
                     content=ctx["rule_text"],
                     importance=0.9,
@@ -1496,20 +1436,6 @@ class TelegramBot:
             return "好的，不保存这条规则。"
 
         # --- output feedback callbacks ---
-        if data.startswith("evo:accept:"):
-            item_id = int(data.split(":")[-1])
-            oq = getattr(self.state, 'output_queue', None)
-            if oq:
-                oq.mark_feedback(item_id, "accepted")
-            return "\U0001f44d Noted!"
-
-        if data.startswith("evo:reject:"):
-            item_id = int(data.split(":")[-1])
-            oq = getattr(self.state, 'output_queue', None)
-            if oq:
-                oq.mark_feedback(item_id, "rejected")
-            return "\U0001f44e Noted, won't repeat."
-
         # --- habit callbacks ---
         if data.startswith("habit:schedule:"):
             # Format: habit:schedule:<template_key>:<cron_expr>[|<auto_stop_hours>]
@@ -1638,7 +1564,6 @@ class TelegramBot:
     _COMMANDS: dict[str, str] = {
         "/status": "_cmd_status",
         "/history": "_cmd_history",
-        "/top": "_cmd_top",
         "/code": "_cmd_code",
         "/pause": "_cmd_pause",
         "/resume": "_cmd_resume",
@@ -1758,10 +1683,8 @@ class TelegramBot:
         if not stripped.startswith("/"):
             return self._enqueue_task(stripped, chat_id, reply_to_message_id)
 
-        # /direct, /skill, /run, /find need special handling (passes full text)
+        # /skill, /run, /find need special handling (passes full text)
         first_word = stripped.split()[0].lower().split("@")[0]
-        if first_word == "/direct":
-            return self._cmd_direct(stripped)
         if first_word == "/skill":
             return self._cmd_skill(stripped)
         if first_word == "/run":

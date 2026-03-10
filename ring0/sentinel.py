@@ -1,7 +1,7 @@
 """Sentinel — Ring 0 main loop (pure stdlib).
 
-Launches and supervises Ring 2.  On success (survived max_runtime_sec),
-records fitness and advances generation.  On failure, rolls back to the
+Launches and supervises Ring 2.  Restarts it on a fixed cycle
+(default 600s) and records run metrics.  On failure, rolls back to the
 last known-good commit and restarts.
 """
 
@@ -26,7 +26,6 @@ from ring0.git_manager import GitManager
 from ring0.heartbeat import HeartbeatMonitor
 from ring0.memory import MemoryStore
 from ring0.output_filter import filter_ring2_output
-from ring0.parameter_seed import generate_params, params_to_dict
 from ring0.resource_monitor import check_resources
 from typing import NamedTuple
 
@@ -76,7 +75,7 @@ def _load_config(project_root: pathlib.Path) -> dict:
 def _start_ring2(ring2_path: pathlib.Path, heartbeat_path: pathlib.Path) -> subprocess.Popen:
     """Launch the Ring 2 process and return its Popen handle."""
     log_file = ring2_path / ".output.log"
-    # Truncate log to last 200 lines before new generation.
+    # Truncate log to last 200 lines before new cycle.
     # Use tail instead of read_text() to avoid OOM on huge log files.
     if log_file.exists():
         try:
@@ -424,7 +423,6 @@ def run(project_root: pathlib.Path) -> None:
     scheduled_store = _best_effort("ScheduledTaskStore", lambda: __import__("ring0.scheduled_task_store", fromlist=["ScheduledTaskStore"]).ScheduledTaskStore(db_path))
     user_profiler = _best_effort("UserProfiler", lambda: __import__("ring0.user_profile", fromlist=["UserProfiler"]).UserProfiler(db_path))
     preference_store = _best_effort("PreferenceStore", lambda: __import__("ring0.preference_store", fromlist=["PreferenceStore"]).PreferenceStore(db_path, cfg.get("ring1", {}).get("user_profile", {})))
-    output_queue = _best_effort("OutputQueue", lambda: __import__("ring0.output_queue", fromlist=["OutputQueue"]).OutputQueue(db_path))
     memory_curator = _create_memory_curator(project_root)
 
     # Capability skill sandbox — venv manager.
@@ -473,7 +471,6 @@ def run(project_root: pathlib.Path) -> None:
     state.task_store = task_store
     state.scheduled_store = scheduled_store
     state._preference_store = preference_store
-    state.output_queue = output_queue
     state._nudge_context_path = project_root / "data" / "nudge_context.json"
     state._load_nudge_context()
     bot = _create_bot(project_root, state, fitness, ring2_path)
@@ -602,13 +599,10 @@ def run(project_root: pathlib.Path) -> None:
     commit_watcher = CommitWatcher(project_root, state.restart_event)
     threading.Thread(target=commit_watcher.run, name="commit-watcher", daemon=True).start()
 
-    # Restore generation counter from fitness database.
-    restored_gen = fitness.get_max_generation()
-    if restored_gen >= 0:
-        generation = restored_gen + 1
-        log.info("Resumed from generation %d (last recorded: %d)", generation, restored_gen)
-    else:
-        generation = 0
+    # Restore cycle counter from fitness database (reuses generation column).
+    restored_cycle = fitness.get_max_generation()
+    cycle = (restored_cycle + 1) if restored_cycle >= 0 else 0
+    max_runtime_sec = 600  # fixed Ring 2 cycle length
 
     last_good_hash: str | None = None
     # Jitter: initial delay of 0–50% of interval so nodes don't all sync at once.
@@ -618,7 +612,7 @@ def run(project_root: pathlib.Path) -> None:
 
     # Initial snapshot of seed code.
     try:
-        last_good_hash = git.snapshot(f"gen-{generation} seed")
+        last_good_hash = git.snapshot(f"cycle-{cycle} seed")
     except subprocess.CalledProcessError:
         pass
 
@@ -626,7 +620,7 @@ def run(project_root: pathlib.Path) -> None:
 
     # Notify Telegram that sentinel is online
     if notifier:
-        notifier.notify_sentinel_online(generation)
+        notifier.notify_sentinel_online(cycle)
 
     # Trigger initial soul onboarding check (after bot is ready).
     if proactive_loop:
@@ -664,7 +658,6 @@ def run(project_root: pathlib.Path) -> None:
         state.reflector = reflector
 
     try:
-        params = generate_params(generation, 42)
         proc = _start_ring2(ring2_path, heartbeat_path)
         start_time = time.time()
         hb.wait_for_heartbeat(startup_timeout=timeout)
@@ -695,11 +688,10 @@ def run(project_root: pathlib.Path) -> None:
 
             # --- update shared state for bot ---
             with state.lock:
-                state.generation = generation
+                state.cycle = cycle
                 state.start_time = start_time
                 state.alive = hb.is_alive()
-                state.mutation_rate = params.mutation_rate
-                state.max_runtime_sec = params.max_runtime_sec
+                state.max_runtime_sec = max_runtime_sec
 
             # --- pause check (bot can set this) ---
             if state.pause_event.is_set():
@@ -708,7 +700,7 @@ def run(project_root: pathlib.Path) -> None:
             # --- kill check (bot can set this) ---
             if state.kill_event.is_set():
                 state.kill_event.clear()
-                log.info("Kill signal received — restarting Ring 2 (gen-%d)", generation)
+                log.info("Kill signal received — restarting Ring 2 (cycle-%d)", cycle)
                 _stop_ring2(proc)
                 proc = _start_ring2(ring2_path, heartbeat_path)
                 start_time = time.time()
@@ -749,14 +741,14 @@ def run(project_root: pathlib.Path) -> None:
                     log.debug("Scheduled task check failed", exc_info=True)
 
             # --- success check: survived max_runtime_sec ---
-            if elapsed >= params.max_runtime_sec and hb.is_alive():
+            if elapsed >= max_runtime_sec and hb.is_alive():
                 log.info(
-                    "Ring 2 survived gen-%d (%.1fs >= %ds)",
-                    generation, elapsed, params.max_runtime_sec,
+                    "Ring 2 completed cycle-%d (%.1fs >= %ds)",
+                    cycle, elapsed, max_runtime_sec,
                 )
                 _stop_ring2(proc)
 
-                # Read output and score (with novelty from recent fingerprints).
+                # Read output and record run metrics.
                 output = _read_ring2_output(proc, max_lines=200)
                 output_lines = output.splitlines() if output else []
                 recent_fps = []
@@ -766,36 +758,21 @@ def run(project_root: pathlib.Path) -> None:
                     pass
                 score, detail = evaluate_output(
                     output_lines, survived=True,
-                    elapsed=elapsed, max_runtime=params.max_runtime_sec,
+                    elapsed=elapsed, max_runtime=max_runtime_sec,
                     recent_fingerprints=recent_fps,
                 )
 
-                # Task alignment bonus: reward output that matches user interests.
-                if user_profiler:
-                    try:
-                        user_cats = user_profiler.get_category_distribution()
-                        topic_kw = user_profiler.get_top_topic_names(limit=30)
-                        if user_cats:
-                            alignment_bonus = fitness.score_task_alignment(
-                                output_lines, user_cats, topic_keywords=topic_kw,
-                            )
-                            if alignment_bonus > 0:
-                                score = min(score + alignment_bonus, 1.0)
-                                detail["task_alignment"] = alignment_bonus
-                    except Exception:
-                        pass
-
-                # Record success.
+                # Record run.
                 commit_hash = last_good_hash or "unknown"
                 fitness.record(
-                    generation=generation,
+                    generation=cycle,
                     commit_hash=commit_hash,
                     score=score,
                     runtime_sec=elapsed,
                     survived=True,
                     detail=detail,
                 )
-                log.info("Fitness score gen-%d: %.4f  detail=%s", generation, score, detail)
+                log.info("Cycle %d score: %.4f  detail=%s", cycle, score, detail)
 
                 with state.lock:
                     state.last_score = score
@@ -803,24 +780,18 @@ def run(project_root: pathlib.Path) -> None:
 
                 # Snapshot the surviving code.
                 try:
-                    last_good_hash = git.snapshot(f"gen-{generation} survived")
+                    last_good_hash = git.snapshot(f"cycle-{cycle} survived")
                 except subprocess.CalledProcessError:
                     pass
 
-                # Notify.
-                if notifier:
-                    notifier.notify_generation_complete(
-                        generation, score, True, last_good_hash or "unknown",
-                    )
+                # Next cycle.
+                cycle += 1
 
-                # Next generation.
-                generation += 1
-
-                # Periodic maintenance: compact memory + decay profile (every 10 generations).
-                if generation % 10 == 0:
+                # Periodic maintenance (every 10 cycles).
+                if cycle % 10 == 0:
                     if memory_store:
                         try:
-                            compact_result = memory_store.compact(generation, curator=memory_curator)
+                            compact_result = memory_store.compact(cycle, curator=memory_curator)
                             log.info("Memory compaction: %s", compact_result)
                         except Exception:
                             log.debug("Memory compaction failed (non-fatal)", exc_info=True)
@@ -841,14 +812,6 @@ def run(project_root: pathlib.Path) -> None:
                                 log.info("Preference decay: removed %d low-confidence entries", decayed)
                         except Exception:
                             log.debug("Preference maintenance failed (non-fatal)", exc_info=True)
-
-                    if output_queue:
-                        try:
-                            expired = output_queue.expire_old(max_age_hours=24)
-                            if expired:
-                                log.info("Output queue: expired %d stale items", expired)
-                        except Exception:
-                            log.debug("Output queue expiry failed (non-fatal)", exc_info=True)
 
                     # Nightly consolidation: cross-task correlation + insights (once per day).
                     from datetime import datetime as _dt
@@ -876,8 +839,7 @@ def run(project_root: pathlib.Path) -> None:
                     # Add 0–50% jitter so nodes don't re-sync in lockstep.
                     last_skill_sync_time = time.time() + random.uniform(0, sync_interval * 0.5)
 
-                params = generate_params(generation, 42)
-                log.info("Starting generation %d (params: %s)", generation, params)
+                log.info("Starting cycle %d", cycle)
                 proc = _start_ring2(ring2_path, heartbeat_path)
                 start_time = time.time()
                 hb.wait_for_heartbeat(startup_timeout=timeout)
@@ -925,7 +887,7 @@ def run(project_root: pathlib.Path) -> None:
                 continue
 
             # Ring 2 is dead — failure path.
-            log.warning("Ring 2 lost heartbeat after %.1fs (gen-%d)", elapsed, generation)
+            log.warning("Ring 2 lost heartbeat after %.1fs (cycle-%d)", elapsed, cycle)
             output = _read_ring2_output(proc, max_lines=200)
             _stop_ring2(proc)
 
@@ -935,12 +897,12 @@ def run(project_root: pathlib.Path) -> None:
             output_lines = output.splitlines() if output else []
             score, detail = evaluate_output(
                 output_lines, survived=False,
-                elapsed=elapsed, max_runtime=params.max_runtime_sec,
+                elapsed=elapsed, max_runtime=max_runtime_sec,
             )
-            log.info("Fitness score gen-%d: %.4f  detail=%s", generation, score, detail)
+            log.info("Cycle %d score: %.4f  detail=%s", cycle, score, detail)
             commit_hash = last_good_hash or "unknown"
             fitness.record(
-                generation=generation,
+                generation=cycle,
                 commit_hash=commit_hash,
                 score=score,
                 runtime_sec=elapsed,
@@ -961,7 +923,7 @@ def run(project_root: pathlib.Path) -> None:
             if memory_store:
                 filtered_output = filter_ring2_output(output, max_lines=50) if output else "(no output)"
                 crash_content = (
-                    f"Gen {generation} died after {elapsed:.0f}s.\n"
+                    f"Cycle {cycle} died after {elapsed:.0f}s.\n"
                     f"Reason: {failure_reason}\n\n"
                     f"--- Last output ---\n{filtered_output}"
                 )
@@ -981,18 +943,11 @@ def run(project_root: pathlib.Path) -> None:
                     pass
 
                 if should_store:
-                    memory_store.add(generation, "crash_log", crash_content)
+                    memory_store.add(cycle, "crash_log", crash_content)
 
-            # Notify.
-            if notifier:
-                notifier.notify_generation_complete(
-                    generation, score, False, commit_hash,
-                )
-
-            # Next generation.
-            generation += 1
-            params = generate_params(generation, 42)
-            log.info("Restarting Ring 2 — generation %d (params: %s)", generation, params)
+            # Next cycle.
+            cycle += 1
+            log.info("Restarting Ring 2 — cycle %d", cycle)
             proc = _start_ring2(ring2_path, heartbeat_path)
             start_time = time.time()
             hb.wait_for_heartbeat(startup_timeout=timeout)
