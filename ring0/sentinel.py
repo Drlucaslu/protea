@@ -375,15 +375,22 @@ def _create_executor(project_root, state, ring2_path, reply_fn, memory_store=Non
 
 
 def _acquire_lock(project_root: pathlib.Path):
-    """Acquire exclusive PID lock. Returns file handle, or None if locked."""
+    """Acquire exclusive PID lock. Returns file handle, or None if locked.
+
+    Opens with "a+" to avoid truncating the file before the lock is acquired.
+    Only after the lock succeeds do we truncate and write the new PID.
+    """
     lock_path = project_root / "data" / "sentinel.pid"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "w")
+    fh = open(lock_path, "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
         return None
+    # Lock acquired — now safe to write our PID.
+    fh.seek(0)
+    fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
     return fh

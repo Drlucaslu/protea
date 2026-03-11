@@ -22,10 +22,14 @@ claude_model = "claude-sonnet-4-5-20250929"
 claude_max_tokens = 16384
 max_prompt_history = 5
 
+[preferences]
+default_language = "zh-CN"
+output_language = "zh-CN"
+
 [ring1.tools]
 workspace_path = "."
 shell_timeout = 120
-max_tool_rounds = 50
+max_tool_rounds = 20
 
 [ring1.task_executor]
 prefer_local_skills = true   # match tasks to skills and recommend them to the LLM
