@@ -21,6 +21,7 @@ import time
 
 from ring1.llm_base import LLMClient, LLMError
 from ring1.tool_registry import ToolRegistry
+from ring1.trajectory import determine_outcome, save_trajectory
 
 log = logging.getLogger("protea.task_executor")
 
@@ -966,6 +967,32 @@ class TaskExecutor:
                      getattr(task, "task_id", "?"), duration,
                      usage.get("input_tokens", 0), usage.get("output_tokens", 0),
                      len(tool_sequence), ",".join(skills_used) or "none")
+            # --- Trajectory saving for distillation ---
+            try:
+                outcome, outcome_reasons = determine_outcome(
+                    fab_signals, tool_sequence, response, duration, usage,
+                )
+                # Get full message history from LLM client
+                traj_messages = getattr(self.client, "_last_messages", [])
+                traj_system = getattr(self.client, "_last_system_prompt", "")
+                traj_tools = getattr(self.client, "_last_tools", [])
+                if traj_messages:
+                    save_trajectory(
+                        task_id=getattr(task, "task_id", f"t_{int(time.time())}"),
+                        task_text=task.text,
+                        system_prompt=traj_system,
+                        messages=traj_messages,
+                        tools=traj_tools,
+                        response=response,
+                        tool_sequence=tool_sequence,
+                        skills_used=skills_used,
+                        outcome=outcome,
+                        outcome_reasons=outcome_reasons,
+                        duration=duration,
+                        usage=usage,
+                    )
+            except Exception:
+                log.debug("Trajectory saving failed", exc_info=True)
             # Save pipeline snapshot for dashboard visualization.
             try:
                 self.state._last_pipeline = {
@@ -1100,6 +1127,10 @@ class TaskExecutor:
                     self._distill_strategies()
                 except Exception:
                     log.debug("Distillation trigger failed", exc_info=True)
+                try:
+                    self._check_skill_crystallization()
+                except Exception:
+                    log.debug("Skill crystallization check failed", exc_info=True)
     _PROFILE_INTENT_PROMPT = (
         "You are a concise intent extractor. Given a user message, do two things:\n"
         "1. Identify ONLY the user's core intent (what they want to do). "
@@ -1281,6 +1312,89 @@ class TaskExecutor:
             log.info("Strategy distillation completed")
         except Exception:
             log.debug("Strategy distillation failed", exc_info=True)
+
+    # --- Skill crystallization from repeated tool patterns ---
+
+    def _check_skill_crystallization(self) -> None:
+        """Detect repeated tool-calling patterns and propose skill creation.
+
+        When the same tool sequence appears 3+ times for similar tasks,
+        propose crystallizing it as a reusable skill to skip LLM reasoning.
+        """
+        if not self.memory_store or not self.client:
+            return
+        try:
+            recent_tasks = self.memory_store.get_by_type("task", limit=30)
+            tasks_with_tools = [
+                t for t in recent_tasks
+                if t.get("metadata", {}).get("tool_sequence")
+                and len(t.get("metadata", {}).get("tool_sequence", [])) >= 2
+            ]
+            if len(tasks_with_tools) < 5:
+                return
+
+            # Group by tool sequence signature
+            from collections import Counter
+            seq_counter: Counter[str] = Counter()
+            seq_examples: dict[str, list[str]] = {}
+            for t in tasks_with_tools:
+                seq = tuple(t["metadata"]["tool_sequence"])
+                seq_key = " → ".join(seq)
+                seq_counter[seq_key] += 1
+                if seq_key not in seq_examples:
+                    seq_examples[seq_key] = []
+                if len(seq_examples[seq_key]) < 3:
+                    seq_examples[seq_key].append(t.get("content", "")[:100])
+
+            # Find sequences that appear 3+ times
+            candidates = [
+                (seq, count, seq_examples[seq])
+                for seq, count in seq_counter.most_common(5)
+                if count >= 3
+            ]
+            if not candidates:
+                return
+
+            # Check if we already proposed/created a skill for this pattern
+            existing_skills = []
+            if self.skill_store:
+                try:
+                    existing_skills = [
+                        s.get("name", "") for s in self.skill_store.get_active()
+                    ]
+                except Exception:
+                    pass
+
+            for seq, count, examples in candidates:
+                # Skip if a skill with similar tools already exists
+                seq_tools = set(seq.replace(" → ", ",").split(","))
+                already_covered = False
+                for skill_name in existing_skills:
+                    if seq_tools & set(skill_name.split("_")):
+                        already_covered = True
+                        break
+                if already_covered:
+                    continue
+
+                log.info(
+                    "Skill crystallization candidate: %s (seen %dx) examples: %s",
+                    seq, count, examples[:2],
+                )
+
+                # Store as a strategy with crystallization hint
+                snap = self.state.snapshot()
+                self.memory_store.add(
+                    generation=snap.get("cycle", 0),
+                    entry_type="strategy",
+                    content=(
+                        f"[SKILL_CANDIDATE] Repeated pattern ({count}x): {seq}\n"
+                        f"Example tasks: {'; '.join(examples[:2])}\n"
+                        f"Consider creating a skill to automate this workflow."
+                    ),
+                )
+
+        except Exception:
+            log.debug("Skill crystallization check failed", exc_info=True)
 
     # --- P3: Evolution Signal Extraction ---
 

@@ -168,6 +168,11 @@ class ClaudeClient(LLMClient):
             # If no tool calls or stop_reason is not "tool_use", return text.
             if not tool_uses or stop_reason != "tool_use":
                 if text_parts:
+                    # Append final assistant message for trajectory
+                    messages.append({"role": "assistant", "content": content_blocks})
+                    self._last_messages = messages
+                    self._last_system_prompt = system_prompt
+                    self._last_tools = tools
                     log.debug("Tool loop: returning text (no tool_use), text[:200]=%s",
                               "\n".join(text_parts)[:200])
                     return "\n".join(text_parts)
@@ -201,6 +206,9 @@ class ClaudeClient(LLMClient):
 
         # max_rounds exhausted — return last seen text or a friendly notice.
         log.warning("Tool use loop exhausted after %d rounds", max_rounds)
+        self._last_messages = messages  # Expose for trajectory saving
+        self._last_system_prompt = system_prompt
+        self._last_tools = tools
         if last_text_parts:
             return "\n".join(last_text_parts)
         return (
