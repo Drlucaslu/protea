@@ -51,7 +51,7 @@ class OpenAIClient(LLMClient):
     # Internal: HTTP + retry
     # ------------------------------------------------------------------
 
-    def _call_api(self, payload: dict) -> dict:
+    def _call_api(self, payload: dict, hard_timeout: float | None = None) -> dict:
         """POST *payload* to the chat completions endpoint with retry."""
         data = json.dumps(payload).encode("utf-8")
         # --- Debug: dump full payload to log file ---
@@ -59,7 +59,8 @@ class OpenAIClient(LLMClient):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        return self._call_api_with_retry(self.api_url, data, headers)
+        return self._call_api_with_retry(self.api_url, data, headers,
+                                         hard_timeout=hard_timeout)
 
     @staticmethod
     def _dump_payload(payload: dict, total_bytes: int) -> None:
@@ -108,7 +109,8 @@ class OpenAIClient(LLMClient):
     # Public: simple message (no tools)
     # ------------------------------------------------------------------
 
-    def send_message(self, system_prompt: str, user_message: str) -> str:
+    def send_message(self, system_prompt: str, user_message: str,
+                     hard_timeout: float | None = None) -> str:
         """Send a message and return the assistant's text response."""
         payload = {
             "model": self.model,
@@ -118,10 +120,20 @@ class OpenAIClient(LLMClient):
                 {"role": "user", "content": user_message},
             ],
         }
-        body = self._call_api(payload)
+        body = self._call_api(payload, hard_timeout=hard_timeout)
         self._reset_usage()
         usage = body.get("usage", {})
         self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+
+        # Retry once on empty content (API occasionally returns no text).
+        choices = body.get("choices", [])
+        content = choices[0].get("message", {}).get("content") if choices else None
+        if not content:
+            log.warning("%s empty content — retrying once", self._LOG_PREFIX)
+            body = self._call_api(payload, hard_timeout=hard_timeout)
+            usage = body.get("usage", {})
+            self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+
         return self._extract_text(body)
 
     def send_message_ex(
@@ -143,8 +155,18 @@ class OpenAIClient(LLMClient):
         self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
         choice = body.get("choices", [{}])[0]
         text = choice.get("message", {}).get("content")
+
+        # Retry once on empty content.
         if not text:
-            raise LLMError("No text content in API response")
+            log.warning("%s empty content — retrying once", self._LOG_PREFIX)
+            body = self._call_api(payload)
+            usage = body.get("usage", {})
+            self._add_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            choice = body.get("choices", [{}])[0]
+            text = choice.get("message", {}).get("content")
+            if not text:
+                raise LLMError("No text content in API response")
+
         finish = choice.get("finish_reason", "stop")
         stop_reason = "max_tokens" if finish == "length" else "end_turn"
         return text, {"stop_reason": stop_reason}

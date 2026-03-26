@@ -58,12 +58,14 @@ class LLMClient(abc.ABC):
 
     _HARD_TIMEOUT: float = 180.0  # daemon-thread hard timeout (seconds)
 
-    def _call_api_with_retry(self, url: str, data: bytes, headers: dict) -> dict:
+    def _call_api_with_retry(self, url: str, data: bytes, headers: dict,
+                             hard_timeout: float | None = None) -> dict:
         """HTTP POST with exponential-backoff retry on transient errors.
 
         Each request runs in a daemon thread with a hard timeout to guard
         against macOS HTTPS sockets that enter uninterruptible sleep.
         """
+        timeout = hard_timeout or self._HARD_TIMEOUT
         last_error: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             result: dict | None = None
@@ -82,12 +84,12 @@ class LLMClient(abc.ABC):
 
             t = threading.Thread(target=_do_request, daemon=True)
             t.start()
-            t.join(timeout=self._HARD_TIMEOUT)
+            t.join(timeout=timeout)
 
             if t.is_alive():
                 # Thread stuck — treat as timeout, let daemon die on its own
                 last_error = TimeoutError(
-                    f"request stuck for >{self._HARD_TIMEOUT}s"
+                    f"request stuck for >{timeout}s"
                 )
                 if attempt < self._MAX_RETRIES - 1:
                     delay = self._BASE_DELAY * (2 ** attempt)
@@ -151,7 +153,8 @@ class LLMClient(abc.ABC):
         ) from last_error
 
     @abc.abstractmethod
-    def send_message(self, system_prompt: str, user_message: str) -> str:
+    def send_message(self, system_prompt: str, user_message: str,
+                     hard_timeout: float | None = None) -> str:
         """Send a message and return the assistant's text response."""
 
     def send_message_ex(

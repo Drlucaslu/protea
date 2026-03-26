@@ -54,7 +54,8 @@ class ClaudeClient(LLMClient):
     # Public: simple message (no tools)
     # ------------------------------------------------------------------
 
-    def send_message(self, system_prompt: str, user_message: str) -> str:
+    def send_message(self, system_prompt: str, user_message: str,
+                     hard_timeout: float | None = None) -> str:
         """Send a message to Claude and return the assistant's text response."""
         payload = {
             "model": self.model,

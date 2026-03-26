@@ -1506,7 +1506,10 @@ class TelegramBot:
             success = reflector.execute_proposal(proposal)
             outcome = "user_approved" if success else "user_approved_failed"
             ms.update_metadata(entry_id, {"outcome": outcome})
+            # Adaptive cooldown: approved proposals speed up next reflection.
             if success:
+                reflector._cooldown_multiplier = max(0.5, reflector._cooldown_multiplier * 0.5)
+                reflector._consecutive_rejected = 0
                 return "\u2705 已执行"
             return "\u2705 已批准，但执行失败"
 
@@ -1519,6 +1522,14 @@ class TelegramBot:
             ms = self.state.memory_store
             if ms:
                 ms.update_metadata(entry_id, {"outcome": "user_rejected"})
+            # Adaptive cooldown: repeated rejections slow down reflection.
+            reflector = getattr(self.state, "reflector", None)
+            if reflector:
+                reflector._consecutive_rejected += 1
+                if reflector._consecutive_rejected >= 3:
+                    reflector._cooldown_multiplier = min(
+                        reflector._cooldown_multiplier * 1.5, 4.0,
+                    )
             return "\u274c 已拒绝，不会执行"
 
         if data.startswith("run:"):

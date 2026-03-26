@@ -538,6 +538,8 @@ class TaskExecutor:
         self._chat_history_max = 5
         self._chat_history_ttl = 600  # 10 minutes
         self._last_chat_id: str = ""  # Track most recent chat_id
+        # Circuit breaker: track consecutive tools=0 for scheduled tasks.
+        self._sched_noop_streak: dict[str, int] = {}  # task_text[:60] → count
 
     def _get_recent_history(self) -> list[tuple[str, str]]:
         """Return recent conversation pairs, pruning expired entries."""
@@ -967,6 +969,32 @@ class TaskExecutor:
                      getattr(task, "task_id", "?"), duration,
                      usage.get("input_tokens", 0), usage.get("output_tokens", 0),
                      len(tool_sequence), ",".join(skills_used) or "none")
+
+            # --- Circuit breaker for idle scheduled tasks ---
+            sched_key = task.text.strip()[:60]
+            if len(tool_sequence) == 0 and duration > 120:
+                streak = self._sched_noop_streak.get(sched_key, 0) + 1
+                self._sched_noop_streak[sched_key] = streak
+                if streak >= 3 and self.scheduled_store:
+                    log.warning("Circuit breaker: '%s' noop x%d — disabling schedule",
+                                sched_key, streak)
+                    try:
+                        # Find and disable matching schedule(s).
+                        for s in self.scheduled_store.get_all():
+                            if s.get("task_text", "").strip()[:60] == sched_key and s.get("enabled"):
+                                self.scheduled_store.disable(s["schedule_id"])
+                                log.info("Disabled schedule %s (%s)", s["name"], s["schedule_id"])
+                                if self.reply_fn:
+                                    self.reply_fn(
+                                        f"[Circuit Breaker] Scheduled task '{s['name']}' "
+                                        f"disabled after {streak} consecutive no-op runs."
+                                    )
+                    except Exception:
+                        log.debug("Circuit breaker disable failed", exc_info=True)
+                    self._sched_noop_streak[sched_key] = 0
+            else:
+                self._sched_noop_streak.pop(sched_key, None)
+
             # --- Trajectory saving for distillation ---
             try:
                 outcome, outcome_reasons = determine_outcome(

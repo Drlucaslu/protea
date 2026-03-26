@@ -17,6 +17,8 @@ import subprocess
 import time
 from typing import NamedTuple
 
+from ring1.llm_base import LLMError
+
 log = logging.getLogger("protea.reflector")
 
 
@@ -110,6 +112,7 @@ class Reflector:
         self._client = None
         self._consecutive_empty: int = 0
         self._consecutive_rejected: int = 0
+        self._consecutive_timeout: int = 0
         self._cooldown_multiplier: float = 1.0
 
     def _get_client(self):
@@ -135,7 +138,9 @@ class Reflector:
 
         try:
             client = self._get_client()
-            response = client.send_message(_REFLECTION_SYSTEM_PROMPT, user_message)
+            response = client.send_message(
+                _REFLECTION_SYSTEM_PROMPT, user_message, hard_timeout=240.0,
+            )
             proposals = self._parse_proposals(response)
 
             if not proposals:
@@ -145,6 +150,7 @@ class Reflector:
                     log.info("Reflection cooldown extended: %.1fx (consecutive empty)", self._cooldown_multiplier)
             else:
                 self._consecutive_empty = 0
+                self._consecutive_timeout = 0
                 self._cooldown_multiplier = 1.0
 
             # Record LLM usage.
@@ -162,6 +168,15 @@ class Reflector:
                          usage["input_tokens"], usage["output_tokens"], len(proposals))
 
             return proposals
+        except LLMError as exc:
+            # LLM timeout/network — do NOT penalize cooldown.
+            self._consecutive_timeout += 1
+            log.error("Reflection failed (LLM, streak=%d): %s",
+                      self._consecutive_timeout, exc)
+            if self._consecutive_timeout >= 5:
+                log.warning("Reflection LLM timeout streak=%d — check API health",
+                            self._consecutive_timeout)
+            return []
         except Exception as exc:
             log.error("Reflection failed: %s", exc)
             return []
@@ -174,7 +189,9 @@ class Reflector:
 
         try:
             client = self._get_client()
-            response = client.send_message(_IDLE_REFLECTION_SYSTEM_PROMPT, user_message)
+            response = client.send_message(
+                _IDLE_REFLECTION_SYSTEM_PROMPT, user_message, hard_timeout=240.0,
+            )
             proposals = self._parse_proposals(response)
 
             # Record LLM usage.
@@ -190,6 +207,11 @@ class Reflector:
                     pass
 
             return proposals
+        except LLMError as exc:
+            self._consecutive_timeout += 1
+            log.error("Idle reflection failed (LLM, streak=%d): %s",
+                      self._consecutive_timeout, exc)
+            return []
         except Exception as exc:
             log.error("Idle reflection failed: %s", exc)
             return []
@@ -397,7 +419,7 @@ class Reflector:
         if not seen:
             return ""
 
-        items = list(seen.values())[-10:]  # most recent 10
+        items = list(seen.values())[-5:]  # most recent 5
         parts = ["## Runtime Log (recent warnings/errors)"]
         for text, count in items:
             suffix = f" (x{count})" if count > 1 else ""
@@ -417,7 +439,7 @@ class Reflector:
                     return ""  # Not enough data.
 
                 parts.append("## Recent Task Metrics")
-                for t in tasks[:8]:
+                for t in tasks[:5]:
                     meta = t.get("metadata", {})
                     if isinstance(meta, str):
                         try:
@@ -505,7 +527,7 @@ class Reflector:
         # Recent reflection outcomes for meta-reflection.
         if self.memory_store:
             try:
-                past_reflections = self.memory_store.get_by_type("reflection_finding", limit=5)
+                past_reflections = self.memory_store.get_by_type("reflection_finding", limit=3)
                 if past_reflections:
                     parts.append("## Past Reflection Outcomes")
                     for r in past_reflections:

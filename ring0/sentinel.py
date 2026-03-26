@@ -640,6 +640,7 @@ def run(project_root: pathlib.Path) -> None:
     reflector = None
     last_reflection_time: float = 0.0
     last_resource_alert_time: float = 0.0
+    _last_sched_fire: dict[str, float] = {}  # schedule name → last fire timestamp
     try:
         from ring1.reflector import Reflector
         from ring1.config import load_ring1_config
@@ -728,13 +729,31 @@ def run(project_root: pathlib.Path) -> None:
             # --- scheduled task check ---
             if scheduled_store:
                 try:
-                    due = scheduled_store.get_due(time.time())
+                    now_ts = time.time()
+                    due = scheduled_store.get_due(now_ts)
                     for sched in due:
+                        sched_name = sched["name"]
+                        # Guard: skip if same schedule fired recently and task
+                        # is still queued or executing (prevents pile-up).
+                        prev_fire = _last_sched_fire.get(sched_name, 0.0)
+                        if (now_ts - prev_fire < 120
+                                and (state.p0_active.is_set()
+                                     or state.task_queue.qsize() > 0)):
+                            log.debug("Scheduled task skipped (busy): %s", sched_name)
+                            # Still advance next_run so get_due doesn't re-fire immediately.
+                            if sched["schedule_type"] == "cron":
+                                from ring0.cron import next_run as _cron_next
+                                from datetime import datetime
+                                nxt = _cron_next(sched["cron_expr"], datetime.now())
+                                scheduled_store.update_after_run(sched["schedule_id"], nxt.timestamp())
+                            continue
+
                         from ring1.telegram_bot import Task
                         task = Task(text=sched["task_text"], chat_id=sched["chat_id"],
                                     exec_mode=sched.get("exec_mode", "llm"))
                         state.task_queue.put(task)
                         state.p0_event.set()
+                        _last_sched_fire[sched_name] = now_ts
                         if sched["schedule_type"] == "cron":
                             from ring0.cron import next_run as _cron_next
                             from datetime import datetime
@@ -743,7 +762,7 @@ def run(project_root: pathlib.Path) -> None:
                         else:
                             scheduled_store.disable(sched["schedule_id"])
                             scheduled_store.update_after_run(sched["schedule_id"], None)
-                        log.info("Scheduled task fired: %s (%s)", sched["name"], sched["schedule_id"])
+                        log.info("Scheduled task fired: %s (%s)", sched_name, sched["schedule_id"])
                 except Exception:
                     log.debug("Scheduled task check failed", exc_info=True)
 
